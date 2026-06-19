@@ -43,6 +43,14 @@ class RetellHoldAppointmentSlotRequest(RetellToolRequestContext):
     owner_id: str | None = Field(default=None, max_length=120)
 
 
+class RetellBookAppointmentRequest(RetellToolRequestContext):
+    hold_id: UUID
+    availability_slot_id: UUID
+    patient_id: UUID
+    owner_id: str | None = Field(default=None, max_length=120)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class RetellToolResponse(BaseModel):
     ok: bool
     result: dict[str, Any] | list[dict[str, Any]] | None = None
