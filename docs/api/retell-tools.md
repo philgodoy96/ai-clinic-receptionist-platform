@@ -1,12 +1,10 @@
-# Retell Read Tool API
+# Retell Tool API
 
 ## Context
 
 Retell orchestrates the real-time voice experience.
 
 The backend exposes tools that Retell can call when it needs real clinic data, validation, persistence, or side effects.
-
-This document describes the first read-only Retell tool endpoints.
 
 ## Design Principle
 
@@ -51,7 +49,7 @@ Business errors usually return HTTP 200 so the voice agent can continue the conv
 
 Transport or validation errors may still return HTTP 4xx.
 
-## Tools
+## Read Tools
 
 ### list_specialties
 
@@ -78,12 +76,6 @@ Both fields are optional.
 
 The backend resolves human-friendly names to real doctors.
 
-This allows Retell to handle phrases such as:
-
-- "I need a dermatologist"
-- "Can I see Dr. Carter?"
-- "Who do you have for primary care?"
-
 ### check_availability
 
     POST /api/v1/retell/tools/check-availability
@@ -107,8 +99,6 @@ Request body using doctor ID:
 Retell may use a doctor ID returned by `list_doctors`.
 
 The patient should not hear internal IDs.
-
-IDs are operational data exchanged between Retell and the backend.
 
 ### lookup_patient
 
@@ -145,14 +135,50 @@ Request body:
 
 Returns scheduled upcoming appointments after identity validation.
 
+## Hold Tools
+
+### hold_appointment_slot
+
+    POST /api/v1/retell/tools/hold-appointment-slot
+
+Request body:
+
+    {
+      "availability_slot_id": "7fcf0ca1-7f14-4f45-a8a4-cc77d1a67f4d",
+      "call_id": "retell-call-123"
+    }
+
+Retell should call this tool after the patient selects a specific availability slot.
+
+The backend returns a hold_id that must be used later during final booking.
+
+Ownership can be provided through:
+
+- call_id
+- conversation_id
+- owner_id
+
+The backend requires one of these identifiers so another call or conversation cannot use the hold.
+
+Example success response:
+
+    {
+      "ok": true,
+      "result": {
+        "hold_id": "2d85f2c2-5d2e-4c2a-ae2f-09e32011ce37",
+        "availability_slot_id": "7fcf0ca1-7f14-4f45-a8a4-cc77d1a67f4d",
+        "doctor_id": "c72f20fd-71a3-42e4-9611-6bca3c7d44c5",
+        "start_time": "2026-07-01T10:00:00+00:00",
+        "end_time": "2026-07-01T10:30:00+00:00",
+        "expires_in_seconds": 300
+      }
+    }
+
 ## Current Limitations
 
-These tools are read-only.
+These tools do not implement:
 
-They do not implement:
-
-- Appointment slot holds
-- Appointment booking
+- Final appointment booking
 - Appointment rescheduling
 - Appointment cancellation
 - Audit logs
@@ -162,9 +188,8 @@ They do not implement:
 
 ## Future Work
 
-Future slices should add:
+Future implementation phases should add:
 
-- Redis appointment slot holds
 - Booking tool endpoint
 - Reschedule tool endpoint
 - Cancellation tool endpoint
