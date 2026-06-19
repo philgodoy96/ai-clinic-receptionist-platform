@@ -1,0 +1,47 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clinic-receptionist-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    volumes:
+      - ./app:/app/app
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: clinic-receptionist-postgres
+    environment:
+      POSTGRES_USER: clinic
+      POSTGRES_PASSWORD: clinic
+      POSTGRES_DB: clinic_receptionist
+    ports:
+      - "5432:5432"
+    volumes:
+      - clinic_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: clinic-receptionist-redis
+    ports:
+      - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: clinic-receptionist-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: clinic
+      RABBITMQ_DEFAULT_PASS: clinic
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+volumes:
+  clinic_postgres_data:
