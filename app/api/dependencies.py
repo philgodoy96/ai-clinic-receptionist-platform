@@ -3,6 +3,7 @@ from typing import Annotated, Any
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.cache.redis import get_redis_client
 from app.core.config import get_settings
@@ -46,3 +47,13 @@ def get_retell_scheduling_tool_adapter(
     service: Annotated[SchedulingService, Depends(get_scheduling_service)],
 ) -> RetellSchedulingToolAdapter:
     return RetellSchedulingToolAdapter(service)
+
+
+def get_retell_appointment_hold_tool_adapter(
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+) -> RetellAppointmentHoldToolAdapter:
+    return RetellAppointmentHoldToolAdapter(
+        scheduling_service=scheduling_service,
+        hold_service=hold_service,
+    )
