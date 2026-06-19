@@ -7,8 +7,8 @@ Create Date: 2026-06-19
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260619_0001"
@@ -36,6 +36,15 @@ appointment_status_enum = postgresql.ENUM(
 )
 
 
+def _timestamp_column(column_name: str) -> sa.Column:
+    return sa.Column(
+        column_name,
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        nullable=False,
+    )
+
+
 def upgrade() -> None:
     availability_slot_status_enum.create(op.get_bind(), checkfirst=True)
     appointment_status_enum.create(op.get_bind(), checkfirst=True)
@@ -46,8 +55,8 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=120), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        _timestamp_column("created_at"),
+        _timestamp_column("updated_at"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("name"),
     )
@@ -61,8 +70,8 @@ def upgrade() -> None:
         sa.Column("email", sa.String(length=255), nullable=True),
         sa.Column("phone_number", sa.String(length=40), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        _timestamp_column("created_at"),
+        _timestamp_column("updated_at"),
         sa.ForeignKeyConstraint(["specialty_id"], ["specialties.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("email"),
@@ -77,8 +86,8 @@ def upgrade() -> None:
         sa.Column("date_of_birth", sa.Date(), nullable=False),
         sa.Column("phone_number", sa.String(length=40), nullable=False),
         sa.Column("email", sa.String(length=255), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        _timestamp_column("created_at"),
+        _timestamp_column("updated_at"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("email"),
         sa.UniqueConstraint("phone_number"),
@@ -94,12 +103,16 @@ def upgrade() -> None:
         sa.Column("start_time", sa.DateTime(timezone=True), nullable=False),
         sa.Column("end_time", sa.DateTime(timezone=True), nullable=False),
         sa.Column("status", availability_slot_status_enum, nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        _timestamp_column("created_at"),
+        _timestamp_column("updated_at"),
         sa.CheckConstraint("end_time > start_time", name="ck_availability_slots_end_after_start"),
         sa.ForeignKeyConstraint(["doctor_id"], ["doctors.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("doctor_id", "start_time", name="uq_availability_slots_doctor_start_time"),
+        sa.UniqueConstraint(
+            "doctor_id",
+            "start_time",
+            name="uq_availability_slots_doctor_start_time",
+        ),
     )
     op.create_index(
         "ix_availability_slots_doctor_start_time",
@@ -122,10 +135,14 @@ def upgrade() -> None:
         sa.Column("reason", sa.String(length=500), nullable=True),
         sa.Column("cancellation_reason", sa.String(length=500), nullable=True),
         sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        _timestamp_column("created_at"),
+        _timestamp_column("updated_at"),
         sa.CheckConstraint("end_time > start_time", name="ck_appointments_end_after_start"),
-        sa.ForeignKeyConstraint(["availability_slot_id"], ["availability_slots.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["availability_slot_id"],
+            ["availability_slots.id"],
+            ondelete="SET NULL",
+        ),
         sa.ForeignKeyConstraint(["doctor_id"], ["doctors.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["patient_id"], ["patients.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
@@ -136,11 +153,23 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["specialty_id"], ["specialties.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_appointments_availability_slot_id", "appointments", ["availability_slot_id"])
+    op.create_index(
+        "ix_appointments_availability_slot_id",
+        "appointments",
+        ["availability_slot_id"],
+    )
     op.create_index("ix_appointments_doctor_id", "appointments", ["doctor_id"])
-    op.create_index("ix_appointments_doctor_start_time", "appointments", ["doctor_id", "start_time"])
+    op.create_index(
+        "ix_appointments_doctor_start_time",
+        "appointments",
+        ["doctor_id", "start_time"],
+    )
     op.create_index("ix_appointments_patient_id", "appointments", ["patient_id"])
-    op.create_index("ix_appointments_patient_start_time", "appointments", ["patient_id", "start_time"])
+    op.create_index(
+        "ix_appointments_patient_start_time",
+        "appointments",
+        ["patient_id", "start_time"],
+    )
     op.create_index(
         "ix_appointments_rescheduled_from_appointment_id",
         "appointments",
