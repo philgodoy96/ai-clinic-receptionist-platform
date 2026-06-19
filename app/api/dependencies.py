@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.db.session import get_db
 from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyAppointmentRepository,
@@ -24,3 +25,9 @@ def get_scheduling_service(
         availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
         appointments=SQLAlchemyAppointmentRepository(db),
     )
+
+
+def get_retell_scheduling_tool_adapter(
+    service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+) -> RetellSchedulingToolAdapter:
+    return RetellSchedulingToolAdapter(service)
