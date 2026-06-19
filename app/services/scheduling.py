@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import UUID
 
+from app.domain.scheduling.enums import AvailabilitySlotStatus
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.repositories.scheduling import (
     AppointmentRepository,
@@ -29,6 +30,14 @@ class DoctorNotFoundError(SchedulingServiceError):
 
 class InsufficientPatientIdentityError(SchedulingServiceError):
     """Raised when patient lookup does not include enough identifying information."""
+
+
+class AvailabilitySlotNotFoundError(SchedulingServiceError):
+    """Raised when an availability slot does not exist."""
+
+
+class AvailabilitySlotUnavailableError(SchedulingServiceError):
+    """Raised when an availability slot cannot be held or booked."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +93,17 @@ class SchedulingService:
             start_from=start_from,
             start_to=start_to,
         )
+
+    def get_available_slot_for_hold(self, availability_slot_id: UUID) -> AvailabilitySlot:
+        slot = self.availability_slots.get_by_id(availability_slot_id)
+
+        if slot is None:
+            raise AvailabilitySlotNotFoundError("availability slot was not found")
+
+        if slot.status != AvailabilitySlotStatus.AVAILABLE:
+            raise AvailabilitySlotUnavailableError("availability slot is not available")
+
+        return slot
 
     def lookup_patient(self, criteria: PatientLookupCriteria) -> Patient | None:
         if not criteria.has_sufficient_identifiers():
