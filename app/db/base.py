@@ -1,6 +1,3 @@
-from sqlalchemy.orm import DeclarativeBase
-from app.models import scheduling as scheduling_models  # noqa: E402,F401
+from app.db.base_class import Base
 
-
-class Base(DeclarativeBase):
-    pass
+from app.models import scheduling as scheduling_models  # noqa: F401
