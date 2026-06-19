@@ -20,9 +20,9 @@ This is operational reservation state, not durable conversation memory.
 8. Backend removes hold.
 9. Backend enqueues confirmation email job.
 
-This slice implements the hold creation, validation, and release foundation.
+The current implementation supports hold creation, validation, release, and API/tool exposure.
 
-Booking is implemented later.
+Final booking is implemented separately.
 
 ## Redis Key
 
@@ -99,15 +99,13 @@ The final booking flow must still validate availability and rely on PostgreSQL c
 
 ## Current Limitations
 
-This slice does not implement:
+This implementation does not yet include:
 
-- Hold API endpoints
-- Retell hold tool endpoint
-- Appointment booking
+- Final appointment booking
 - Appointment rescheduling
 - Appointment cancellation
 - Audit logs
 - Email jobs
 - Redis dependency health check
 
-Those capabilities are planned for later slices.
+Those capabilities are planned for later implementation phases.

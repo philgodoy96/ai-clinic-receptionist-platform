@@ -38,6 +38,11 @@ class RetellUpcomingAppointmentsRequest(RetellPatientLookupRequest):
     start_from: datetime
 
 
+class RetellHoldAppointmentSlotRequest(RetellToolRequestContext):
+    availability_slot_id: UUID
+    owner_id: str | None = Field(default=None, max_length=120)
+
+
 class RetellToolResponse(BaseModel):
     ok: bool
     result: dict[str, Any] | list[dict[str, Any]] | None = None

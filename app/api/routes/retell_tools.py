@@ -2,10 +2,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
-from app.api.dependencies import get_retell_scheduling_tool_adapter
+from app.api.dependencies import (
+    get_retell_appointment_hold_tool_adapter,
+    get_retell_scheduling_tool_adapter,
+)
 from app.schemas.retell_tools import (
     RetellCheckAvailabilityRequest,
+    RetellHoldAppointmentSlotRequest,
     RetellListDoctorsRequest,
     RetellListSpecialtiesRequest,
     RetellPatientLookupRequest,
@@ -69,3 +74,14 @@ def list_upcoming_appointments(
     ],
 ) -> RetellToolResponse:
     return adapter.list_upcoming_appointments(payload)
+
+
+@router.post("/hold-appointment-slot", response_model=RetellToolResponse)
+def hold_appointment_slot(
+    payload: RetellHoldAppointmentSlotRequest,
+    adapter: Annotated[
+        RetellAppointmentHoldToolAdapter,
+        Depends(get_retell_appointment_hold_tool_adapter),
+    ],
+) -> RetellToolResponse:
+    return adapter.hold_appointment_slot(payload)
