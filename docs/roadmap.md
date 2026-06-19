@@ -2,7 +2,7 @@
 
 This roadmap documents planned work honestly. Items are grouped by implementation stage.
 
-## Stage 1 â€” Architecture Foundation
+## Stage 1 — Architecture Foundation
 
 Status: In progress
 
@@ -21,7 +21,7 @@ Planned artifacts:
 - docs/architecture/overview.md
 - docs/adr/001-chat-vs-voice-conversation-boundaries.md
 
-## Stage 2 â€” Project Scaffold
+## Stage 2 — Project Scaffold
 
 Status: Planned
 
@@ -43,7 +43,7 @@ Planned components:
 - Redis service
 - RabbitMQ service
 
-## Stage 3 â€” Domain Model
+## Stage 3 — Domain Model
 
 Status: Planned
 
@@ -68,7 +68,7 @@ Planned entities:
 - EscalationCase
 - JobExecution
 
-## Stage 4 â€” Scheduling Tools
+## Stage 4 — Scheduling Tools
 
 Status: Planned
 
@@ -81,7 +81,7 @@ Goals:
 - Implement rescheduling
 - Implement cancellation
 
-## Stage 5 â€” Redis Appointment Holds
+## Stage 5 — Redis Appointment Holds
 
 Status: Planned
 
@@ -92,7 +92,7 @@ Goals:
 - Enforce hold ownership
 - Enforce hold expiration
 
-## Stage 6 â€” Chat Channel
+## Stage 6 — Chat Channel
 
 Status: Planned
 
@@ -103,7 +103,7 @@ Goals:
 - Persist conversations and messages
 - Add guardrail-aware tool decisions
 
-## Stage 7 â€” Retell Tool Integration
+## Stage 7 — Retell Tool Integration
 
 Status: Planned
 
@@ -114,7 +114,7 @@ Goals:
 - Record tool calls
 - Add Retell integration documentation
 
-## Stage 8 â€” Background Email Jobs
+## Stage 8 — Background Email Jobs
 
 Status: Planned
 
@@ -125,7 +125,7 @@ Goals:
 - Persist job execution records
 - Add idempotency and retry readiness
 
-## Stage 9 â€” Observability
+## Stage 9 — Observability
 
 Status: Planned
 
@@ -138,7 +138,7 @@ Goals:
 - Add OpenTelemetry traces
 - Add dependency health checks
 
-## Stage 10 â€” Production Hardening
+## Stage 10 — Production Hardening
 
 Status: Future hardening
 
