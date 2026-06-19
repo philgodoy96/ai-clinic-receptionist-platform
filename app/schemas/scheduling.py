@@ -91,3 +91,11 @@ class AppointmentHoldResponse(BaseModel):
     end_time: datetime
     owner_id: str
     expires_in_seconds: int
+
+
+class AppointmentBookingRequestBody(BaseModel):
+    hold_id: UUID
+    availability_slot_id: UUID
+    patient_id: UUID
+    owner_id: str = Field(min_length=1, max_length=120)
+    reason: str | None = Field(default=None, max_length=500)

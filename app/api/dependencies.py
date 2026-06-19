@@ -3,6 +3,7 @@ from typing import Annotated, Any
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.adapters.retell.appointment_booking_tools import RetellAppointmentBookingToolAdapter
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.cache.redis import get_redis_client
@@ -16,6 +17,7 @@ from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyPatientRepository,
     SQLAlchemySpecialtyRepository,
 )
+from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.scheduling import SchedulingService
 
@@ -43,6 +45,19 @@ def get_appointment_hold_service(
     )
 
 
+def get_appointment_booking_service(
+    db: Annotated[Session, Depends(get_db)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+) -> AppointmentBookingService:
+    return AppointmentBookingService(
+        patients=SQLAlchemyPatientRepository(db),
+        doctors=SQLAlchemyDoctorRepository(db),
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+        appointments=SQLAlchemyAppointmentRepository(db),
+        hold_service=hold_service,
+    )
+
+
 def get_retell_scheduling_tool_adapter(
     service: Annotated[SchedulingService, Depends(get_scheduling_service)],
 ) -> RetellSchedulingToolAdapter:
@@ -55,5 +70,20 @@ def get_retell_appointment_hold_tool_adapter(
 ) -> RetellAppointmentHoldToolAdapter:
     return RetellAppointmentHoldToolAdapter(
         scheduling_service=scheduling_service,
+        hold_service=hold_service,
+    )
+
+
+def get_retell_appointment_booking_tool_adapter(
+    db: Annotated[Session, Depends(get_db)],
+    booking_service: Annotated[
+        AppointmentBookingService,
+        Depends(get_appointment_booking_service),
+    ],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+) -> RetellAppointmentBookingToolAdapter:
+    return RetellAppointmentBookingToolAdapter(
+        db=db,
+        booking_service=booking_service,
         hold_service=hold_service,
     )
