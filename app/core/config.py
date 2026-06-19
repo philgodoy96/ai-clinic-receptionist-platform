@@ -15,6 +15,10 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    appointment_hold_ttl_seconds: int = Field(
+        default=300,
+        alias="APPOINTMENT_HOLD_TTL_SECONDS",
+    )
     rabbitmq_url: str = Field(default="amqp://clinic:clinic@localhost:5672/", alias="RABBITMQ_URL")
 
     retell_api_key: str = Field(default="", alias="RETELL_API_KEY")
