@@ -76,3 +76,18 @@ class AppointmentResponse(BaseModel):
     cancelled_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AppointmentHoldCreateRequest(BaseModel):
+    availability_slot_id: UUID
+    owner_id: str = Field(min_length=1, max_length=120)
+
+
+class AppointmentHoldResponse(BaseModel):
+    hold_id: UUID
+    availability_slot_id: UUID
+    doctor_id: UUID
+    start_time: datetime
+    end_time: datetime
+    owner_id: str
+    expires_in_seconds: int
