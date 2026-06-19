@@ -4,10 +4,18 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_appointment_hold_service, get_scheduling_service
+from app.api.dependencies import (
+    get_appointment_booking_service,
+    get_appointment_hold_service,
+    get_scheduling_service,
+)
+from app.db.session import get_db
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.schemas.scheduling import (
+    AppointmentBookingRequestBody,
     AppointmentHoldCreateRequest,
     AppointmentHoldResponse,
     AppointmentResponse,
@@ -18,7 +26,20 @@ from app.schemas.scheduling import (
     SpecialtyResponse,
     UpcomingAppointmentsRequest,
 )
+from app.services.appointment_booking import (
+    AppointmentBookingOwnerRequiredError,
+    AppointmentBookingRequest,
+    AppointmentBookingService,
+    AppointmentSlotAlreadyBookedError,
+    BookingAvailabilitySlotNotFoundError,
+    BookingAvailabilitySlotUnavailableError,
+    BookingDoctorNotFoundError,
+    BookingPatientNotFoundError,
+)
 from app.services.appointment_holds import (
+    AppointmentHoldMismatchError,
+    AppointmentHoldNotFoundError,
+    AppointmentHoldOwnershipError,
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
     InvalidAppointmentHoldOwnerError,
@@ -185,3 +206,102 @@ def hold_appointment_slot(
         owner_id=hold.owner_id,
         expires_in_seconds=hold_service.ttl_seconds,
     )
+
+
+@router.post(
+    "/appointments/book",
+    response_model=AppointmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def book_appointment(
+    payload: AppointmentBookingRequestBody,
+    db: Annotated[Session, Depends(get_db)],
+    booking_service: Annotated[
+        AppointmentBookingService,
+        Depends(get_appointment_booking_service),
+    ],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+) -> Appointment:
+    try:
+        result = booking_service.book_appointment(
+            AppointmentBookingRequest(
+                hold_id=payload.hold_id,
+                availability_slot_id=payload.availability_slot_id,
+                patient_id=payload.patient_id,
+                owner_id=payload.owner_id,
+                reason=payload.reason,
+            ),
+        )
+        appointment = result.appointment
+        hold = result.hold
+
+        db.commit()
+        db.refresh(appointment)
+
+        hold_service.release_hold(
+            doctor_id=hold.doctor_id,
+            start_time=hold.start_time,
+            owner_id=payload.owner_id,
+        )
+
+        return appointment
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="appointment could not be booked because the slot is no longer available",
+        ) from exc
+    except BookingPatientNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="patient was not found",
+        ) from exc
+    except BookingDoctorNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="doctor was not found or is inactive",
+        ) from exc
+    except BookingAvailabilitySlotNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="availability slot was not found",
+        ) from exc
+    except BookingAvailabilitySlotUnavailableError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="availability slot is not available",
+        ) from exc
+    except AppointmentSlotAlreadyBookedError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="doctor already has a scheduled appointment at this time",
+        ) from exc
+    except AppointmentBookingOwnerRequiredError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="owner_id is required",
+        ) from exc
+    except AppointmentHoldNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="appointment hold was not found or expired",
+        ) from exc
+    except AppointmentHoldMismatchError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="appointment hold id does not match",
+        ) from exc
+    except AppointmentHoldOwnershipError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="appointment hold belongs to another owner",
+        ) from exc

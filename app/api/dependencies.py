@@ -16,6 +16,7 @@ from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyPatientRepository,
     SQLAlchemySpecialtyRepository,
 )
+from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.scheduling import SchedulingService
 
@@ -40,6 +41,19 @@ def get_appointment_hold_service(
     return AppointmentHoldService(
         repository=RedisAppointmentHoldRepository(redis_client),
         ttl_seconds=settings.appointment_hold_ttl_seconds,
+    )
+
+
+def get_appointment_booking_service(
+    db: Annotated[Session, Depends(get_db)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+) -> AppointmentBookingService:
+    return AppointmentBookingService(
+        patients=SQLAlchemyPatientRepository(db),
+        doctors=SQLAlchemyDoctorRepository(db),
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+        appointments=SQLAlchemyAppointmentRepository(db),
+        hold_service=hold_service,
     )
 
 
