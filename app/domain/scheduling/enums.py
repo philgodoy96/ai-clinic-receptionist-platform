@@ -1,14 +1,14 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class AvailabilitySlotStatus(str, Enum):
+class AvailabilitySlotStatus(StrEnum):
     AVAILABLE = "available"
     HELD = "held"
     BOOKED = "booked"
     BLOCKED = "blocked"
 
 
-class AppointmentStatus(str, Enum):
+class AppointmentStatus(StrEnum):
     SCHEDULED = "scheduled"
     RESCHEDULED = "rescheduled"
     CANCELLED = "cancelled"
