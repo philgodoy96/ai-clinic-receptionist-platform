@@ -22,6 +22,7 @@ The current implementation includes:
 - Dead-letter state transition
 - Worker locking using locked_by and locked_until
 - RabbitMQ dispatch consumer
+- Email Job Debug API with cursor pagination
 
 ## Worker Flow
 
@@ -63,6 +64,32 @@ If a worker crashes while processing a job, the job may remain in processing wit
 Once locked_until expires, another worker can claim the job.
 
 This makes the job recoverable without requiring manual cleanup.
+
+## Email Job Debug API
+
+An Email Job Debug API now exists for local development and operator debugging.
+
+Endpoints:
+
+    GET /api/v1/email-jobs
+    GET /api/v1/email-jobs/{email_job_id}
+
+The list endpoint uses cursor pagination ordered by:
+
+    created_at DESC, id DESC
+
+The cursor contains the last returned job's timestamp and ID encoded as an opaque string.
+
+Supported optional filters:
+
+- job_type
+- status
+- appointment_id
+- patient_id
+
+See `docs/api/email-jobs.md` for request/response details.
+
+This API does not yet include authentication, manual retry, or dead-letter replay.
 
 ## Idempotency Notes
 

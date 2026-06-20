@@ -14,6 +14,7 @@ from app.api.dependencies import (
     get_appointment_booking_service,
     get_appointment_hold_service,
     get_audit_log_service,
+    get_email_job_dispatch_publisher,
     get_email_job_service,
     get_retell_appointment_booking_tool_adapter,
 )
@@ -109,6 +110,9 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
     def override_email_job_service() -> EmailJobService:
         return cast(EmailJobService, email_jobs)
 
+    def override_email_job_dispatch_publisher() -> NoopEmailJobDispatchPublisher:
+        return NoopEmailJobDispatchPublisher()
+
     def override_retell_booking_adapter() -> RetellAppointmentBookingToolAdapter:
         return RetellAppointmentBookingToolAdapter(
             db=cast(Session, booking_context.db),
@@ -124,6 +128,9 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_audit_log_service] = override_audit_log_service
     app.dependency_overrides[get_email_job_service] = override_email_job_service
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        override_email_job_dispatch_publisher
+    )
     app.dependency_overrides[get_retell_appointment_booking_tool_adapter] = (
         override_retell_booking_adapter
     )
