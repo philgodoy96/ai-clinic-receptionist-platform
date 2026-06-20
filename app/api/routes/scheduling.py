@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated
@@ -11,11 +12,16 @@ from app.api.dependencies import (
     get_appointment_booking_service,
     get_appointment_hold_service,
     get_audit_log_service,
+    get_email_job_dispatch_publisher,
     get_email_job_service,
     get_scheduling_service,
 )
 from app.db.session import get_db
 from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisher,
+    EmailJobDispatchPublisherError,
+)
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.schemas.scheduling import (
     AppointmentBookingRequestBody,
@@ -66,6 +72,7 @@ from app.services.scheduling import (
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
 
 SCHEDULING_API_SOURCE = "scheduling_api"
+logger = logging.getLogger("app.scheduling")
 
 
 def _commit_audit_best_effort(
@@ -319,6 +326,10 @@ def book_appointment(
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
     email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
 ) -> Appointment:
     try:
         result = booking_service.book_appointment(
@@ -347,7 +358,7 @@ def book_appointment(
             ),
         )
 
-        email_jobs.enqueue_appointment_confirmation(
+        email_job = email_jobs.enqueue_appointment_confirmation(
             AppointmentConfirmationEmailJobCreate(
                 appointment_id=appointment.id,
                 patient_id=payload.patient_id,
@@ -361,6 +372,18 @@ def book_appointment(
 
         db.commit()
         db.refresh(appointment)
+
+        try:
+            email_job_dispatch.publish_email_job_ready(email_job_id=email_job.id)
+        except EmailJobDispatchPublisherError:
+            logger.warning(
+                "email_job_dispatch_publish_failed",
+                extra={
+                    "event": "email_job_dispatch_publish_failed",
+                    "email_job_id": str(email_job.id),
+                    "appointment_id": str(appointment.id),
+                },
+            )
 
         hold_service.release_hold(
             doctor_id=hold.doctor_id,

@@ -21,6 +21,7 @@ from app.db.session import get_db
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.main import create_app
+from app.messaging.email_job_dispatch import NoopEmailJobDispatchPublisher
 from app.models.audit import AuditLog
 from app.models.email_jobs import EmailJob
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
@@ -115,6 +116,7 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
             hold_service=booking_context.hold_service,
             audit_logs=cast(AuditLogService, audit_logs),
             email_jobs=cast(EmailJobService, email_jobs),
+            email_job_dispatch=NoopEmailJobDispatchPublisher(),
         )
 
     app.dependency_overrides[get_appointment_booking_service] = override_booking_service

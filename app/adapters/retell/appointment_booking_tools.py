@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisher,
+    EmailJobDispatchPublisherError,
+)
 from app.models.scheduling import Appointment
 from app.schemas.retell_tools import RetellBookAppointmentRequest, RetellToolResponse
 from app.schemas.scheduling import AppointmentResponse
@@ -32,6 +37,7 @@ from app.services.email_jobs import (
 )
 
 RETELL_TOOL_SOURCE = "retell_tool"
+logger = logging.getLogger("app.retell_tools")
 
 
 class AppointmentBookingServiceForRetell(Protocol):
@@ -48,12 +54,14 @@ class RetellAppointmentBookingToolAdapter:
         hold_service: AppointmentHoldService,
         audit_logs: AuditLogService,
         email_jobs: EmailJobService,
+        email_job_dispatch: EmailJobDispatchPublisher,
     ) -> None:
         self.db = db
         self.booking_service = booking_service
         self.hold_service = hold_service
         self.audit_logs = audit_logs
         self.email_jobs = email_jobs
+        self.email_job_dispatch = email_job_dispatch
 
     def book_appointment(
         self,
@@ -97,7 +105,7 @@ class RetellAppointmentBookingToolAdapter:
                 ),
             )
 
-            self.email_jobs.enqueue_appointment_confirmation(
+            email_job = self.email_jobs.enqueue_appointment_confirmation(
                 AppointmentConfirmationEmailJobCreate(
                     appointment_id=appointment.id,
                     patient_id=payload.patient_id,
@@ -113,6 +121,18 @@ class RetellAppointmentBookingToolAdapter:
 
             self.db.commit()
             self.db.refresh(appointment)
+
+            try:
+                self.email_job_dispatch.publish_email_job_ready(email_job_id=email_job.id)
+            except EmailJobDispatchPublisherError:
+                logger.warning(
+                    "email_job_dispatch_publish_failed",
+                    extra={
+                        "event": "email_job_dispatch_publish_failed",
+                        "email_job_id": str(email_job.id),
+                        "appointment_id": str(appointment.id),
+                    },
+                )
 
             self.hold_service.release_hold(
                 doctor_id=hold.doctor_id,
