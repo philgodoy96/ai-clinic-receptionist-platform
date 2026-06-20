@@ -128,10 +128,13 @@ Goals:
 Implemented:
 
 - Email job debug API with cursor pagination
+- Manual retry/replay endpoint
 
 Future work:
 
-- Manual retry/replay endpoint
+- Admin auth/RBAC before public deployment
+- Provider-level idempotency keys
+- Job metrics dashboard
 
 ## Stage 9 — Observability
 
