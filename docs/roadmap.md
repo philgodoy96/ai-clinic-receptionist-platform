@@ -109,12 +109,14 @@ Implemented:
 - Conversation and message persistence via `Conversation` and `ConversationMessage`
 - Scheduling-aware chat flow with read-only specialty and doctor responses
 - Chat availability guidance
+- Chat appointment hold flow
 
 Upcoming:
 
-- Chat appointment hold flow
 - Chat booking confirmation flow
+- Patient identity collection/validation
 - Fake LLM provider
+- Hold expiration handling in chat
 - Natural-language date parsing
 
 ## Stage 7 — Retell Tool Integration
