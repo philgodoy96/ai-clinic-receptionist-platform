@@ -87,7 +87,7 @@ class RetellAppointmentBookingToolAdapter:
                     patient_id=payload.patient_id,
                     appointment_id=appointment.id,
                     availability_slot_id=payload.availability_slot_id,
-                    metadata={"hold_id": str(payload.hold_id)},
+                    event_metadata={"hold_id": str(payload.hold_id)},
                 ),
             )
 
@@ -191,7 +191,7 @@ class RetellAppointmentBookingToolAdapter:
                 conversation_id=payload.conversation_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": reason,
                 },

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from collections.abc import Sequence
+from uuid import UUID, uuid4
 
 from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
 from app.models.audit import AuditLog
+from app.services.audit_log_pagination import AuditLogCursor
 from app.services.audit_logs import AuditLogCreate, AuditLogService
 
 
@@ -25,7 +27,7 @@ def test_audit_log_service_records_booking_event() -> None:
             patient_id=patient_id,
             appointment_id=appointment_id,
             availability_slot_id=slot_id,
-            metadata={"hold_id": str(uuid4())},
+            event_metadata={"hold_id": str(uuid4())},
         ),
     )
 
@@ -50,7 +52,7 @@ def test_audit_log_service_records_failure_reason_metadata() -> None:
             actor_type=AuditActorType.API,
             actor_id="chat-123",
             source="scheduling_api",
-            metadata={"reason": "slot_already_held"},
+            event_metadata={"reason": "slot_already_held"},
         ),
     )
 
@@ -66,3 +68,19 @@ class FakeAuditLogRepository:
         self.audit_logs.append(audit_log)
 
         return audit_log
+
+    def list_recent(
+        self,
+        *,
+        limit: int,
+        cursor: AuditLogCursor | None = None,
+        event_type: AuditEventType | None = None,
+        outcome: AuditEventOutcome | None = None,
+        actor_type: AuditActorType | None = None,
+        source: str | None = None,
+        patient_id: UUID | None = None,
+        appointment_id: UUID | None = None,
+        call_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> Sequence[AuditLog]:
+        return self.audit_logs[:limit]

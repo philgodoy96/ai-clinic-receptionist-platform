@@ -209,7 +209,7 @@ def hold_appointment_slot(
                 source=SCHEDULING_API_SOURCE,
                 actor_id=payload.owner_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={"reason": "availability_slot_not_found"},
+                event_metadata={"reason": "availability_slot_not_found"},
             ),
         )
         raise HTTPException(
@@ -227,7 +227,7 @@ def hold_appointment_slot(
                 source=SCHEDULING_API_SOURCE,
                 actor_id=payload.owner_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={"reason": "availability_slot_unavailable"},
+                event_metadata={"reason": "availability_slot_unavailable"},
             ),
         )
         raise HTTPException(
@@ -245,7 +245,7 @@ def hold_appointment_slot(
                 source=SCHEDULING_API_SOURCE,
                 actor_id=payload.owner_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={"reason": "slot_already_held"},
+                event_metadata={"reason": "slot_already_held"},
             ),
         )
         raise HTTPException(
@@ -263,7 +263,7 @@ def hold_appointment_slot(
                 source=SCHEDULING_API_SOURCE,
                 actor_id=payload.owner_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={"reason": "invalid_appointment_hold"},
+                event_metadata={"reason": "invalid_appointment_hold"},
             ),
         )
         raise HTTPException(
@@ -281,7 +281,7 @@ def hold_appointment_slot(
             source=SCHEDULING_API_SOURCE,
             actor_id=payload.owner_id,
             availability_slot_id=hold.availability_slot_id,
-            metadata={
+            event_metadata={
                 "hold_id": str(hold.hold_id),
                 "doctor_id": str(hold.doctor_id),
             },
@@ -337,7 +337,7 @@ def book_appointment(
                 patient_id=payload.patient_id,
                 appointment_id=appointment.id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={"hold_id": str(payload.hold_id)},
+                event_metadata={"hold_id": str(payload.hold_id)},
             ),
         )
 
@@ -364,7 +364,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "appointment_conflict",
                 },
@@ -387,7 +387,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "patient_not_found",
                 },
@@ -410,7 +410,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "doctor_not_found",
                 },
@@ -433,7 +433,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "availability_slot_not_found",
                 },
@@ -456,7 +456,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "availability_slot_unavailable",
                 },
@@ -479,7 +479,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "slot_already_booked",
                 },
@@ -502,7 +502,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "missing_booking_owner",
                 },
@@ -525,7 +525,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "appointment_hold_expired",
                 },
@@ -548,7 +548,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "appointment_hold_mismatch",
                 },
@@ -571,7 +571,7 @@ def book_appointment(
                 actor_id=payload.owner_id,
                 patient_id=payload.patient_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(payload.hold_id),
                     "reason": "appointment_hold_owner_mismatch",
                 },
