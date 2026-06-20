@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -7,6 +8,33 @@ from uuid import UUID
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
 from app.repositories.email_jobs import EmailJobRepository
+from app.services.email_job_pagination import (
+    EmailJobCursor,
+    decode_email_job_cursor,
+    encode_email_job_cursor,
+)
+
+
+class EmailJobNotFoundError(LookupError):
+    """Raised when an email job cannot be found."""
+
+
+class InvalidEmailJobLimitError(ValueError):
+    """Raised when an email job page size is invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmailJobListFilters:
+    job_type: EmailJobType | None = None
+    status: EmailJobStatus | None = None
+    appointment_id: UUID | None = None
+    patient_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmailJobListResult:
+    items: Sequence[EmailJob]
+    next_cursor: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +77,54 @@ class EmailJobService:
         )
 
         return self.repository.add(email_job)
+
+    def get_email_job(self, email_job_id: UUID) -> EmailJob:
+        email_job = self.repository.get_by_id(email_job_id)
+
+        if email_job is None:
+            raise EmailJobNotFoundError(f"email job not found: {email_job_id}")
+
+        return email_job
+
+    def list_email_jobs(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        filters: EmailJobListFilters | None = None,
+    ) -> EmailJobListResult:
+        if limit < 1 or limit > 100:
+            raise InvalidEmailJobLimitError("limit must be between 1 and 100")
+
+        decoded_cursor = decode_email_job_cursor(cursor) if cursor is not None else None
+        normalized_filters = filters or EmailJobListFilters()
+        fetched_items = list(
+            self.repository.list_recent(
+                limit=limit + 1,
+                cursor=decoded_cursor,
+                job_type=normalized_filters.job_type,
+                status=normalized_filters.status,
+                appointment_id=normalized_filters.appointment_id,
+                patient_id=normalized_filters.patient_id,
+            ),
+        )
+
+        items = fetched_items[:limit]
+        next_cursor = None
+
+        if len(fetched_items) > limit and items:
+            last_item = items[-1]
+            next_cursor = encode_email_job_cursor(
+                EmailJobCursor(
+                    created_at=last_item.created_at,
+                    id=last_item.id,
+                ),
+            )
+
+        return EmailJobListResult(
+            items=items,
+            next_cursor=next_cursor,
+        )
 
     def _build_confirmation_body(
         self,

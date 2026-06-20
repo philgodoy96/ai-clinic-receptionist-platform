@@ -1,10 +1,13 @@
+from collections.abc import Sequence
 from datetime import datetime, timedelta
+from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
-from app.domain.jobs.enums import EmailJobStatus
+from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
+from app.services.email_job_pagination import EmailJobCursor
 
 
 class SQLAlchemyEmailJobRepository:
@@ -16,6 +19,51 @@ class SQLAlchemyEmailJobRepository:
         self.session.flush()
 
         return email_job
+
+    def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
+        return self.session.get(EmailJob, email_job_id)
+
+    def list_recent(
+        self,
+        *,
+        limit: int,
+        cursor: EmailJobCursor | None = None,
+        job_type: EmailJobType | None = None,
+        status: EmailJobStatus | None = None,
+        appointment_id: UUID | None = None,
+        patient_id: UUID | None = None,
+    ) -> Sequence[EmailJob]:
+        statement = select(EmailJob)
+
+        if cursor is not None:
+            statement = statement.where(
+                or_(
+                    EmailJob.created_at < cursor.created_at,
+                    and_(
+                        EmailJob.created_at == cursor.created_at,
+                        EmailJob.id < cursor.id,
+                    ),
+                ),
+            )
+
+        if job_type is not None:
+            statement = statement.where(EmailJob.job_type == job_type)
+
+        if status is not None:
+            statement = statement.where(EmailJob.status == status)
+
+        if appointment_id is not None:
+            statement = statement.where(EmailJob.appointment_id == appointment_id)
+
+        if patient_id is not None:
+            statement = statement.where(EmailJob.patient_id == patient_id)
+
+        statement = statement.order_by(
+            desc(EmailJob.created_at),
+            desc(EmailJob.id),
+        ).limit(limit)
+
+        return list(self.session.scalars(statement).all())
 
     def claim_next_available(
         self,
