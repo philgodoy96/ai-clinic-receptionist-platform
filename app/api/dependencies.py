@@ -16,6 +16,7 @@ from app.messaging.email_job_dispatch import (
 )
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
+from app.repositories.sqlalchemy.conversations import SQLAlchemyConversationRepository
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
 from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyAppointmentRepository,
@@ -27,6 +28,7 @@ from app.repositories.sqlalchemy.scheduling import (
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
+from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
 from app.services.scheduling import SchedulingService
 
@@ -80,6 +82,14 @@ def get_email_job_service(
 ) -> EmailJobService:
     return EmailJobService(
         repository=SQLAlchemyEmailJobRepository(db),
+    )
+
+
+def get_conversation_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> ConversationService:
+    return ConversationService(
+        repository=SQLAlchemyConversationRepository(db),
     )
 
 

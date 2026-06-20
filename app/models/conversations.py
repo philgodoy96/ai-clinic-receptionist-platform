@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -68,7 +68,7 @@ class Conversation(Base):
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     conversation_metadata: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
+        JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,
         default=dict,
     )
@@ -124,7 +124,7 @@ class ConversationMessage(Base):
     tool_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     message_metadata: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
+        JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,
         default=dict,
     )
