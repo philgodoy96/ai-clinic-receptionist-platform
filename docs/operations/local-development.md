@@ -14,7 +14,7 @@ RabbitMQ Management UI:
 
 Default credentials:
 
-    guest / guest
+    clinic / clinic
 
 ## Start Services
 
@@ -52,7 +52,7 @@ When true, the API publishes a RabbitMQ dispatch message after booking commits.
 
 RabbitMQ URL:
 
-    RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+    RABBITMQ_URL=amqp://clinic:clinic@localhost:5672/
 
 Queue name:
 
