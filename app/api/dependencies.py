@@ -9,6 +9,11 @@ from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.cache.redis import get_redis_client
 from app.core.config import get_settings
 from app.db.session import get_db
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisher,
+    NoopEmailJobDispatchPublisher,
+    RabbitMQEmailJobDispatchPublisher,
+)
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
@@ -75,6 +80,18 @@ def get_email_job_service(
 ) -> EmailJobService:
     return EmailJobService(
         repository=SQLAlchemyEmailJobRepository(db),
+    )
+
+
+def get_email_job_dispatch_publisher() -> EmailJobDispatchPublisher:
+    settings = get_settings()
+
+    if not settings.email_job_dispatch_enabled:
+        return NoopEmailJobDispatchPublisher()
+
+    return RabbitMQEmailJobDispatchPublisher(
+        rabbitmq_url=settings.rabbitmq_url,
+        queue_name=settings.email_job_queue_name,
     )
 
 
