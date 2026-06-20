@@ -124,6 +124,10 @@ def get_retell_appointment_booking_tool_adapter(
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
     email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
 ) -> RetellAppointmentBookingToolAdapter:
     return RetellAppointmentBookingToolAdapter(
         db=db,
@@ -131,4 +135,5 @@ def get_retell_appointment_booking_tool_adapter(
         hold_service=hold_service,
         audit_logs=audit_logs,
         email_jobs=email_jobs,
+        email_job_dispatch=email_job_dispatch,
     )
