@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
+from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.scheduling import (
     DoctorNotFoundError,
@@ -273,6 +274,10 @@ class FakePatientRepository:
         phone_number: str | None = None,
         email: str | None = None,
     ) -> Patient | None:
+        if phone_number is None and email is None:
+            return None
+
+        candidates: list[Patient] = []
         for patient in self.patients:
             if patient.full_name != full_name:
                 continue
@@ -280,16 +285,21 @@ class FakePatientRepository:
             if patient.date_of_birth != date_of_birth:
                 continue
 
-            if phone_number is not None and patient.phone_number != phone_number:
-                continue
-
             if email is not None and patient.email != email:
                 continue
 
-            if phone_number is None and email is None:
-                return None
+            candidates.append(patient)
 
-            return patient
+        if not candidates:
+            return None
+
+        if phone_number is None:
+            return candidates[0]
+
+        normalized_phone = normalize_phone_digits(phone_number)
+        for patient in candidates:
+            if normalize_phone_digits(patient.phone_number) == normalized_phone:
+                return patient
 
         return None
 
