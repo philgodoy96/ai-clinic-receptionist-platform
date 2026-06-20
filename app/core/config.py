@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         alias="APPOINTMENT_HOLD_TTL_SECONDS",
     )
     rabbitmq_url: str = Field(
-        default="amqp://guest:guest@localhost:5672/",
+        default="amqp://clinic:clinic@localhost:5672/",
         alias="RABBITMQ_URL",
     )
     email_job_queue_name: str = Field(default="email_jobs", alias="EMAIL_JOB_QUEUE_NAME")
