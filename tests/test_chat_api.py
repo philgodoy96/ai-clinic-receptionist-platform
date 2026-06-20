@@ -13,6 +13,7 @@ from app.main import create_app
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationCreate, ConversationService
 from tests.test_conversations import FakeConversationRepository
+from tests.test_scheduling_services import create_service
 
 
 @pytest.fixture()
@@ -20,7 +21,10 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
     app = create_app()
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
-    chat_service = ChatReceptionistService(conversations=conversation_service)
+    chat_service = ChatReceptionistService(
+        conversations=conversation_service,
+        scheduling=create_service(),
+    )
     db = FakeDatabaseSession()
 
     def override_chat_service() -> ChatReceptionistService:
