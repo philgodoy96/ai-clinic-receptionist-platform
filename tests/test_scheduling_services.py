@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
+from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.scheduling import (
     DoctorNotFoundError,
@@ -273,6 +274,10 @@ class FakePatientRepository:
         phone_number: str | None = None,
         email: str | None = None,
     ) -> Patient | None:
+        if phone_number is None and email is None:
+            return None
+
+        candidates: list[Patient] = []
         for patient in self.patients:
             if patient.full_name != full_name:
                 continue
@@ -280,16 +285,21 @@ class FakePatientRepository:
             if patient.date_of_birth != date_of_birth:
                 continue
 
-            if phone_number is not None and patient.phone_number != phone_number:
-                continue
-
             if email is not None and patient.email != email:
                 continue
 
-            if phone_number is None and email is None:
-                return None
+            candidates.append(patient)
 
-            return patient
+        if not candidates:
+            return None
+
+        if phone_number is None:
+            return candidates[0]
+
+        normalized_phone = normalize_phone_digits(phone_number)
+        for patient in candidates:
+            if normalize_phone_digits(patient.phone_number) == normalized_phone:
+                return patient
 
         return None
 
@@ -373,6 +383,9 @@ class FakeAppointmentRepository:
         return None
 
     def add(self, appointment: Appointment) -> Appointment:
+        if appointment.id is None:
+            appointment.id = uuid4()
+
         self.appointments.append(appointment)
 
         return appointment
@@ -419,7 +432,10 @@ EMILY_JULY_SLOT_1_ID = UUID("11111111-1111-4111-8111-111111111101")
 EMILY_JULY_SLOT_2_ID = UUID("11111111-1111-4111-8111-111111111102")
 
 
-def create_demo_scheduling_service_with_emily_july_availability() -> SchedulingService:
+def create_demo_scheduling_service_with_emily_july_availability(
+    *,
+    patients: Sequence[Patient] = (),
+) -> SchedulingService:
     dermatology = create_specialty(name="Dermatology")
     cardiology = create_specialty(name="Cardiology")
     primary_care = create_specialty(name="Primary Care")
@@ -468,6 +484,7 @@ def create_demo_scheduling_service_with_emily_july_availability() -> SchedulingS
     return create_service(
         specialties=[dermatology, cardiology, primary_care],
         doctors=doctors,
+        patients=patients,
         availability_slots=availability_slots,
     )
 
