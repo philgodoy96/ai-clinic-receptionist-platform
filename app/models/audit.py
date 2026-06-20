@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Index, String
+from sqlalchemy import JSON, DateTime, Index, String
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -49,7 +49,7 @@ class AuditLog(Base):
     availability_slot_id: Mapped[UUID | None] = mapped_column(nullable=True)
     event_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
-        JSONB,
+        JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,
         default=dict,
     )
