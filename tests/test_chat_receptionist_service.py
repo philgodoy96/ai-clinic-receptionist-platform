@@ -309,6 +309,21 @@ def test_dr_emily_carter_on_date_returns_availability_results(
     hold_mock.assert_not_called()
     booking_mock.assert_not_called()
 
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_doctor_id"] == str(_get_emily_carter(service).id)
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context["requested_date"] == "2026-07-02"
+    offered_slots = chat_context["offered_slots"]
+    assert len(offered_slots) == 2
+    assert offered_slots[0]["display_time"] == "09:00"
+    assert offered_slots[1]["display_time"] == "10:30"
+    for offered_slot in offered_slots:
+        assert offered_slot["availability_slot_id"]
+        assert offered_slot["doctor_id"] == str(_get_emily_carter(service).id)
+        assert offered_slot["start_time"]
+    assert result.assistant_message.message_metadata["availability_checked"] is True
+    assert result.assistant_message.message_metadata["offered_slot_count"] == 2
+
 
 def test_dermatology_on_date_auto_selects_doctor_and_returns_availability_results(
     availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
@@ -355,6 +370,11 @@ def test_date_with_no_slots_returns_availability_no_slots(
 
     assert result.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
     assert result.assistant_message.message_metadata["availability_checked"] is True
+    assert result.assistant_message.message_metadata["offered_slot_count"] == 0
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["offered_slots"] == []
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context["requested_date"] == "2026-07-03"
 
 
 def test_emergency_takes_priority_and_does_not_query_scheduling(

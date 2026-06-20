@@ -85,6 +85,7 @@ _AVAILABILITY_CONTEXT_INTENTS = frozenset(
         ChatReceptionistIntent.INVALID_DATE,
     }
 )
+_MAX_OFFERED_SLOTS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,7 @@ class ChatReceptionistReply:
     matched_specialty_name: str | None = None
     chat_context_updates: dict[str, Any] = field(default_factory=dict)
     availability_checked: bool = False
+    offered_slot_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +226,8 @@ class ChatReceptionistService:
             )
         if reply.availability_checked:
             assistant_metadata["availability_checked"] = True
+        if reply.offered_slot_count is not None:
+            assistant_metadata["offered_slot_count"] = reply.offered_slot_count
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -398,6 +402,8 @@ class ChatReceptionistService:
         doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
 
         if slots:
+            shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
+            offered_slots = self._serialize_offered_slots(shown_slots)
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
                 content=self._format_availability_slots(
@@ -405,8 +411,12 @@ class ChatReceptionistService:
                     doctor_name=doctor_name,
                     requested_date=str(requested_date),
                 ),
-                chat_context_updates=context_updates,
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                },
                 availability_checked=True,
+                offered_slot_count=len(offered_slots),
             )
 
         return ChatReceptionistReply(
@@ -415,8 +425,12 @@ class ChatReceptionistService:
                 f"I did not find open times for {doctor_name} on {requested_date}. "
                 "Please try another date or doctor."
             ),
-            chat_context_updates=context_updates,
+            chat_context_updates={
+                **context_updates,
+                "offered_slots": [],
+            },
             availability_checked=True,
+            offered_slot_count=0,
         )
 
     def _format_missing_doctor_prompt(self, merged_context: dict[str, Any]) -> str:
@@ -457,6 +471,20 @@ class ChatReceptionistService:
             start_to=start_to,
         )
 
+    def _serialize_offered_slots(
+        self,
+        slots: Sequence[AvailabilitySlot],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "availability_slot_id": str(slot.id),
+                "doctor_id": str(slot.doctor_id),
+                "start_time": slot.start_time.isoformat(),
+                "display_time": slot.start_time.strftime("%H:%M"),
+            }
+            for slot in slots
+        ]
+
     def _format_availability_slots(
         self,
         slots: Sequence[AvailabilitySlot],
@@ -464,13 +492,15 @@ class ChatReceptionistService:
         doctor_name: str,
         requested_date: str,
     ) -> str:
-        shown_slots = list(slots[:5])
+        shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
         times = [slot.start_time.strftime("%H:%M") for slot in shown_slots]
         times_text = self._join_names(times)
         suffix = ""
 
-        if len(slots) > 5:
-            suffix = f" There are {len(slots) - 5} more openings available."
+        if len(slots) > _MAX_OFFERED_SLOTS:
+            suffix = (
+                f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
+            )
 
         return (
             f"Open times for {doctor_name} on {requested_date}: {times_text}.{suffix} "
