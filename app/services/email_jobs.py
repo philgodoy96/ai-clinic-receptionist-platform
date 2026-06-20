@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -21,6 +22,14 @@ class EmailJobNotFoundError(LookupError):
 
 class InvalidEmailJobLimitError(ValueError):
     """Raised when an email job page size is invalid."""
+
+
+class InvalidEmailJobRetryStateError(ValueError):
+    """Raised when an email job cannot be manually retried."""
+
+
+class InvalidEmailJobReplayStateError(ValueError):
+    """Raised when an email job cannot be manually replayed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +133,44 @@ class EmailJobService:
         return EmailJobListResult(
             items=items,
             next_cursor=next_cursor,
+        )
+
+    def retry_failed_email_job(
+        self,
+        email_job_id: UUID,
+        now: datetime | None = None,
+    ) -> EmailJob:
+        email_job = self.get_email_job(email_job_id)
+
+        if email_job.status != EmailJobStatus.FAILED:
+            raise InvalidEmailJobRetryStateError(
+                f"email job cannot be retried from status: {email_job.status.value}",
+            )
+
+        effective_now = now if now is not None else datetime.now(UTC)
+
+        return self.repository.schedule_retry(
+            email_job=email_job,
+            now=effective_now,
+        )
+
+    def replay_dead_letter_email_job(
+        self,
+        email_job_id: UUID,
+        now: datetime | None = None,
+    ) -> EmailJob:
+        email_job = self.get_email_job(email_job_id)
+
+        if email_job.status != EmailJobStatus.DEAD_LETTER:
+            raise InvalidEmailJobReplayStateError(
+                f"email job cannot be replayed from status: {email_job.status.value}",
+            )
+
+        effective_now = now if now is not None else datetime.now(UTC)
+
+        return self.repository.create_replay(
+            original_email_job=email_job,
+            now=effective_now,
         )
 
     def _build_confirmation_body(
