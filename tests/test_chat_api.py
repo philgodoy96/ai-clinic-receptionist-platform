@@ -10,10 +10,9 @@ from app.api.dependencies import get_chat_receptionist_service
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationChannel
 from app.main import create_app
-from app.services.appointment_holds import AppointmentHoldService
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationCreate, ConversationService
-from tests.test_appointment_holds import FakeAppointmentHoldRepository
+from tests.test_chat_receptionist_service import FakeAppointmentHoldService
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
     create_demo_scheduling_service_with_emily_july_availability,
@@ -28,10 +27,7 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
     chat_service = ChatReceptionistService(
         conversations=conversation_service,
         scheduling=create_demo_scheduling_service_with_emily_july_availability(),
-        appointment_holds=AppointmentHoldService(
-            repository=FakeAppointmentHoldRepository(),
-            ttl_seconds=300,
-        ),
+        appointment_holds=FakeAppointmentHoldService(),
     )
     db = FakeDatabaseSession()
 
@@ -194,6 +190,36 @@ def test_post_chat_message_with_doctor_and_date_returns_availability_results(
     assert body["intent"] == "availability_results"
     assert "09:00" in body["reply"]
     assert "10:30" in body["reply"]
+
+
+def test_post_chat_message_hold_flow_returns_hold_created(
+    chat_client: ChatApiContext,
+) -> None:
+    availability_response = chat_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Dr. Emily Carter on 2026-07-02"},
+    )
+
+    assert availability_response.status_code == 200
+
+    availability_body = availability_response.json()
+    conversation_id = availability_body["conversation_id"]
+
+    hold_response = chat_client.client.post(
+        "/api/v1/chat/messages",
+        json={
+            "message": "I'll take 09:00",
+            "conversation_id": conversation_id,
+        },
+    )
+
+    assert hold_response.status_code == 200
+
+    hold_body = hold_response.json()
+
+    assert hold_body["conversation_id"] == conversation_id
+    assert hold_body["intent"] == "hold_created"
+    assert "09:00" in hold_body["reply"]
 
 
 def test_post_chat_message_with_invalid_date_returns_invalid_date_intent(

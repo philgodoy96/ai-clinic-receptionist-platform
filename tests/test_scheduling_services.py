@@ -415,6 +415,10 @@ def create_demo_scheduling_service() -> SchedulingService:
     )
 
 
+EMILY_JULY_SLOT_1_ID = UUID("11111111-1111-4111-8111-111111111101")
+EMILY_JULY_SLOT_2_ID = UUID("11111111-1111-4111-8111-111111111102")
+
+
 def create_demo_scheduling_service_with_emily_july_availability() -> SchedulingService:
     dermatology = create_specialty(name="Dermatology")
     cardiology = create_specialty(name="Cardiology")
@@ -448,11 +452,13 @@ def create_demo_scheduling_service_with_emily_july_availability() -> SchedulingS
     ]
     availability_slots = [
         create_availability_slot(
+            slot_id=EMILY_JULY_SLOT_1_ID,
             doctor_id=emily_carter.id,
             start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
+            slot_id=EMILY_JULY_SLOT_2_ID,
             doctor_id=emily_carter.id,
             start_time=datetime(2026, 7, 2, 10, 30, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
