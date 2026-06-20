@@ -31,3 +31,6 @@ class ConversationRepository(Protocol):
         limit: int,
     ) -> Sequence[ConversationMessage]:
         raise NotImplementedError
+
+    def update(self, conversation: Conversation) -> Conversation:
+        raise NotImplementedError

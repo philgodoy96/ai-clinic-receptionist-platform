@@ -54,3 +54,9 @@ class SQLAlchemyConversationRepository:
         )
 
         return list(self.session.scalars(statement).all())
+
+    def update(self, conversation: Conversation) -> Conversation:
+        self.session.add(conversation)
+        self.session.flush()
+
+        return conversation
