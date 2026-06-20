@@ -13,7 +13,9 @@ from app.main import create_app
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationCreate, ConversationService
 from tests.test_conversations import FakeConversationRepository
-from tests.test_scheduling_services import create_demo_scheduling_service
+from tests.test_scheduling_services import (
+    create_demo_scheduling_service_with_emily_july_availability,
+)
 
 
 @pytest.fixture()
@@ -23,7 +25,7 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
     conversation_service = ConversationService(repository=repository)
     chat_service = ChatReceptionistService(
         conversations=conversation_service,
-        scheduling=create_demo_scheduling_service(),
+        scheduling=create_demo_scheduling_service_with_emily_july_availability(),
     )
     db = FakeDatabaseSession()
 
@@ -169,6 +171,39 @@ def test_post_chat_message_with_dermatologist_request_returns_200_and_intent(
 
     assert body["intent"] == "specialty_doctors"
     assert "Dr. Emily Carter" in body["reply"]
+
+
+def test_post_chat_message_with_doctor_and_date_returns_availability_results(
+    chat_client: ChatApiContext,
+) -> None:
+    response = chat_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Dr. Emily Carter on 2026-07-02"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["intent"] == "availability_results"
+    assert "09:00" in body["reply"]
+    assert "10:30" in body["reply"]
+
+
+def test_post_chat_message_with_invalid_date_returns_invalid_date_intent(
+    chat_client: ChatApiContext,
+) -> None:
+    response = chat_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Dr. Emily Carter on 2026-99-99"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["intent"] == "invalid_date"
+    assert "YYYY-MM-DD" in body["reply"]
 
 
 def test_success_response_does_not_include_request_or_correlation_ids(
