@@ -34,7 +34,21 @@ If `conversation_id` is provided, the backend appends the message to the existin
       "user_message_id": "...",
       "assistant_message_id": "...",
       "intent": "appointment_request",
-      "reply": "I can help with appointment scheduling. Please tell me the specialty or doctor you would like to see."
+      "reply": "I can help with appointment scheduling. Please tell me the specialty or doctor you would like to see.",
+      "appointment_id": null,
+      "booking_confirmed": false
+    }
+
+When booking is confirmed, the response may include:
+
+    {
+      "conversation_id": "...",
+      "user_message_id": "...",
+      "assistant_message_id": "...",
+      "intent": "booking_confirmed",
+      "reply": "Your appointment with Dr. Emily Carter on 2026-07-02 at 09:00 has been booked. A confirmation email will be sent if an email address is available.",
+      "appointment_id": "...",
+      "booking_confirmed": true
     }
 
 ## Supported Intents
@@ -60,6 +74,12 @@ The deterministic responder currently supports:
 - hold_missing_availability
 - hold_slot_not_found
 - hold_conflict
+- booking_identity_missing
+- booking_confirmation_required
+- booking_confirmed
+- booking_hold_missing
+- booking_hold_expired
+- booking_conflict
 - fallback
 
 ## Scheduling-Aware Responses
@@ -84,7 +104,6 @@ This implementation is read-only for specialty and doctor listing.
 
 It does not:
 
-- book appointments
 - cancel appointments
 - reschedule appointments
 - call an LLM
@@ -117,10 +136,8 @@ This phase is read-only for availability lookup.
 
 It does not:
 
-- create appointments
-- confirm bookings
-- call an LLM
 - parse natural-language dates such as "tomorrow" or "next Monday"
+- call an LLM
 
 ## Appointment Holds
 
@@ -159,11 +176,64 @@ The API may return these intents:
 
 This phase does not:
 
-- create appointments
-- confirm bookings
-- send confirmation emails
+- send confirmation emails before booking is confirmed
 - call an LLM
-- collect full patient identity validation
+
+## Booking Confirmation
+
+After a temporary hold is created, the Chat API can confirm the booking when the user provides patient identity and explicit confirmation.
+
+Required patient identity fields:
+
+- full_name
+- date_of_birth
+- phone
+- email
+
+The current deterministic parser supports simple structured messages such as:
+
+    My name is Jane Doe, DOB 1990-01-15, phone +15551234567, email jane@example.com. Confirm.
+
+The API may return these intents:
+
+- booking_identity_missing
+- booking_confirmation_required
+- booking_confirmed
+- booking_hold_missing
+- booking_hold_expired
+- booking_conflict
+
+Booking confirmation:
+
+- validates an existing hold
+- creates a durable appointment
+- releases the temporary hold after commit
+- creates a confirmation email job
+- publishes email dispatch after commit when enabled
+
+This implementation still does not use an LLM.
+
+Example flow after a hold is created:
+
+1. User provides patient identity:
+
+    {
+      "conversation_id": "...",
+      "message": "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"
+    }
+
+2. Assistant asks for explicit confirmation (`booking_confirmation_required`).
+
+3. User confirms:
+
+    {
+      "conversation_id": "...",
+      "message": "Please confirm."
+    }
+
+4. Assistant confirms the booking (`booking_confirmed`).
+
+Booking-related assistant outcomes return HTTP 200 because they are conversation results, not API protocol errors.
 
 ## Error Responses
 
@@ -182,7 +252,6 @@ Examples:
 This implementation does not yet include:
 
 - LLM understanding
-- Appointment booking from chat
 - Appointment cancellation from chat
 - Appointment rescheduling from chat
 - Natural-language date parsing
