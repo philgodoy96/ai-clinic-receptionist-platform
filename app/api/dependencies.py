@@ -28,6 +28,7 @@ from app.repositories.sqlalchemy.scheduling import (
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
+from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
 from app.services.scheduling import SchedulingService
@@ -91,6 +92,15 @@ def get_conversation_service(
     return ConversationService(
         repository=SQLAlchemyConversationRepository(db),
     )
+
+
+def get_chat_receptionist_service(
+    conversation_service: Annotated[
+        ConversationService,
+        Depends(get_conversation_service),
+    ],
+) -> ChatReceptionistService:
+    return ChatReceptionistService(conversations=conversation_service)
 
 
 def get_email_job_dispatch_publisher() -> EmailJobDispatchPublisher:
