@@ -4,6 +4,8 @@
 
 Appointment booking creates a durable pending email job.
 
+The scheduling API, Retell booking tool, and chat booking confirmation flow can all enqueue appointment confirmation email jobs after a booking is committed.
+
 The email job worker processes those jobs asynchronously.
 
 This keeps the booking request fast and avoids coupling user-facing latency to email provider availability.

@@ -110,14 +110,15 @@ Implemented:
 - Scheduling-aware chat flow with read-only specialty and doctor responses
 - Chat availability guidance
 - Chat appointment hold flow
+- Chat booking confirmation flow with patient identity parsing and confirmation email enqueue
 
 Upcoming:
 
-- Chat booking confirmation flow
-- Patient identity collection/validation
 - Fake LLM provider
-- Hold expiration handling in chat
+- Structured output parser
 - Natural-language date parsing
+- Human escalation
+- Hold expiration handling in chat
 
 ## Stage 7 — Retell Tool Integration
 
