@@ -6,9 +6,13 @@ The Email Job Debug API exposes operational state for durable confirmation email
 
 It is intended for local development, debugging, and future admin/operator workflows.
 
-This API currently does not include authentication or RBAC because the project is still in local/demo mode.
+## Security Boundary
 
-Production hardening should protect this endpoint.
+This endpoint is intended for local development and portfolio demonstration.
+
+It currently does not include authentication or RBAC.
+
+In a production deployment, this endpoint must be protected behind admin authentication, role-based authorization, and network-level access controls.
 
 ## Endpoints
 
@@ -19,6 +23,14 @@ List jobs:
 Get one job:
 
     GET /api/v1/email-jobs/{email_job_id}
+
+Retry failed job:
+
+    POST /api/v1/email-jobs/{email_job_id}/retry
+
+Replay dead-letter job:
+
+    POST /api/v1/email-jobs/{email_job_id}/replay
 
 ## Pagination
 
@@ -64,6 +76,42 @@ Examples:
     GET /api/v1/email-jobs?status=dead_letter
 
     GET /api/v1/email-jobs?job_type=appointment_confirmation
+
+## Manual Controls
+
+Retry failed job:
+
+    POST /api/v1/email-jobs/{email_job_id}/retry
+
+Replay dead-letter job:
+
+    POST /api/v1/email-jobs/{email_job_id}/replay
+
+Retry is only valid for jobs with status `failed`.
+
+Replay is only valid for jobs with status `dead_letter`.
+
+Retry reuses the same job and schedules it for another attempt.
+
+Replay creates a new pending job and preserves the original dead-letter job for investigation.
+
+## Retry vs Replay
+
+Retry:
+
+- Applies to failed jobs
+- Reuses the same job ID
+- Preserves attempts
+- Preserves last_error until the next successful send
+- Schedules the job immediately
+
+Replay:
+
+- Applies to dead_letter jobs
+- Creates a new job
+- Preserves the original dead_letter job
+- Resets attempts to 0
+- Adds replay metadata to payload
 
 ## Response Fields
 
@@ -118,7 +166,5 @@ This endpoint does not yet include:
 - Authentication
 - Role-based authorization
 - Admin UI
-- Manual retry endpoint
-- Manual dead-letter replay endpoint
 - Export support
 - Date range filters
