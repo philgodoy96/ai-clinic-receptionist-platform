@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
@@ -6,9 +7,15 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import (
     get_appointment_hold_service,
     get_chat_receptionist_service,
+    get_email_job_dispatch_publisher,
+    get_email_job_service,
 )
 from app.api.errors import APIError
 from app.db.session import get_db
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisher,
+    EmailJobDispatchPublisherError,
+)
 from app.schemas.chat import ChatMessageRequest, ChatMessageResponse
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.chat_receptionist import ChatMessageInput, ChatReceptionistService
@@ -16,8 +23,15 @@ from app.services.conversations import (
     ConversationNotFoundError,
     InvalidConversationMessageError,
 )
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
+
+CHAT_BOOKING_SOURCE = "chat_booking"
+logger = logging.getLogger("app.chat")
 
 
 @router.post(
@@ -29,8 +43,15 @@ def send_chat_message(
     payload: ChatMessageRequest,
     service: Annotated[ChatReceptionistService, Depends(get_chat_receptionist_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
     db: Annotated[Session, Depends(get_db)],
 ) -> ChatMessageResponse:
+    confirmation_email_job_id = None
+
     try:
         result = service.handle_message(
             ChatMessageInput(
@@ -40,14 +61,70 @@ def send_chat_message(
                 conversation_metadata=payload.conversation_metadata,
             ),
         )
+
+        if (
+            result.booking_confirmed
+            and result.appointment_id is not None
+            and result.booked_patient_id is not None
+            and result.booked_appointment_start_time is not None
+        ):
+            email_job = email_jobs.enqueue_appointment_confirmation(
+                AppointmentConfirmationEmailJobCreate(
+                    appointment_id=result.appointment_id,
+                    patient_id=result.booked_patient_id,
+                    appointment_start_time=result.booked_appointment_start_time.isoformat(),
+                    payload={
+                        "source": CHAT_BOOKING_SOURCE,
+                        "hold_id": result.hold_id_to_release,
+                        "conversation_id": str(result.conversation.id),
+                    },
+                ),
+            )
+            confirmation_email_job_id = email_job.id
+
         db.commit()
 
-        if result.pending_hold_release is not None:
-            hold_service.release_hold(
-                doctor_id=result.pending_hold_release.doctor_id,
-                start_time=result.pending_hold_release.start_time,
-                owner_id=result.pending_hold_release.owner_id,
-            )
+        if result.hold_id_to_release and result.pending_hold_release is not None:
+            try:
+                hold_service.release_hold(
+                    doctor_id=result.pending_hold_release.doctor_id,
+                    start_time=result.pending_hold_release.start_time,
+                    owner_id=result.pending_hold_release.owner_id,
+                )
+            except Exception:
+                logger.warning(
+                    "chat_hold_release_failed",
+                    extra={
+                        "event": "chat_hold_release_failed",
+                        "source": CHAT_BOOKING_SOURCE,
+                        "hold_id": result.hold_id_to_release,
+                        "appointment_id": (
+                            str(result.appointment_id)
+                            if result.appointment_id is not None
+                            else None
+                        ),
+                    },
+                )
+
+        if confirmation_email_job_id is not None:
+            try:
+                email_job_dispatch.publish_email_job_ready(
+                    email_job_id=confirmation_email_job_id,
+                )
+            except EmailJobDispatchPublisherError:
+                logger.warning(
+                    "email_job_dispatch_publish_failed",
+                    extra={
+                        "event": "email_job_dispatch_publish_failed",
+                        "source": CHAT_BOOKING_SOURCE,
+                        "email_job_id": str(confirmation_email_job_id),
+                        "appointment_id": (
+                            str(result.appointment_id)
+                            if result.appointment_id is not None
+                            else None
+                        ),
+                    },
+                )
     except ConversationNotFoundError as exc:
         db.rollback()
         raise APIError(
@@ -72,4 +149,6 @@ def send_chat_message(
         assistant_message_id=result.assistant_message.id,
         intent=result.intent,
         reply=result.reply,
+        appointment_id=result.appointment_id,
+        booking_confirmed=result.booking_confirmed,
     )

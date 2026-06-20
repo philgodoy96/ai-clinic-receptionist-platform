@@ -243,6 +243,9 @@ class ChatReceptionistReply:
     hold_id: str | None = None
     appointment_id: str | None = None
     booking_attempted: bool = False
+    booking_confirmed: bool = False
+    booked_patient_id: UUID | None = None
+    booked_appointment_start_time: datetime | None = None
     pending_hold_release: PendingHoldRelease | None = None
 
 
@@ -261,6 +264,12 @@ class ChatMessageResult:
     assistant_message: ConversationMessage
     intent: ChatReceptionistIntent
     reply: str
+    appointment_id: UUID | None = None
+    confirmation_email_job_id: UUID | None = None
+    hold_id_to_release: str | None = None
+    booking_confirmed: bool = False
+    booked_patient_id: UUID | None = None
+    booked_appointment_start_time: datetime | None = None
     pending_hold_release: PendingHoldRelease | None = None
 
 
@@ -393,6 +402,8 @@ class ChatReceptionistService:
             assistant_metadata["appointment_id"] = reply.appointment_id
         if reply.booking_attempted:
             assistant_metadata["booking_attempted"] = True
+        if reply.booking_confirmed:
+            assistant_metadata["booking_confirmed"] = True
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -403,12 +414,22 @@ class ChatReceptionistService:
             ),
         )
 
+        booking_confirmed = reply.booking_confirmed
+        appointment_id = (
+            UUID(reply.appointment_id) if reply.appointment_id is not None else None
+        )
+
         return ChatMessageResult(
             conversation=conversation,
             user_message=user_message,
             assistant_message=assistant_message,
             intent=reply.intent,
             reply=reply.content,
+            appointment_id=appointment_id,
+            hold_id_to_release=reply.hold_id if booking_confirmed else None,
+            booking_confirmed=booking_confirmed,
+            booked_patient_id=reply.booked_patient_id,
+            booked_appointment_start_time=reply.booked_appointment_start_time,
             pending_hold_release=reply.pending_hold_release,
         )
 
@@ -975,6 +996,9 @@ class ChatReceptionistService:
             hold_id=hold_id,
             appointment_id=str(appointment.id),
             booking_attempted=True,
+            booking_confirmed=True,
+            booked_patient_id=patient.id,
+            booked_appointment_start_time=appointment.start_time,
             pending_hold_release=PendingHoldRelease(
                 doctor_id=hold.doctor_id,
                 start_time=hold.start_time,
