@@ -123,6 +123,56 @@ def test_list_messages_enforces_limit() -> None:
         service.list_messages(conversation_id=conversation.id, limit=101)
 
 
+def test_merge_conversation_metadata_preserves_existing_keys_and_adds_new_keys() -> None:
+    repository = FakeConversationRepository()
+    service = ConversationService(repository=repository)
+    conversation = service.create_conversation(
+        ConversationCreate(
+            channel=ConversationChannel.CHAT,
+            conversation_metadata={"source": "test", "locale": "pt-BR"},
+        ),
+    )
+
+    updated = service.merge_conversation_metadata(
+        conversation_id=conversation.id,
+        metadata={"intent": "scheduling", "locale": "en-US"},
+    )
+
+    assert updated.conversation_metadata == {
+        "source": "test",
+        "locale": "en-US",
+        "intent": "scheduling",
+    }
+
+
+def test_merge_chat_context_merges_nested_chat_context_without_dropping_source() -> None:
+    repository = FakeConversationRepository()
+    service = ConversationService(repository=repository)
+    conversation = service.create_conversation(
+        ConversationCreate(
+            channel=ConversationChannel.CHAT,
+            conversation_metadata={
+                "source": "test",
+                "chat_context": {"patient_name": "Ana", "visit_reason": "checkup"},
+            },
+        ),
+    )
+
+    updated = service.merge_chat_context(
+        conversation_id=conversation.id,
+        chat_context={"preferred_time": "morning", "visit_reason": "follow-up"},
+    )
+
+    assert updated.conversation_metadata == {
+        "source": "test",
+        "chat_context": {
+            "patient_name": "Ana",
+            "visit_reason": "follow-up",
+            "preferred_time": "morning",
+        },
+    }
+
+
 def test_close_conversation_sets_status_and_ended_at() -> None:
     repository = FakeConversationRepository()
     service = ConversationService(repository=repository)
@@ -192,3 +242,6 @@ class FakeConversationRepository:
         ]
 
         return messages[:limit]
+
+    def update(self, conversation: Conversation) -> Conversation:
+        return conversation

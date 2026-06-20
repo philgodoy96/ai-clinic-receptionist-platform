@@ -130,3 +130,35 @@ class ConversationService:
         conversation.updated_at = datetime.now(UTC)
 
         return conversation
+
+    def merge_conversation_metadata(
+        self,
+        *,
+        conversation_id: UUID,
+        metadata: dict[str, Any],
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        conversation.conversation_metadata = {
+            **conversation.conversation_metadata,
+            **metadata,
+        }
+        conversation.updated_at = datetime.now(UTC)
+        return self.repository.update(conversation)
+
+    def merge_chat_context(
+        self,
+        *,
+        conversation_id: UUID,
+        chat_context: dict[str, Any],
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        existing_context = conversation.conversation_metadata.get("chat_context", {})
+        conversation.conversation_metadata = {
+            **conversation.conversation_metadata,
+            "chat_context": {
+                **existing_context,
+                **chat_context,
+            },
+        }
+        conversation.updated_at = datetime.now(UTC)
+        return self.repository.update(conversation)
