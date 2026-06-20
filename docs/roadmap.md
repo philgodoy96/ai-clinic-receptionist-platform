@@ -94,7 +94,7 @@ Goals:
 
 ## Stage 6 — Chat Channel
 
-Status: Planned
+Status: In progress
 
 Goals:
 
@@ -102,6 +102,16 @@ Goals:
 - Add FakeLLMProvider
 - Persist conversations and messages
 - Add guardrail-aware tool decisions
+
+Implemented:
+
+- Chat API foundation (`POST /api/v1/chat/messages`) with deterministic receptionist responses
+- Conversation and message persistence via `Conversation` and `ConversationMessage`
+
+Upcoming:
+
+- Scheduling-aware chat flow
+- Fake LLM provider
 
 ## Stage 7 — Retell Tool Integration
 

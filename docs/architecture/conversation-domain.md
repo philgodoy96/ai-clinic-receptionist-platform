@@ -2,7 +2,9 @@
 
 ## Context
 
-The AI Clinic Receptionist Platform needs durable conversation storage before introducing chat orchestration and LLM behavior.
+The AI Clinic Receptionist Platform needs durable conversation storage for chat orchestration and future LLM behavior.
+
+The Chat API already uses `Conversation` and `ConversationMessage` to record each user turn and deterministic assistant reply.
 
 Conversation records are used to preserve interaction history across:
 
@@ -112,6 +114,8 @@ Future transcript storage should be reviewed carefully before storing raw full t
 
 This implementation does not include LLM orchestration.
 
+The Chat API (`POST /api/v1/chat/messages`) persists interaction history through `Conversation` and `ConversationMessage` records. Each request creates or reuses a conversation, stores the user message with role `user`, generates a deterministic assistant reply, and stores that reply with role `assistant`.
+
 The future LLM layer should use conversation storage as context, but it should not own business rules.
 
 Business rules remain in deterministic services.
@@ -120,9 +124,9 @@ Business rules remain in deterministic services.
 
 Planned future implementation phases include:
 
-- Chat API
-- Deterministic receptionist flow
+- Scheduling-aware chat flow
 - Fake LLM provider
+- Deterministic receptionist flow
 - Conversation state machine
 - Slot filling
 - Retell webhook ingestion
