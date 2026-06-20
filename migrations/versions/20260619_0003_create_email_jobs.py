@@ -16,46 +16,31 @@ down_revision: str | None = "20260619_0002"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-
-EMAIL_JOB_TYPE_VALUES = (
+email_job_type_enum = postgresql.ENUM(
     "appointment_confirmation",
+    name="email_job_type",
+    create_type=False,
 )
-
-EMAIL_JOB_STATUS_VALUES = (
+email_job_status_enum = postgresql.ENUM(
     "pending",
     "processing",
     "sent",
     "failed",
     "dead_letter",
+    name="email_job_status",
+    create_type=False,
 )
 
 
 def upgrade() -> None:
-    email_job_type = postgresql.ENUM(
-        *EMAIL_JOB_TYPE_VALUES,
-        name="email_job_type",
-    )
-    email_job_status = postgresql.ENUM(
-        *EMAIL_JOB_STATUS_VALUES,
-        name="email_job_status",
-    )
-
-    email_job_type.create(op.get_bind(), checkfirst=True)
-    email_job_status.create(op.get_bind(), checkfirst=True)
+    email_job_type_enum.create(op.get_bind(), checkfirst=True)
+    email_job_status_enum.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "email_jobs",
         sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column(
-            "job_type",
-            sa.Enum(*EMAIL_JOB_TYPE_VALUES, name="email_job_type"),
-            nullable=False,
-        ),
-        sa.Column(
-            "status",
-            sa.Enum(*EMAIL_JOB_STATUS_VALUES, name="email_job_status"),
-            nullable=False,
-        ),
+        sa.Column("job_type", email_job_type_enum, nullable=False),
+        sa.Column("status", email_job_status_enum, nullable=False),
         sa.Column("appointment_id", sa.Uuid(), nullable=False),
         sa.Column("patient_id", sa.Uuid(), nullable=False),
         sa.Column("recipient_email", sa.String(length=255), nullable=True),
@@ -109,6 +94,5 @@ def downgrade() -> None:
     op.drop_index("ix_email_jobs_locked_until", table_name="email_jobs")
     op.drop_index("ix_email_jobs_status_scheduled_for", table_name="email_jobs")
     op.drop_table("email_jobs")
-
-    postgresql.ENUM(name="email_job_status").drop(op.get_bind(), checkfirst=True)
-    postgresql.ENUM(name="email_job_type").drop(op.get_bind(), checkfirst=True)
+    email_job_status_enum.drop(op.get_bind(), checkfirst=True)
+    email_job_type_enum.drop(op.get_bind(), checkfirst=True)
