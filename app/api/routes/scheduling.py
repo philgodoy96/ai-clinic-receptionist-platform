@@ -11,6 +11,7 @@ from app.api.dependencies import (
     get_appointment_booking_service,
     get_appointment_hold_service,
     get_audit_log_service,
+    get_email_job_service,
     get_scheduling_service,
 )
 from app.db.session import get_db
@@ -48,6 +49,10 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldWindowError,
 )
 from app.services.audit_logs import AuditLogCreate, AuditLogService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
@@ -313,6 +318,7 @@ def book_appointment(
     ],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
 ) -> Appointment:
     try:
         result = booking_service.book_appointment(
@@ -339,6 +345,18 @@ def book_appointment(
                 availability_slot_id=payload.availability_slot_id,
                 event_metadata={"hold_id": str(payload.hold_id)},
             ),
+        )
+
+        email_jobs.enqueue_appointment_confirmation(
+            AppointmentConfirmationEmailJobCreate(
+                appointment_id=appointment.id,
+                patient_id=payload.patient_id,
+                appointment_start_time=appointment.start_time.isoformat(),
+                payload={
+                    "source": "scheduling_api",
+                    "hold_id": str(payload.hold_id),
+                },
+            )
         )
 
         db.commit()
