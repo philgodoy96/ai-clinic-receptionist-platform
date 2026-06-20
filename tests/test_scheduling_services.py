@@ -419,7 +419,10 @@ EMILY_JULY_SLOT_1_ID = UUID("11111111-1111-4111-8111-111111111101")
 EMILY_JULY_SLOT_2_ID = UUID("11111111-1111-4111-8111-111111111102")
 
 
-def create_demo_scheduling_service_with_emily_july_availability() -> SchedulingService:
+def create_demo_scheduling_service_with_emily_july_availability(
+    *,
+    patients: Sequence[Patient] = (),
+) -> SchedulingService:
     dermatology = create_specialty(name="Dermatology")
     cardiology = create_specialty(name="Cardiology")
     primary_care = create_specialty(name="Primary Care")
@@ -468,6 +471,7 @@ def create_demo_scheduling_service_with_emily_july_availability() -> SchedulingS
     return create_service(
         specialties=[dermatology, cardiology, primary_care],
         doctors=doctors,
+        patients=patients,
         availability_slots=availability_slots,
     )
 

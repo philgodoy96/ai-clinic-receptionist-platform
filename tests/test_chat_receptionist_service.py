@@ -9,6 +9,7 @@ import pytest
 from app.domain.conversations.enums import ConversationChannel, ConversationMessageRole
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.models.scheduling import Doctor
+from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
@@ -86,15 +87,52 @@ def _create_hold_service(
     return FakeAppointmentHoldService(create_hold_error=create_hold_error)
 
 
+def create_appointment_booking_service_for_scheduling(
+    scheduling: SchedulingService,
+    hold_service: AppointmentHoldService,
+) -> AppointmentBookingService:
+    return AppointmentBookingService(
+        patients=scheduling.patients,
+        doctors=scheduling.doctors,
+        availability_slots=scheduling.availability_slots,
+        appointments=scheduling.appointments,
+        hold_service=hold_service,
+    )
+
+
+def create_chat_receptionist_service(
+    *,
+    conversations: ConversationService,
+    scheduling: SchedulingService,
+    hold_service: FakeAppointmentHoldService | None = None,
+    responder: DeterministicChatResponder | None = None,
+) -> ChatReceptionistService:
+    holds = hold_service or _create_hold_service()
+    booking = create_appointment_booking_service_for_scheduling(scheduling, holds)
+    if responder is None:
+        return ChatReceptionistService(
+            conversations=conversations,
+            scheduling=scheduling,
+            appointment_holds=holds,
+            appointment_booking=booking,
+        )
+    return ChatReceptionistService(
+        conversations=conversations,
+        scheduling=scheduling,
+        appointment_holds=holds,
+        appointment_booking=booking,
+        responder=responder,
+    )
+
+
 @pytest.fixture()
 def chat_service() -> tuple[ChatReceptionistService, FakeConversationRepository]:
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     scheduling = create_service()
-    service = ChatReceptionistService(
+    service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
-        appointment_holds=_create_hold_service(),
     )
 
     return service, repository
@@ -105,10 +143,9 @@ def scheduling_chat_service() -> tuple[ChatReceptionistService, FakeConversation
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service()
-    service = ChatReceptionistService(
+    service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
-        appointment_holds=_create_hold_service(),
     )
 
     return service, repository
@@ -124,10 +161,10 @@ def availability_guidance_service() -> tuple[
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service_with_emily_july_availability()
     hold_service = _create_hold_service()
-    service = ChatReceptionistService(
+    service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
-        appointment_holds=hold_service,
+        hold_service=hold_service,
     )
 
     return service, repository, hold_service
@@ -554,13 +591,12 @@ def test_availability_with_specialty_and_multiple_doctors_prompts_for_doctor_cho
             is_active=True,
         ),
     ]
-    service_with_multiple_dermatologists = ChatReceptionistService(
+    service_with_multiple_dermatologists = create_chat_receptionist_service(
         conversations=service.conversations,
         scheduling=create_service(
             specialties=[dermatology],
             doctors=doctors,
         ),
-        appointment_holds=_create_hold_service(),
     )
 
     result = service_with_multiple_dermatologists.handle_message(
@@ -582,10 +618,9 @@ def test_specialty_with_no_doctors_returns_safe_message(
 ) -> None:
     service, _repository = chat_service
     empty_specialty = create_specialty(name="Pediatrics")
-    service_with_empty_specialty = ChatReceptionistService(
+    service_with_empty_specialty = create_chat_receptionist_service(
         conversations=service.conversations,
         scheduling=create_service(specialties=[empty_specialty]),
-        appointment_holds=_create_hold_service(),
     )
 
     result = service_with_empty_specialty.handle_message(
@@ -602,10 +637,9 @@ def test_handle_message_does_not_call_llm_provider(
 ) -> None:
     service, repository = chat_service
     responder = SpyDeterministicChatResponder()
-    service_with_spy = ChatReceptionistService(
+    service_with_spy = create_chat_receptionist_service(
         conversations=service.conversations,
         scheduling=service.scheduling,
-        appointment_holds=_create_hold_service(),
         responder=responder,
     )
 
@@ -850,10 +884,10 @@ def test_hold_conflict_when_fake_hold_service_raises_already_held() -> None:
             "slot already has an active hold",
         ),
     )
-    service = ChatReceptionistService(
+    service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
-        appointment_holds=hold_service,
+        hold_service=hold_service,
     )
     appointments = scheduling.appointments
     assert isinstance(appointments, FakeAppointmentRepository)
