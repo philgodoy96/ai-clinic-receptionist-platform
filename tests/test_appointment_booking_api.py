@@ -13,15 +13,18 @@ from app.adapters.retell.appointment_booking_tools import RetellAppointmentBooki
 from app.api.dependencies import (
     get_appointment_booking_service,
     get_appointment_hold_service,
+    get_audit_log_service,
     get_retell_appointment_booking_tool_adapter,
 )
 from app.db.session import get_db
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.main import create_app
+from app.models.audit import AuditLog
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
+from app.services.audit_logs import AuditLogCreate, AuditLogService
 
 
 @pytest.fixture()
@@ -81,6 +84,7 @@ def booking_context() -> BookingApiContext:
 @pytest.fixture()
 def client(booking_context: BookingApiContext) -> Generator[TestClient, None, None]:
     app = create_app()
+    audit_logs = FakeAuditLogService()
 
     def override_booking_service() -> AppointmentBookingService:
         return booking_context.booking_service
@@ -91,16 +95,21 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
     def override_db() -> Generator[FakeDatabaseSession, None, None]:
         yield booking_context.db
 
+    def override_audit_log_service() -> AuditLogService:
+        return cast(AuditLogService, audit_logs)
+
     def override_retell_booking_adapter() -> RetellAppointmentBookingToolAdapter:
         return RetellAppointmentBookingToolAdapter(
             db=cast(Session, booking_context.db),
             booking_service=booking_context.booking_service,
             hold_service=booking_context.hold_service,
+            audit_logs=cast(AuditLogService, audit_logs),
         )
 
     app.dependency_overrides[get_appointment_booking_service] = override_booking_service
     app.dependency_overrides[get_appointment_hold_service] = override_hold_service
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_audit_log_service] = override_audit_log_service
     app.dependency_overrides[get_retell_appointment_booking_tool_adapter] = (
         override_retell_booking_adapter
     )
@@ -252,6 +261,24 @@ class FakeDatabaseSession:
 
     def refresh(self, instance: object) -> None:
         self.refreshed = True
+
+
+class FakeAuditLogService:
+    def __init__(self) -> None:
+        self.records: list[AuditLogCreate] = []
+
+    def record(self, payload: AuditLogCreate) -> AuditLog:
+        self.records.append(payload)
+        return AuditLog(
+            event_type=payload.event_type,
+            outcome=payload.outcome,
+            actor_type=payload.actor_type,
+            source=payload.source,
+            event_metadata=payload.metadata,
+        )
+
+    def record_best_effort(self, payload: AuditLogCreate) -> None:
+        self.record(payload)
 
 
 class FakePatientRepository:
