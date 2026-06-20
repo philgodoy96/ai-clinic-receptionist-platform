@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from app.domain.conversations.enums import ConversationChannel, ConversationMessageRole
+from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.models.scheduling import Doctor
+from app.services.appointment_holds import (
+    AppointmentHoldService,
+    AppointmentSlotAlreadyHeldError,
+)
 from app.services.chat_receptionist import (
     ChatMessageInput,
     ChatReceptionistIntent,
@@ -16,14 +22,68 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.scheduling import SchedulingService
+from tests.test_appointment_holds import FakeAppointmentHoldRepository
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
+    EMILY_JULY_SLOT_1_ID,
+    EMILY_JULY_SLOT_2_ID,
     FakeAppointmentRepository,
     create_demo_scheduling_service,
     create_demo_scheduling_service_with_emily_july_availability,
     create_service,
     create_specialty,
 )
+
+
+class FakeAppointmentHoldService(AppointmentHoldService):
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = 300,
+        create_hold_error: Exception | None = None,
+    ) -> None:
+        super().__init__(
+            repository=FakeAppointmentHoldRepository(),
+            ttl_seconds=ttl_seconds,
+        )
+        self.create_hold_error = create_hold_error
+        self.create_hold_calls: list[dict[str, object]] = []
+
+    def create_hold(
+        self,
+        *,
+        availability_slot_id: UUID,
+        doctor_id: UUID,
+        start_time: datetime,
+        end_time: datetime,
+        owner_id: str,
+    ) -> AppointmentHold:
+        self.create_hold_calls.append(
+            {
+                "availability_slot_id": availability_slot_id,
+                "doctor_id": doctor_id,
+                "start_time": start_time,
+                "end_time": end_time,
+                "owner_id": owner_id,
+            }
+        )
+        if self.create_hold_error is not None:
+            raise self.create_hold_error
+
+        return super().create_hold(
+            availability_slot_id=availability_slot_id,
+            doctor_id=doctor_id,
+            start_time=start_time,
+            end_time=end_time,
+            owner_id=owner_id,
+        )
+
+
+def _create_hold_service(
+    *,
+    create_hold_error: Exception | None = None,
+) -> FakeAppointmentHoldService:
+    return FakeAppointmentHoldService(create_hold_error=create_hold_error)
 
 
 @pytest.fixture()
@@ -34,6 +94,7 @@ def chat_service() -> tuple[ChatReceptionistService, FakeConversationRepository]
     service = ChatReceptionistService(
         conversations=conversations,
         scheduling=scheduling,
+        appointment_holds=_create_hold_service(),
     )
 
     return service, repository
@@ -47,22 +108,29 @@ def scheduling_chat_service() -> tuple[ChatReceptionistService, FakeConversation
     service = ChatReceptionistService(
         conversations=conversations,
         scheduling=scheduling,
+        appointment_holds=_create_hold_service(),
     )
 
     return service, repository
 
 
 @pytest.fixture()
-def availability_guidance_service() -> tuple[ChatReceptionistService, FakeConversationRepository]:
+def availability_guidance_service() -> tuple[
+    ChatReceptionistService,
+    FakeConversationRepository,
+    FakeAppointmentHoldService,
+]:
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service_with_emily_july_availability()
+    hold_service = _create_hold_service()
     service = ChatReceptionistService(
         conversations=conversations,
         scheduling=scheduling,
+        appointment_holds=hold_service,
     )
 
-    return service, repository
+    return service, repository, hold_service
 
 
 def _get_emily_carter(service: ChatReceptionistService) -> Doctor:
@@ -243,9 +311,13 @@ def test_cancel_request_takes_priority_over_doctor_listing(
 
 
 def test_what_times_are_available_without_doctor_or_date_returns_missing_doctor(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
     with patch.object(
@@ -262,9 +334,13 @@ def test_what_times_are_available_without_doctor_or_date_returns_missing_doctor(
 
 
 def test_dr_emily_carter_availability_without_date_stores_doctor_and_returns_missing_date(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
     emily = _get_emily_carter(service)
 
     result = service.handle_message(
@@ -278,9 +354,13 @@ def test_dr_emily_carter_availability_without_date_stores_doctor_and_returns_mis
 
 
 def test_dr_emily_carter_on_date_returns_availability_results(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
     appointments = scheduling.appointments
     assert isinstance(appointments, FakeAppointmentRepository)
@@ -309,11 +389,30 @@ def test_dr_emily_carter_on_date_returns_availability_results(
     hold_mock.assert_not_called()
     booking_mock.assert_not_called()
 
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_doctor_id"] == str(_get_emily_carter(service).id)
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context["requested_date"] == "2026-07-02"
+    offered_slots = chat_context["offered_slots"]
+    assert len(offered_slots) == 2
+    assert offered_slots[0]["display_time"] == "09:00"
+    assert offered_slots[1]["display_time"] == "10:30"
+    for offered_slot in offered_slots:
+        assert offered_slot["availability_slot_id"]
+        assert offered_slot["doctor_id"] == str(_get_emily_carter(service).id)
+        assert offered_slot["start_time"]
+    assert result.assistant_message.message_metadata["availability_checked"] is True
+    assert result.assistant_message.message_metadata["offered_slot_count"] == 2
+
 
 def test_dermatology_on_date_auto_selects_doctor_and_returns_availability_results(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
 
     result = service.handle_message(
         ChatMessageInput(message="Dermatology on 2026-07-02"),
@@ -326,9 +425,13 @@ def test_dermatology_on_date_auto_selects_doctor_and_returns_availability_result
 
 
 def test_invalid_date_does_not_query_availability(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
     with patch.object(
@@ -345,9 +448,13 @@ def test_invalid_date_does_not_query_availability(
 
 
 def test_date_with_no_slots_returns_availability_no_slots(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
 
     result = service.handle_message(
         ChatMessageInput(message="Dr. Emily Carter on 2026-07-03"),
@@ -355,12 +462,21 @@ def test_date_with_no_slots_returns_availability_no_slots(
 
     assert result.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
     assert result.assistant_message.message_metadata["availability_checked"] is True
+    assert result.assistant_message.message_metadata["offered_slot_count"] == 0
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["offered_slots"] == []
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context["requested_date"] == "2026-07-03"
 
 
 def test_emergency_takes_priority_and_does_not_query_scheduling(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
     with patch.object(
@@ -389,9 +505,13 @@ def test_emergency_takes_priority_and_does_not_query_scheduling(
 
 
 def test_conversation_context_carries_across_messages(
-    availability_guidance_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
 ) -> None:
-    service, _repository = availability_guidance_service
+    service, _repository, _hold_service = availability_guidance_service
 
     first = service.handle_message(
         ChatMessageInput(message="Dr. Emily Carter availability"),
@@ -440,6 +560,7 @@ def test_availability_with_specialty_and_multiple_doctors_prompts_for_doctor_cho
             specialties=[dermatology],
             doctors=doctors,
         ),
+        appointment_holds=_create_hold_service(),
     )
 
     result = service_with_multiple_dermatologists.handle_message(
@@ -464,6 +585,7 @@ def test_specialty_with_no_doctors_returns_safe_message(
     service_with_empty_specialty = ChatReceptionistService(
         conversations=service.conversations,
         scheduling=create_service(specialties=[empty_specialty]),
+        appointment_holds=_create_hold_service(),
     )
 
     result = service_with_empty_specialty.handle_message(
@@ -483,6 +605,7 @@ def test_handle_message_does_not_call_llm_provider(
     service_with_spy = ChatReceptionistService(
         conversations=service.conversations,
         scheduling=service.scheduling,
+        appointment_holds=_create_hold_service(),
         responder=responder,
     )
 
@@ -495,6 +618,321 @@ def test_handle_message_does_not_call_llm_provider(
     assert openai_mock.call_count == 0
     assert result.conversation.appointment_id is None
     assert len(repository.conversations) == 1
+
+
+def test_availability_results_store_offered_slots(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    offered_slots = result.conversation.conversation_metadata["chat_context"]["offered_slots"]
+    assert len(offered_slots) == 2
+
+
+def test_hold_without_offered_slots_returns_hold_missing_availability(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, hold_service = availability_guidance_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="hold 09:00"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY
+    assert result.assistant_message.message_metadata["hold_created"] is False
+    assert hold_service.create_hold_calls == []
+
+
+def test_hold_first_slot_at_requested_time_creates_hold(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, hold_service = availability_guidance_service
+    appointments = service.scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    with patch.object(
+        appointments,
+        "add",
+        wraps=appointments.add,
+    ) as booking_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="I'll take 09:00",
+                conversation_id=availability.conversation.id,
+            ),
+        )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert len(hold_service.create_hold_calls) == 1
+    booking_mock.assert_not_called()
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["hold_id"]
+    assert result.assistant_message.message_metadata["hold_created"] is True
+    assert result.assistant_message.message_metadata["hold_id"] == chat_context["hold_id"]
+
+
+def test_hold_first_one_after_availability_creates_hold(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+    appointments = scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    with patch.object(
+        appointments,
+        "add",
+        wraps=appointments.add,
+    ) as booking_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="I'll take the first one",
+                conversation_id=availability.conversation.id,
+            ),
+        )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "09:00" in result.reply
+    assert "Dr. Emily Carter" in result.reply
+    assert "not booked yet" in result.reply.lower()
+    booking_mock.assert_not_called()
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["hold_id"]
+    assert chat_context["hold_owner_id"] == str(availability.conversation.id)
+    assert chat_context["selected_availability_slot_id"]
+    assert chat_context["selected_start_time"]
+    assert chat_context["hold_expires_at"]
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert result.assistant_message.message_metadata["hold_created"] is True
+    assert result.assistant_message.message_metadata["hold_id"] == chat_context["hold_id"]
+
+
+def test_hold_by_ordinal_selects_first_offered_slot(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="first one",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_availability_slot_id"] == str(EMILY_JULY_SLOT_1_ID)
+    assert chat_context["selected_start_time"] == "2026-07-02T09:00:00+00:00"
+
+
+def test_hold_time_match_creates_hold_for_second_slot(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="10:30 works for me",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "10:30" in result.reply
+    assert (
+        result.conversation.conversation_metadata["chat_context"]["selected_availability_slot_id"]
+        == str(EMILY_JULY_SLOT_2_ID)
+    )
+
+
+def test_hold_unknown_time_returns_hold_slot_not_found(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, hold_service = availability_guidance_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I'll take 15:00",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND
+    assert result.assistant_message.message_metadata["hold_created"] is False
+    assert hold_service.create_hold_calls == []
+
+
+def test_hold_generic_request_returns_hold_request(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Please hold a slot for me",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_REQUEST
+    assert result.assistant_message.message_metadata["hold_created"] is False
+
+
+def test_hold_conflict_when_fake_hold_service_raises_already_held() -> None:
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service_with_emily_july_availability()
+    hold_service = _create_hold_service(
+        create_hold_error=AppointmentSlotAlreadyHeldError(
+            "slot already has an active hold",
+        ),
+    )
+    service = ChatReceptionistService(
+        conversations=conversations,
+        scheduling=scheduling,
+        appointment_holds=hold_service,
+    )
+    appointments = scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    with patch.object(
+        appointments,
+        "add",
+        wraps=appointments.add,
+    ) as booking_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="I'll take 09:00",
+                conversation_id=availability.conversation.id,
+            ),
+        )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CONFLICT
+    assert result.assistant_message.message_metadata["hold_created"] is False
+    assert len(hold_service.create_hold_calls) == 1
+    booking_mock.assert_not_called()
+
+
+def test_emergency_with_hold_keywords_does_not_create_hold(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, hold_service = availability_guidance_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="This is an emergency, hold 09:00",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.EMERGENCY
+    assert "hold_created" not in result.assistant_message.message_metadata
+    assert hold_service.create_hold_calls == []
+
+
+def test_hold_created_response_uses_expected_language(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I'll take 09:00",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    reply = result.reply.lower()
+    assert "temporarily held" in reply
+    assert "not booked yet" in reply
+    assert "full name" in reply
+    assert "date of birth" in reply
+    assert "phone" in reply
+    assert "email" in reply
 
 
 class SpyDeterministicChatResponder(DeterministicChatResponder):

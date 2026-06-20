@@ -55,6 +55,11 @@ The deterministic responder currently supports:
 - availability_results
 - availability_no_slots
 - invalid_date
+- hold_request
+- hold_created
+- hold_missing_availability
+- hold_slot_not_found
+- hold_conflict
 - fallback
 
 ## Scheduling-Aware Responses
@@ -75,11 +80,10 @@ The chat API may return intents such as:
 - specialty_doctors
 - appointment_request
 
-This implementation is read-only.
+This implementation is read-only for specialty and doctor listing.
 
 It does not:
 
-- create appointment holds
 - book appointments
 - cancel appointments
 - reschedule appointments
@@ -109,15 +113,57 @@ The API may return these intents:
 - availability_no_slots
 - invalid_date
 
-This phase is read-only.
+This phase is read-only for availability lookup.
 
 It does not:
 
-- create Redis appointment holds
 - create appointments
 - confirm bookings
 - call an LLM
 - parse natural-language dates such as "tomorrow" or "next Monday"
+
+## Appointment Holds
+
+The Chat API can create a temporary appointment hold after the user chooses a specific offered time.
+
+Example flow:
+
+1. User checks availability:
+
+    {
+      "message": "Dr. Emily Carter on 2026-07-02"
+    }
+
+2. Assistant returns available times.
+
+3. User chooses a time:
+
+    {
+      "conversation_id": "...",
+      "message": "I'll take 09:00"
+    }
+
+4. Assistant temporarily holds the slot.
+
+The hold is not a booking.
+
+The hold may expire.
+
+The API may return these intents:
+
+- hold_request
+- hold_created
+- hold_missing_availability
+- hold_slot_not_found
+- hold_conflict
+
+This phase does not:
+
+- create appointments
+- confirm bookings
+- send confirmation emails
+- call an LLM
+- collect full patient identity validation
 
 ## Error Responses
 
@@ -136,7 +182,6 @@ Examples:
 This implementation does not yet include:
 
 - LLM understanding
-- Appointment holds from chat
 - Appointment booking from chat
 - Appointment cancellation from chat
 - Appointment rescheduling from chat
