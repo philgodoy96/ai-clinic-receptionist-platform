@@ -27,6 +27,22 @@ class EmailJobRepository(Protocol):
     ) -> Sequence[EmailJob]:
         raise NotImplementedError
 
+    def schedule_retry(
+        self,
+        *,
+        email_job: EmailJob,
+        now: datetime,
+    ) -> EmailJob:
+        raise NotImplementedError
+
+    def create_replay(
+        self,
+        *,
+        original_email_job: EmailJob,
+        now: datetime,
+    ) -> EmailJob:
+        raise NotImplementedError
+
 
 class EmailJobWorkerRepository(Protocol):
     def claim_next_available(

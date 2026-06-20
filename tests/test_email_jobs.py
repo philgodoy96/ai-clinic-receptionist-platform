@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
@@ -109,3 +110,50 @@ class FakeEmailJobRepository:
             jobs = [item for item in jobs if item.patient_id == patient_id]
 
         return jobs[:limit]
+
+    def schedule_retry(
+        self,
+        *,
+        email_job: EmailJob,
+        now: datetime,
+    ) -> EmailJob:
+        email_job.status = EmailJobStatus.PENDING
+        email_job.scheduled_for = now
+        email_job.locked_by = None
+        email_job.locked_until = None
+        email_job.updated_at = now
+
+        return email_job
+
+    def create_replay(
+        self,
+        *,
+        original_email_job: EmailJob,
+        now: datetime,
+    ) -> EmailJob:
+        replay_job = EmailJob(
+            job_type=original_email_job.job_type,
+            status=EmailJobStatus.PENDING,
+            appointment_id=original_email_job.appointment_id,
+            patient_id=original_email_job.patient_id,
+            recipient_email=original_email_job.recipient_email,
+            subject=original_email_job.subject,
+            body=original_email_job.body,
+            attempts=0,
+            max_attempts=original_email_job.max_attempts,
+            locked_by=None,
+            locked_until=None,
+            last_error=None,
+            payload={
+                **original_email_job.payload,
+                "replayed_from_email_job_id": str(original_email_job.id),
+                "replayed_from_attempts": original_email_job.attempts,
+                "replayed_from_status": original_email_job.status.value,
+            },
+            scheduled_for=now,
+            sent_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return self.add(replay_job)
