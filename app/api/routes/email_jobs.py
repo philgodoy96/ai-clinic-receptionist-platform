@@ -15,6 +15,10 @@ from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisher,
     EmailJobDispatchPublisherError,
 )
+from app.schemas.email_job_metrics import (
+    EmailJobOperationalMetricsResponse,
+    EmailJobStatusCountsResponse,
+)
 from app.schemas.email_jobs import EmailJobListResponse, EmailJobResponse
 from app.services.email_job_pagination import InvalidEmailJobCursorError
 from app.services.email_jobs import (
@@ -65,6 +69,29 @@ def list_email_jobs(
     return EmailJobListResponse(
         items=[EmailJobResponse.model_validate(item) for item in result.items],
         next_cursor=result.next_cursor,
+    )
+
+
+@router.get("/metrics", response_model=EmailJobOperationalMetricsResponse)
+def get_email_job_operational_metrics(
+    service: Annotated[EmailJobService, Depends(get_email_job_service)],
+) -> EmailJobOperationalMetricsResponse:
+    metrics = service.get_operational_metrics()
+    return EmailJobOperationalMetricsResponse(
+        total_jobs=metrics.total_jobs,
+        counts_by_status=EmailJobStatusCountsResponse(
+            pending=metrics.counts_by_status.pending,
+            processing=metrics.counts_by_status.processing,
+            sent=metrics.counts_by_status.sent,
+            failed=metrics.counts_by_status.failed,
+            dead_letter=metrics.counts_by_status.dead_letter,
+        ),
+        locked_count=metrics.locked_count,
+        expired_lock_count=metrics.expired_lock_count,
+        overdue_pending_count=metrics.overdue_pending_count,
+        oldest_pending_created_at=metrics.oldest_pending_created_at,
+        oldest_failed_created_at=metrics.oldest_failed_created_at,
+        newest_dead_letter_created_at=metrics.newest_dead_letter_created_at,
     )
 
 

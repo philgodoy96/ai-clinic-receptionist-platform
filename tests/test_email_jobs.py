@@ -8,6 +8,7 @@ import pytest
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
+from app.services.email_job_metrics import EmailJobOperationalMetrics, EmailJobStatusCounts
 from app.services.email_job_pagination import EmailJobCursor
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
@@ -149,6 +150,143 @@ def test_replay_dead_letter_email_job_rejects_non_dead_letter_status(
         service.replay_dead_letter_email_job(email_job.id)
 
 
+METRICS_NOW = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
+
+
+def test_get_operational_metrics_counts_jobs_by_status() -> None:
+    repository = FakeEmailJobRepository()
+    for status in (
+        EmailJobStatus.PENDING,
+        EmailJobStatus.PROCESSING,
+        EmailJobStatus.SENT,
+        EmailJobStatus.FAILED,
+        EmailJobStatus.DEAD_LETTER,
+    ):
+        repository.add(create_email_job(status=status, locked_by=None))
+    service = EmailJobService(repository=repository)
+
+    metrics = service.get_operational_metrics(now=METRICS_NOW)
+
+    assert metrics.total_jobs == 5
+    assert metrics.counts_by_status.pending == 1
+    assert metrics.counts_by_status.processing == 1
+    assert metrics.counts_by_status.sent == 1
+    assert metrics.counts_by_status.failed == 1
+    assert metrics.counts_by_status.dead_letter == 1
+
+
+def test_get_operational_metrics_detects_active_locks() -> None:
+    repository = FakeEmailJobRepository()
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.PROCESSING,
+            locked_by="worker-1",
+            locked_until=METRICS_NOW + timedelta(minutes=5),
+        ),
+    )
+    service = EmailJobService(repository=repository)
+
+    metrics = service.get_operational_metrics(now=METRICS_NOW)
+
+    assert metrics.locked_count == 1
+
+
+def test_get_operational_metrics_detects_expired_processing_locks() -> None:
+    repository = FakeEmailJobRepository()
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.PROCESSING,
+            locked_by="worker-1",
+            locked_until=METRICS_NOW - timedelta(minutes=1),
+        ),
+    )
+    service = EmailJobService(repository=repository)
+
+    metrics = service.get_operational_metrics(now=METRICS_NOW)
+
+    assert metrics.expired_lock_count == 1
+
+
+def test_get_operational_metrics_detects_overdue_pending_backlog() -> None:
+    repository = FakeEmailJobRepository()
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.PENDING,
+            locked_by=None,
+            scheduled_for=METRICS_NOW - timedelta(hours=1),
+        ),
+    )
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.FAILED,
+            locked_by=None,
+            scheduled_for=METRICS_NOW - timedelta(hours=1),
+        ),
+    )
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.PENDING,
+            locked_by=None,
+            scheduled_for=METRICS_NOW + timedelta(hours=1),
+        ),
+    )
+    service = EmailJobService(repository=repository)
+
+    metrics = service.get_operational_metrics(now=METRICS_NOW)
+
+    assert metrics.overdue_pending_count == 2
+
+
+def test_get_operational_metrics_exposes_oldest_and_newest_timestamps() -> None:
+    repository = FakeEmailJobRepository()
+    oldest_pending = create_email_job(
+        status=EmailJobStatus.PENDING,
+        locked_by=None,
+        created_at=datetime(2026, 7, 1, 8, 0, tzinfo=UTC),
+    )
+    repository.add(oldest_pending)
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.PENDING,
+            locked_by=None,
+            created_at=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+        ),
+    )
+    oldest_failed = create_email_job(
+        status=EmailJobStatus.FAILED,
+        locked_by=None,
+        created_at=datetime(2026, 7, 1, 7, 0, tzinfo=UTC),
+    )
+    repository.add(oldest_failed)
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.FAILED,
+            locked_by=None,
+            created_at=datetime(2026, 7, 1, 8, 30, tzinfo=UTC),
+        ),
+    )
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.DEAD_LETTER,
+            locked_by=None,
+            created_at=datetime(2026, 7, 1, 6, 0, tzinfo=UTC),
+        ),
+    )
+    newest_dead_letter = create_email_job(
+        status=EmailJobStatus.DEAD_LETTER,
+        locked_by=None,
+        created_at=datetime(2026, 7, 1, 11, 0, tzinfo=UTC),
+    )
+    repository.add(newest_dead_letter)
+    service = EmailJobService(repository=repository)
+
+    metrics = service.get_operational_metrics(now=METRICS_NOW)
+
+    assert metrics.oldest_pending_created_at == oldest_pending.created_at
+    assert metrics.oldest_failed_created_at == oldest_failed.created_at
+    assert metrics.newest_dead_letter_created_at == newest_dead_letter.created_at
+
+
 class FakeEmailJobRepository:
     def __init__(self) -> None:
         self.email_jobs: list[EmailJob] = []
@@ -249,6 +387,56 @@ class FakeEmailJobRepository:
 
         return self.add(replay_job)
 
+    def get_operational_metrics(
+        self,
+        *,
+        now: datetime,
+    ) -> EmailJobOperationalMetrics:
+        jobs = self.email_jobs
+        pending_jobs = [job for job in jobs if job.status == EmailJobStatus.PENDING]
+        failed_jobs = [job for job in jobs if job.status == EmailJobStatus.FAILED]
+        dead_letter_jobs = [job for job in jobs if job.status == EmailJobStatus.DEAD_LETTER]
+
+        return EmailJobOperationalMetrics(
+            total_jobs=len(jobs),
+            counts_by_status=EmailJobStatusCounts(
+                pending=len(pending_jobs),
+                processing=sum(
+                    1 for job in jobs if job.status == EmailJobStatus.PROCESSING
+                ),
+                sent=sum(1 for job in jobs if job.status == EmailJobStatus.SENT),
+                failed=len(failed_jobs),
+                dead_letter=len(dead_letter_jobs),
+            ),
+            locked_count=sum(
+                1
+                for job in jobs
+                if job.locked_until is not None and job.locked_until >= now
+            ),
+            expired_lock_count=sum(
+                1
+                for job in jobs
+                if job.status == EmailJobStatus.PROCESSING
+                and job.locked_until is not None
+                and job.locked_until < now
+            ),
+            overdue_pending_count=sum(
+                1
+                for job in jobs
+                if job.status in (EmailJobStatus.PENDING, EmailJobStatus.FAILED)
+                and job.scheduled_for <= now
+            ),
+            oldest_pending_created_at=(
+                min((job.created_at for job in pending_jobs), default=None)
+            ),
+            oldest_failed_created_at=(
+                min((job.created_at for job in failed_jobs), default=None)
+            ),
+            newest_dead_letter_created_at=(
+                max((job.created_at for job in dead_letter_jobs), default=None)
+            ),
+        )
+
 
 def create_email_job(
     *,
@@ -258,11 +446,14 @@ def create_email_job(
     locked_by: str | None = "worker-1",
     locked_until: datetime | None = None,
     payload: dict[str, str] | None = None,
+    created_at: datetime | None = None,
+    scheduled_for: datetime | None = None,
 ) -> EmailJob:
-    created_at = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    effective_created_at = created_at or datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    effective_scheduled_for = scheduled_for or effective_created_at
     effective_locked_until = locked_until
     if effective_locked_until is None and locked_by is not None:
-        effective_locked_until = created_at + timedelta(minutes=5)
+        effective_locked_until = effective_created_at + timedelta(minutes=5)
 
     return EmailJob(
         id=uuid4(),
@@ -279,7 +470,7 @@ def create_email_job(
         locked_until=effective_locked_until,
         last_error=last_error,
         payload=payload or {"source": "test"},
-        scheduled_for=created_at,
-        created_at=created_at,
-        updated_at=created_at,
+        scheduled_for=effective_scheduled_for,
+        created_at=effective_created_at,
+        updated_at=effective_created_at,
     )

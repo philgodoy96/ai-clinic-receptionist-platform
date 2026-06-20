@@ -129,12 +129,13 @@ Implemented:
 
 - Email job debug API with cursor pagination
 - Manual retry/replay endpoint
+- Email job operational metrics
 
 Future work:
 
-- Admin auth/RBAC before public deployment
+- Admin auth/RBAC as future production hardening, outside current demo scope
 - Provider-level idempotency keys
-- Job metrics dashboard
+- Prometheus/Grafana integration (optional)
 
 ## Stage 9 — Observability
 
