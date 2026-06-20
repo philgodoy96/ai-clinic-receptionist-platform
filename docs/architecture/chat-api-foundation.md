@@ -36,7 +36,24 @@ Conversation storage records interaction history.
 
 Scheduling truth remains in scheduling services and tables.
 
-The chat API must not create appointments unless it explicitly calls scheduling services in a future implementation phase.
+The chat API must not create appointments unless it explicitly calls scheduling services through `AppointmentBookingService`.
+
+## Booking Boundary
+
+The chat layer does not manually create appointments.
+
+It delegates durable appointment creation to `AppointmentBookingService`.
+
+Transaction order:
+
+1. Validate hold and identity.
+2. Create appointment through booking service.
+3. Create confirmation email job.
+4. Commit database transaction.
+5. Release Redis hold.
+6. Publish email dispatch best-effort.
+
+If RabbitMQ dispatch fails after commit, booking remains confirmed because PostgreSQL is the durable source of truth.
 
 ## Scheduling-Aware Read Boundary
 
@@ -73,6 +90,12 @@ The deterministic responder supports:
 - hold_missing_availability
 - hold_slot_not_found
 - hold_conflict
+- booking_identity_missing
+- booking_confirmation_required
+- booking_confirmed
+- booking_hold_missing
+- booking_hold_expired
+- booking_conflict
 - fallback
 
 ## Availability Read Boundary
@@ -89,7 +112,7 @@ The chat layer can create a Redis appointment hold only after the user chooses a
 
 A hold is temporary and does not represent a confirmed appointment.
 
-The booking service remains responsible for durable appointment creation in a later implementation phase.
+Durable appointment creation is delegated to `AppointmentBookingService` after the user provides patient identity and explicit confirmation.
 
 Showing a slot:
 - read-only
@@ -110,13 +133,11 @@ Emergency language is handled with safe guidance to contact emergency services o
 
 Planned future implementation phases include:
 
-- Chat booking confirmation flow
-- Patient identity collection/validation
-- Conversation state machine
-- Slot filling
 - Fake LLM provider
-- Hold expiration handling in chat
-- Structured LLM output parsing
+- Structured output parser
 - Natural-language date parsing
 - Human escalation
+- Conversation state machine
+- Slot filling
+- Hold expiration handling in chat
 - Retell webhook ingestion
