@@ -3,10 +3,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_chat_receptionist_service
+from app.api.dependencies import (
+    get_appointment_hold_service,
+    get_chat_receptionist_service,
+)
 from app.api.errors import APIError
 from app.db.session import get_db
 from app.schemas.chat import ChatMessageRequest, ChatMessageResponse
+from app.services.appointment_holds import AppointmentHoldService
 from app.services.chat_receptionist import ChatMessageInput, ChatReceptionistService
 from app.services.conversations import (
     ConversationNotFoundError,
@@ -24,6 +28,7 @@ router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 def send_chat_message(
     payload: ChatMessageRequest,
     service: Annotated[ChatReceptionistService, Depends(get_chat_receptionist_service)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     db: Annotated[Session, Depends(get_db)],
 ) -> ChatMessageResponse:
     try:
@@ -36,6 +41,13 @@ def send_chat_message(
             ),
         )
         db.commit()
+
+        if result.pending_hold_release is not None:
+            hold_service.release_hold(
+                doctor_id=result.pending_hold_release.doctor_id,
+                start_time=result.pending_hold_release.start_time,
+                owner_id=result.pending_hold_release.owner_id,
+            )
     except ConversationNotFoundError as exc:
         db.rollback()
         raise APIError(
