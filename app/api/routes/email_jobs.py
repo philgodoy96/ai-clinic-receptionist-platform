@@ -1,10 +1,20 @@
+import logging
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_email_job_service
+from app.api.dependencies import (
+    get_email_job_dispatch_publisher,
+    get_email_job_service,
+)
+from app.db.session import get_db
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisher,
+    EmailJobDispatchPublisherError,
+)
 from app.schemas.email_jobs import EmailJobListResponse, EmailJobResponse
 from app.services.email_job_pagination import InvalidEmailJobCursorError
 from app.services.email_jobs import (
@@ -12,9 +22,12 @@ from app.services.email_jobs import (
     EmailJobNotFoundError,
     EmailJobService,
     InvalidEmailJobLimitError,
+    InvalidEmailJobReplayStateError,
+    InvalidEmailJobRetryStateError,
 )
 
 router = APIRouter(prefix="/api/v1/email-jobs", tags=["email-jobs"])
+logger = logging.getLogger("app.email_jobs")
 
 
 @router.get("", response_model=EmailJobListResponse)
@@ -69,3 +82,95 @@ def get_email_job(
         ) from exc
 
     return EmailJobResponse.model_validate(email_job)
+
+
+@router.post("/{email_job_id}/retry", response_model=EmailJobResponse)
+def retry_failed_email_job(
+    email_job_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
+) -> EmailJobResponse:
+    try:
+        email_job = service.retry_failed_email_job(email_job_id)
+        db.commit()
+        db.refresh(email_job)
+
+        try:
+            email_job_dispatch.publish_email_job_ready(email_job_id=email_job.id)
+        except EmailJobDispatchPublisherError:
+            logger.warning(
+                "email_job_dispatch_publish_failed",
+                extra={
+                    "event": "email_job_dispatch_publish_failed",
+                    "email_job_id": str(email_job.id),
+                    "action": "retry",
+                },
+            )
+
+        return EmailJobResponse.model_validate(email_job)
+    except EmailJobNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="email job was not found",
+        ) from exc
+    except InvalidEmailJobRetryStateError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="only failed email jobs can be retried",
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/{email_job_id}/replay", response_model=EmailJobResponse)
+def replay_dead_letter_email_job(
+    email_job_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
+) -> EmailJobResponse:
+    try:
+        replayed_email_job = service.replay_dead_letter_email_job(email_job_id)
+        db.commit()
+        db.refresh(replayed_email_job)
+
+        try:
+            email_job_dispatch.publish_email_job_ready(
+                email_job_id=replayed_email_job.id,
+            )
+        except EmailJobDispatchPublisherError:
+            logger.warning(
+                "email_job_dispatch_publish_failed",
+                extra={
+                    "event": "email_job_dispatch_publish_failed",
+                    "email_job_id": str(replayed_email_job.id),
+                    "action": "replay",
+                },
+            )
+
+        return EmailJobResponse.model_validate(replayed_email_job)
+    except EmailJobNotFoundError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="email job was not found",
+        ) from exc
+    except InvalidEmailJobReplayStateError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="only dead-letter email jobs can be replayed",
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
