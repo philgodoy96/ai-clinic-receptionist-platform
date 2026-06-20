@@ -286,6 +286,10 @@ class ChatReceptionistService:
             )
 
         matched_specialty = self._match_specialty_in_message(normalized_message)
+        completing_availability = self._should_complete_availability_from_context(
+            merged_context=merged_context,
+            context_updates=context_updates,
+        )
         if (
             matched_specialty is not None
             and not self._is_availability_request(normalized_message)
@@ -293,6 +297,7 @@ class ChatReceptionistService:
                 normalized_message,
                 merged_context,
             )
+            and not completing_availability
         ):
             doctors = self.scheduling.list_doctors(specialty_id=matched_specialty.id)
             return ChatReceptionistReply(
@@ -311,7 +316,7 @@ class ChatReceptionistService:
                 normalized_message,
                 merged_context,
             )
-        ):
+        ) or completing_availability:
             return self._handle_availability_flow(
                 merged_context=merged_context,
                 context_updates=context_updates,
@@ -511,6 +516,26 @@ class ChatReceptionistService:
             merged_context.get("selected_doctor_id")
             or merged_context.get("requested_date"),
         )
+
+    def _should_complete_availability_from_context(
+        self,
+        *,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> bool:
+        has_doctor = bool(merged_context.get("selected_doctor_id"))
+        has_date = bool(merged_context.get("requested_date"))
+
+        if not has_doctor or not has_date:
+            return False
+
+        relevant_updates = {
+            "requested_date",
+            "selected_doctor_id",
+            "selected_specialty_id",
+        }
+
+        return bool(relevant_updates & context_updates.keys())
 
     def _match_doctor_in_message(self, normalized_message: str) -> Doctor | None:
         doctors = sorted(
