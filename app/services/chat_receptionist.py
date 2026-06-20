@@ -85,6 +85,22 @@ _ORDINAL_SLOT_KEYWORDS = {
     "second one": 1,
     "third one": 2,
 }
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\s\-().]{6,}\d|\b\d{10,14}\b)")
+_MY_NAME_IS_PATTERN = re.compile(r"my name is\s+(.+)", re.IGNORECASE)
+_CONFIRMATION_PHRASES = [
+    "confirm",
+    "yes, book",
+    "book it",
+    "schedule it",
+    "go ahead",
+]
+_PATIENT_IDENTITY_FIELD_LABELS = {
+    "full_name": "full name",
+    "date_of_birth": "date of birth",
+    "phone": "phone",
+    "email": "email",
+}
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -107,6 +123,8 @@ class ChatReceptionistIntent(StrEnum):
     HOLD_MISSING_AVAILABILITY = "hold_missing_availability"
     HOLD_SLOT_NOT_FOUND = "hold_slot_not_found"
     HOLD_CONFLICT = "hold_conflict"
+    PATIENT_IDENTITY_PARTIAL = "patient_identity_partial"
+    PATIENT_IDENTITY_COMPLETE = "patient_identity_complete"
     FALLBACK = "fallback"
 
 
@@ -127,8 +145,52 @@ _HOLD_CONTEXT_INTENTS = frozenset(
         ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY,
         ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND,
         ChatReceptionistIntent.HOLD_CONFLICT,
+        ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+        ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatPatientIdentity:
+    full_name: str | None = None
+    date_of_birth: str | None = None
+    phone: str | None = None
+    email: str | None = None
+
+    def missing_fields(self) -> list[str]:
+        missing: list[str] = []
+        if not self.full_name:
+            missing.append("full_name")
+        if not self.date_of_birth:
+            missing.append("date_of_birth")
+        if not self.phone:
+            missing.append("phone")
+        if not self.email:
+            missing.append("email")
+        return missing
+
+    def is_complete(self) -> bool:
+        return not self.missing_fields()
+
+
+def message_has_confirmation(message: str) -> bool:
+    normalized = message.lower()
+    return any(phrase in normalized for phrase in _CONFIRMATION_PHRASES)
+
+
+def merge_patient_identity(
+    existing: dict[str, Any],
+    parsed: ChatPatientIdentity,
+) -> dict[str, Any]:
+    merged = dict(existing)
+    for field_name in ("full_name", "date_of_birth", "phone", "email"):
+        if merged.get(field_name):
+            continue
+        value = getattr(parsed, field_name)
+        if value:
+            merged[field_name] = value
+    return merged
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +392,14 @@ class ChatReceptionistService:
         context_updates = self._extract_context_updates(normalized_message, message)
         merged_context = {**existing_context, **context_updates}
 
+        identity_reply = self._handle_patient_identity_flow(
+            message=message,
+            merged_context=merged_context,
+            context_updates=context_updates,
+        )
+        if identity_reply is not None:
+            return identity_reply
+
         if self.responder._contains_any(normalized_message, _SPECIALTY_LIST_KEYWORDS):
             specialties = self.scheduling.list_specialties()
             return ChatReceptionistReply(
@@ -430,6 +500,243 @@ class ChatReceptionistService:
             context_updates["selected_doctor_name"] = matched_doctor.full_name
 
         return context_updates
+
+    def parse_patient_identity(
+        self,
+        message: str,
+        *,
+        booking_context: bool = False,
+    ) -> ChatPatientIdentity:
+        email_match = _EMAIL_PATTERN.search(message)
+        email = email_match.group(0) if email_match is not None else None
+
+        phone = self._extract_phone(message)
+        date_of_birth = self._extract_date_of_birth(
+            message,
+            booking_context=booking_context,
+        )
+        full_name = self._extract_full_name(
+            message,
+            email=email,
+            phone=phone,
+            date_of_birth=date_of_birth,
+            booking_context=booking_context,
+        )
+
+        return ChatPatientIdentity(
+            full_name=full_name,
+            date_of_birth=date_of_birth,
+            phone=phone,
+            email=email,
+        )
+
+    def _extract_phone(self, message: str) -> str | None:
+        for match in _PHONE_PATTERN.finditer(message):
+            candidate = match.group(0).strip()
+            digits = re.sub(r"\D", "", candidate)
+            if len(digits) >= 10:
+                return candidate
+        return None
+
+    def _extract_date_of_birth(
+        self,
+        message: str,
+        *,
+        booking_context: bool = False,
+    ) -> str | None:
+        match = _ISO_DATE_PATTERN.search(message)
+        if match is None:
+            return None
+
+        try:
+            date.fromisoformat(match.group(1))
+        except ValueError:
+            return None
+
+        has_dob_cue = bool(
+            re.search(r"\b(dob|date of birth|born)\b", message, re.IGNORECASE)
+            or "," in message
+            or _MY_NAME_IS_PATTERN.search(message)
+            or booking_context
+        )
+        if not has_dob_cue:
+            return None
+
+        return match.group(1)
+
+    def _extract_full_name(
+        self,
+        message: str,
+        *,
+        email: str | None,
+        phone: str | None,
+        date_of_birth: str | None,
+        booking_context: bool = False,
+    ) -> str | None:
+        name_match = _MY_NAME_IS_PATTERN.search(message)
+        if name_match is not None:
+            remainder = name_match.group(1).strip()
+            cut_points: list[int] = []
+
+            if "," in remainder:
+                cut_points.append(remainder.index(","))
+
+            if date_of_birth is not None:
+                dob_index = remainder.find(date_of_birth)
+                if dob_index >= 0:
+                    cut_points.append(dob_index)
+
+            if email is not None:
+                email_index = remainder.lower().find(email.lower())
+                if email_index >= 0:
+                    cut_points.append(email_index)
+
+            if phone is not None:
+                phone_index = remainder.find(phone)
+                if phone_index >= 0:
+                    cut_points.append(phone_index)
+
+            for keyword in ("phone", "email", "dob", "date of birth"):
+                keyword_index = remainder.lower().find(keyword)
+                if keyword_index >= 0:
+                    cut_points.append(keyword_index)
+
+            if cut_points:
+                remainder = remainder[: min(cut_points)].strip()
+
+            return remainder or None
+
+        segments = [segment.strip() for segment in message.split(",")]
+        if len(segments) < 2:
+            if (
+                booking_context
+                and segments
+                and len(segments[0].split()) >= 2
+                and not self._looks_like_scheduling_text(segments[0])
+            ):
+                return segments[0]
+            return None
+
+        first_segment = segments[0]
+        if first_segment.lower().startswith("my name is "):
+            return None
+
+        if len(first_segment.split()) >= 2:
+            return first_segment
+
+        return None
+
+    def _looks_like_scheduling_text(self, value: str) -> bool:
+        normalized = value.lower()
+        scheduling_terms = (
+            "dr.",
+            "doctor",
+            "specialt",
+            "availab",
+            "appointment",
+            "schedule",
+            "book",
+        )
+        if any(term in normalized for term in scheduling_terms):
+            return True
+
+        return _ISO_DATE_PATTERN.search(value) is not None
+
+    def _patient_identity_from_context(
+        self,
+        identity_data: dict[str, Any],
+    ) -> ChatPatientIdentity:
+        return ChatPatientIdentity(
+            full_name=identity_data.get("full_name") or None,
+            date_of_birth=identity_data.get("date_of_birth") or None,
+            phone=identity_data.get("phone") or None,
+            email=identity_data.get("email") or None,
+        )
+
+    def _format_missing_identity_fields(self, missing_fields: list[str]) -> str:
+        labels = [_PATIENT_IDENTITY_FIELD_LABELS[field] for field in missing_fields]
+        return self._join_names(labels)
+
+    def _handle_patient_identity_flow(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        hold_id = merged_context.get("hold_id")
+        booking_context = bool(hold_id)
+
+        parsed = self.parse_patient_identity(
+            message,
+            booking_context=booking_context,
+        )
+        has_identity_fields = any(
+            (
+                parsed.full_name,
+                parsed.date_of_birth,
+                parsed.phone,
+                parsed.email,
+            )
+        )
+        has_confirmation = message_has_confirmation(message)
+
+        if not has_identity_fields and not (has_confirmation and hold_id):
+            return None
+
+        existing_raw = merged_context.get("patient_identity")
+        existing_identity = existing_raw if isinstance(existing_raw, dict) else {}
+        merged_identity = merge_patient_identity(existing_identity, parsed)
+        identity = self._patient_identity_from_context(merged_identity)
+        identity_updates = {
+            **context_updates,
+            "patient_identity": merged_identity,
+        }
+
+        if hold_id:
+            if not identity.is_complete():
+                missing_text = self._format_missing_identity_fields(
+                    identity.missing_fields(),
+                )
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+                    content=(
+                        f"I still need your {missing_text} to confirm the booking. "
+                        "Your hold is still active."
+                    ),
+                    chat_context_updates=identity_updates,
+                )
+
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
+                content=(
+                    "I have your patient details on file. "
+                    "Booking confirmation will be handled in a later step. "
+                    "Your hold is still active."
+                ),
+                chat_context_updates=identity_updates,
+            )
+
+        if has_identity_fields and not identity.is_complete():
+            missing_text = self._format_missing_identity_fields(
+                identity.missing_fields(),
+            )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+                content=(
+                    f"I've noted your details. I still need your {missing_text}."
+                ),
+                chat_context_updates=identity_updates,
+            )
+
+        if has_identity_fields and identity.is_complete():
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
+                content="I have all of your patient details on file.",
+                chat_context_updates=identity_updates,
+            )
+
+        return None
 
     def _handle_availability_flow(
         self,
