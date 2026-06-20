@@ -150,6 +150,10 @@ Goals:
 - Add OpenTelemetry traces
 - Add dependency health checks
 
+Implemented:
+
+- API error response standardization
+
 ## Stage 10 — Production Hardening
 
 Status: Future hardening

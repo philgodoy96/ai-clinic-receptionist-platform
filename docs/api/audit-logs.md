@@ -98,6 +98,10 @@ Audit logs should not contain:
 
 The `event_metadata` field is intended for operational metadata such as stable failure reasons, hold IDs, or doctor IDs.
 
+## Error Responses
+
+HTTP errors from this API use the standardized error envelope documented in [error-responses.md](error-responses.md).
+
 ## Current Limitations
 
 This endpoint does not yet include:
