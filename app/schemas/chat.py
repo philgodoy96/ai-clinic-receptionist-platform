@@ -19,3 +19,5 @@ class ChatMessageResponse(BaseModel):
     assistant_message_id: UUID
     intent: ChatReceptionistIntent
     reply: str
+    appointment_id: UUID | None = None
+    booking_confirmed: bool = False
