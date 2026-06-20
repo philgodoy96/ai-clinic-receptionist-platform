@@ -103,10 +103,15 @@ def get_chat_receptionist_service(
         SchedulingService,
         Depends(get_scheduling_service),
     ],
+    hold_service: Annotated[
+        AppointmentHoldService,
+        Depends(get_appointment_hold_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
         scheduling=scheduling_service,
+        appointment_holds=hold_service,
     )
 
 

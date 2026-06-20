@@ -14,14 +14,26 @@ from app.domain.conversations.enums import (
 )
 from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import AvailabilitySlot, Doctor, Specialty
+from app.services.appointment_holds import (
+    AppointmentHoldService,
+    AppointmentSlotAlreadyHeldError,
+)
 from app.services.conversations import (
     ConversationCreate,
     ConversationMessageCreate,
     ConversationService,
 )
-from app.services.scheduling import SchedulingService
+from app.services.scheduling import (
+    AvailabilitySlotNotFoundError,
+    AvailabilitySlotUnavailableError,
+    SchedulingService,
+)
 
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+_ISO_DATETIME_PATTERN = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\b",
+)
 _EMERGENCY_KEYWORDS = [
     "emergency",
     "urgent",
@@ -56,6 +68,23 @@ _AVAILABILITY_KEYWORDS = [
     "slots",
     "appointments on",
 ]
+_HOLD_KEYWORDS = [
+    "hold",
+    "take",
+    "i'll take",
+    "i will take",
+    "reserve",
+    "that works",
+    "works for me",
+    "first one",
+    "second one",
+    "third one",
+]
+_ORDINAL_SLOT_KEYWORDS = {
+    "first one": 0,
+    "second one": 1,
+    "third one": 2,
+}
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -73,6 +102,11 @@ class ChatReceptionistIntent(StrEnum):
     AVAILABILITY_RESULTS = "availability_results"
     AVAILABILITY_NO_SLOTS = "availability_no_slots"
     INVALID_DATE = "invalid_date"
+    HOLD_REQUEST = "hold_request"
+    HOLD_CREATED = "hold_created"
+    HOLD_MISSING_AVAILABILITY = "hold_missing_availability"
+    HOLD_SLOT_NOT_FOUND = "hold_slot_not_found"
+    HOLD_CONFLICT = "hold_conflict"
     FALLBACK = "fallback"
 
 
@@ -86,6 +120,15 @@ _AVAILABILITY_CONTEXT_INTENTS = frozenset(
     }
 )
 _MAX_OFFERED_SLOTS = 5
+_HOLD_CONTEXT_INTENTS = frozenset(
+    {
+        ChatReceptionistIntent.HOLD_REQUEST,
+        ChatReceptionistIntent.HOLD_CREATED,
+        ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY,
+        ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND,
+        ChatReceptionistIntent.HOLD_CONFLICT,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +140,8 @@ class ChatReceptionistReply:
     chat_context_updates: dict[str, Any] = field(default_factory=dict)
     availability_checked: bool = False
     offered_slot_count: int | None = None
+    hold_created: bool | None = None
+    hold_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,10 +231,12 @@ class ChatReceptionistService:
         *,
         conversations: ConversationService,
         scheduling: SchedulingService,
+        appointment_holds: AppointmentHoldService,
         responder: DeterministicChatResponder | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
+        self.appointment_holds = appointment_holds
         self.responder = responder or DeterministicChatResponder()
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
@@ -219,7 +266,11 @@ class ChatReceptionistService:
             assistant_metadata["matched_specialty_id"] = str(reply.matched_specialty_id)
         if reply.matched_specialty_name is not None:
             assistant_metadata["matched_specialty_name"] = reply.matched_specialty_name
-        if reply.chat_context_updates or reply.intent in _AVAILABILITY_CONTEXT_INTENTS:
+        if (
+            reply.chat_context_updates
+            or reply.intent in _AVAILABILITY_CONTEXT_INTENTS
+            or reply.intent in _HOLD_CONTEXT_INTENTS
+        ):
             assistant_metadata["chat_context"] = conversation.conversation_metadata.get(
                 "chat_context",
                 {},
@@ -228,6 +279,10 @@ class ChatReceptionistService:
             assistant_metadata["availability_checked"] = True
         if reply.offered_slot_count is not None:
             assistant_metadata["offered_slot_count"] = reply.offered_slot_count
+        if reply.hold_created is not None:
+            assistant_metadata["hold_created"] = reply.hold_created
+        if reply.hold_id is not None:
+            assistant_metadata["hold_id"] = reply.hold_id
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -313,6 +368,15 @@ class ChatReceptionistService:
                 matched_specialty_id=matched_specialty.id,
                 matched_specialty_name=matched_specialty.name,
                 chat_context_updates=context_updates,
+            )
+
+        if self._is_hold_request(normalized_message, merged_context, message):
+            return self._handle_hold_flow(
+                message=message,
+                normalized_message=normalized_message,
+                conversation=conversation,
+                merged_context=merged_context,
+                context_updates=context_updates,
             )
 
         if self._is_availability_request(normalized_message) or (
@@ -566,6 +630,199 @@ class ChatReceptionistService:
         }
 
         return bool(relevant_updates & context_updates.keys())
+
+    def _is_hold_request(
+        self,
+        normalized_message: str,
+        merged_context: dict[str, Any],
+        message: str,
+    ) -> bool:
+        offered_slots = merged_context.get("offered_slots") or []
+
+        if offered_slots and "book" in normalized_message:
+            return True
+
+        if self.responder._contains_any(normalized_message, _HOLD_KEYWORDS):
+            return True
+
+        if self._message_has_time_pattern(normalized_message):
+            return True
+
+        return self._extract_iso_datetime(message) is not None
+
+    def _handle_hold_flow(
+        self,
+        *,
+        message: str,
+        normalized_message: str,
+        conversation: Conversation,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        offered_slots = merged_context.get("offered_slots") or []
+
+        if not offered_slots:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY,
+                content=(
+                    "Please check availability first so I can hold one of the "
+                    "available times."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+
+        selected_slot = self._select_offered_slot(
+            message,
+            normalized_message,
+            offered_slots,
+        )
+
+        if selected_slot is None:
+            if self._message_has_slot_selection_attempt(normalized_message, message):
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND,
+                    content=(
+                        "I could not match that time to one of the available slots. "
+                        "Please choose one of the listed times."
+                    ),
+                    chat_context_updates=context_updates,
+                    hold_created=False,
+                )
+
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_REQUEST,
+                content=(
+                    "Please choose one of the listed times so I can hold it for you "
+                    "temporarily."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+
+        owner_id = str(conversation.id)
+
+        try:
+            slot = self.scheduling.get_available_slot_for_hold(
+                UUID(str(selected_slot["availability_slot_id"])),
+            )
+            hold = self.appointment_holds.create_hold(
+                availability_slot_id=slot.id,
+                doctor_id=slot.doctor_id,
+                start_time=slot.start_time,
+                end_time=slot.end_time,
+                owner_id=owner_id,
+            )
+        except AvailabilitySlotNotFoundError:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND,
+                content=(
+                    "I could not match that time to one of the available slots. "
+                    "Please choose one of the listed times."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+        except (AvailabilitySlotUnavailableError, AppointmentSlotAlreadyHeldError):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_CONFLICT,
+                content=(
+                    "That time was just taken or is already being held. "
+                    "Please choose another available time."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+
+        hold_expires_at = hold.created_at + timedelta(
+            seconds=self.appointment_holds.ttl_seconds,
+        )
+        display_time = str(selected_slot.get("display_time", slot.start_time.strftime("%H:%M")))
+        doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.HOLD_CREATED,
+            content=(
+                f"I temporarily held {display_time} with {doctor_name}. "
+                "This is not booked yet. To confirm, please provide the patient's "
+                "full name, date of birth, phone, and email."
+            ),
+            chat_context_updates={
+                **context_updates,
+                "selected_availability_slot_id": str(slot.id),
+                "selected_start_time": slot.start_time.isoformat(),
+                "hold_id": str(hold.hold_id),
+                "hold_expires_at": hold_expires_at.isoformat(),
+                "hold_owner_id": owner_id,
+            },
+            hold_created=True,
+            hold_id=str(hold.hold_id),
+        )
+
+    def _select_offered_slot(
+        self,
+        message: str,
+        normalized_message: str,
+        offered_slots: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for keyword, index in _ORDINAL_SLOT_KEYWORDS.items():
+            if keyword in normalized_message and index < len(offered_slots):
+                return offered_slots[index]
+
+        time_match = _TIME_PATTERN.search(normalized_message)
+        if time_match is not None:
+            normalized_time = self._normalize_time_text(
+                int(time_match.group(1)),
+                int(time_match.group(2)),
+            )
+            for offered_slot in offered_slots:
+                if offered_slot.get("display_time") == normalized_time:
+                    return offered_slot
+
+        iso_datetime = self._extract_iso_datetime(message)
+        if iso_datetime is not None:
+            for offered_slot in offered_slots:
+                if offered_slot.get("start_time") == iso_datetime.isoformat():
+                    return offered_slot
+
+        return None
+
+    def _message_has_slot_selection_attempt(
+        self,
+        normalized_message: str,
+        message: str,
+    ) -> bool:
+        if any(keyword in normalized_message for keyword in _ORDINAL_SLOT_KEYWORDS):
+            return True
+
+        if self._message_has_time_pattern(normalized_message):
+            return True
+
+        return self._extract_iso_datetime(message) is not None
+
+    def _message_has_time_pattern(self, normalized_message: str) -> bool:
+        return _TIME_PATTERN.search(normalized_message) is not None
+
+    def _normalize_time_text(self, hour: int, minute: int) -> str:
+        return f"{hour:02d}:{minute:02d}"
+
+    def _extract_iso_datetime(self, message: str) -> datetime | None:
+        match = _ISO_DATETIME_PATTERN.search(message)
+
+        if match is None:
+            return None
+
+        raw_value = match.group(1).replace(" ", "T")
+
+        try:
+            parsed = datetime.fromisoformat(raw_value)
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+
+        return parsed
 
     def _match_doctor_in_message(self, normalized_message: str) -> Doctor | None:
         doctors = sorted(

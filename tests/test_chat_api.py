@@ -10,8 +10,10 @@ from app.api.dependencies import get_chat_receptionist_service
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationChannel
 from app.main import create_app
+from app.services.appointment_holds import AppointmentHoldService
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationCreate, ConversationService
+from tests.test_appointment_holds import FakeAppointmentHoldRepository
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
     create_demo_scheduling_service_with_emily_july_availability,
@@ -26,6 +28,10 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
     chat_service = ChatReceptionistService(
         conversations=conversation_service,
         scheduling=create_demo_scheduling_service_with_emily_july_availability(),
+        appointment_holds=AppointmentHoldService(
+            repository=FakeAppointmentHoldRepository(),
+            ttl_seconds=300,
+        ),
     )
     db = FakeDatabaseSession()
 
