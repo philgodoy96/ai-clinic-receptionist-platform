@@ -135,7 +135,7 @@ class RetellAppointmentHoldToolAdapter:
                 call_id=payload.call_id,
                 conversation_id=payload.conversation_id,
                 availability_slot_id=hold.availability_slot_id,
-                metadata={
+                event_metadata={
                     "hold_id": str(hold.hold_id),
                     "doctor_id": str(hold.doctor_id),
                 },
@@ -171,7 +171,7 @@ class RetellAppointmentHoldToolAdapter:
                 call_id=payload.call_id,
                 conversation_id=payload.conversation_id,
                 availability_slot_id=payload.availability_slot_id,
-                metadata={"reason": reason},
+                event_metadata={"reason": reason},
             ),
         )
 

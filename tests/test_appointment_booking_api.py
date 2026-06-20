@@ -274,7 +274,7 @@ class FakeAuditLogService:
             outcome=payload.outcome,
             actor_type=payload.actor_type,
             source=payload.source,
-            event_metadata=payload.metadata,
+            event_metadata=payload.event_metadata,
         )
 
     def record_best_effort(self, payload: AuditLogCreate) -> None:
