@@ -99,8 +99,15 @@ def get_chat_receptionist_service(
         ConversationService,
         Depends(get_conversation_service),
     ],
+    scheduling_service: Annotated[
+        SchedulingService,
+        Depends(get_scheduling_service),
+    ],
 ) -> ChatReceptionistService:
-    return ChatReceptionistService(conversations=conversation_service)
+    return ChatReceptionistService(
+        conversations=conversation_service,
+        scheduling=scheduling_service,
+    )
 
 
 def get_email_job_dispatch_publisher() -> EmailJobDispatchPublisher:

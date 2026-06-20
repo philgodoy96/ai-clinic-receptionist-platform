@@ -6,6 +6,8 @@ The AI Clinic Receptionist Platform needs durable conversation storage for chat 
 
 The Chat API already uses `Conversation` and `ConversationMessage` to record each user turn and deterministic assistant reply.
 
+Chat messages may now include scheduling-aware assistant replies, such as specialty listings, doctor listings, or specialty-specific doctor guidance.
+
 Conversation records are used to preserve interaction history across:
 
 - Chat sessions
@@ -28,6 +30,10 @@ Scheduling truth lives in:
 - audit logs
 
 Conversation storage records interaction history.
+
+Conversation metadata and message history do not own scheduling truth.
+
+They may reference scheduling context in assistant replies, but appointments, availability, patients, doctors, and specialties remain authoritative in scheduling storage.
 
 ## Core Entities
 
@@ -116,6 +122,8 @@ This implementation does not include LLM orchestration.
 
 The Chat API (`POST /api/v1/chat/messages`) persists interaction history through `Conversation` and `ConversationMessage` records. Each request creates or reuses a conversation, stores the user message with role `user`, generates a deterministic assistant reply, and stores that reply with role `assistant`.
 
+Scheduling-aware replies are persisted in `ConversationMessage` content and `message_metadata`, including intent values such as `list_specialties`, `list_doctors`, and `specialty_doctors`.
+
 The future LLM layer should use conversation storage as context, but it should not own business rules.
 
 Business rules remain in deterministic services.
@@ -124,7 +132,9 @@ Business rules remain in deterministic services.
 
 Planned future implementation phases include:
 
-- Scheduling-aware chat flow
+- Chat availability guidance
+- Chat appointment hold flow
+- Chat booking confirmation flow
 - Fake LLM provider
 - Deterministic receptionist flow
 - Conversation state machine

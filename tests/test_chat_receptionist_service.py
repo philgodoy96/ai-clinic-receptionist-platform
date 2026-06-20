@@ -13,14 +13,38 @@ from app.services.chat_receptionist import (
     DeterministicChatResponder,
 )
 from app.services.conversations import ConversationCreate, ConversationService
+from app.services.scheduling import SchedulingService
 from tests.test_conversations import FakeConversationRepository
+from tests.test_scheduling_services import (
+    FakeAppointmentRepository,
+    create_demo_scheduling_service,
+    create_service,
+    create_specialty,
+)
 
 
 @pytest.fixture()
 def chat_service() -> tuple[ChatReceptionistService, FakeConversationRepository]:
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
-    service = ChatReceptionistService(conversations=conversations)
+    scheduling = create_service()
+    service = ChatReceptionistService(
+        conversations=conversations,
+        scheduling=scheduling,
+    )
+
+    return service, repository
+
+
+@pytest.fixture()
+def scheduling_chat_service() -> tuple[ChatReceptionistService, FakeConversationRepository]:
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service()
+    service = ChatReceptionistService(
+        conversations=conversations,
+        scheduling=scheduling,
+    )
 
     return service, repository
 
@@ -80,17 +104,68 @@ def test_assistant_message_is_persisted_with_role_assistant(
     assert result.assistant_message in repository.messages
 
 
-def test_appointment_request_message_returns_intent_appointment_request(
-    chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+def test_list_specialties_returns_intent_and_real_specialty_names(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
-    service, _repository = chat_service
+    service, _repository = scheduling_chat_service
 
     result = service.handle_message(
-        ChatMessageInput(message="I would like to book an appointment."),
+        ChatMessageInput(message="What specialties do you have?"),
     )
 
+    assert result.intent == ChatReceptionistIntent.LIST_SPECIALTIES
+    assert "Dermatology" in result.reply
+    assert "Cardiology" in result.reply
+    assert "Primary Care" in result.reply
+
+
+def test_list_doctors_returns_intent_and_real_doctor_names(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="Which doctors do you have?"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.LIST_DOCTORS
+    assert "Dr. Emily Carter" in result.reply
+    assert "Dr. Michael Reed" in result.reply
+    assert "Dr. Sarah Mitchell" in result.reply
+
+
+def test_dermatologist_request_matches_specialty_and_lists_doctors(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need a dermatologist"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
+    assert "Dr. Emily Carter" in result.reply
+    assert "Dr. Michael Reed" not in result.reply
+    assert result.assistant_message.message_metadata["matched_specialty_name"] == "Dermatology"
+    assert result.assistant_message.message_metadata["intent"] == "specialty_doctors"
+
+
+def test_appointment_request_message_returns_intent_appointment_request(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, repository = scheduling_chat_service
+    appointments = service.scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+
+    with patch.object(appointments, "add", wraps=appointments.add) as add_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="I need an appointment"),
+        )
+
     assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
-    assert "appointment scheduling" in result.reply.lower()
+    assert "specialty or doctor" in result.reply.lower()
+    assert result.conversation.appointment_id is None
+    add_appointment_mock.assert_not_called()
 
 
 def test_emergency_message_returns_intent_emergency_and_safe_guidance(
@@ -107,6 +182,61 @@ def test_emergency_message_returns_intent_emergency_and_safe_guidance(
     assert "emergency services" in result.reply.lower()
 
 
+def test_emergency_message_does_not_call_scheduling(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "list_specialties",
+        wraps=scheduling.list_specialties,
+    ) as list_specialties_mock, patch.object(
+        SchedulingService,
+        "list_doctors",
+        wraps=scheduling.list_doctors,
+    ) as list_doctors_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="This is an emergency and I have chest pain."),
+        )
+
+    assert result.intent == ChatReceptionistIntent.EMERGENCY
+    list_specialties_mock.assert_not_called()
+    list_doctors_mock.assert_not_called()
+
+
+def test_cancel_request_takes_priority_over_doctor_listing(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="Please cancel my appointment with the doctors office."),
+    )
+
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+
+
+def test_specialty_with_no_doctors_returns_safe_message(
+    chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = chat_service
+    empty_specialty = create_specialty(name="Pediatrics")
+    service_with_empty_specialty = ChatReceptionistService(
+        conversations=service.conversations,
+        scheduling=create_service(specialties=[empty_specialty]),
+    )
+
+    result = service_with_empty_specialty.handle_message(
+        ChatMessageInput(message="I am looking for pediatrics."),
+    )
+
+    assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
+    assert "Pediatrics" in result.reply
+    assert "do not currently have any doctors" in result.reply.lower()
+
+
 def test_handle_message_does_not_call_llm_provider(
     chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
@@ -114,12 +244,13 @@ def test_handle_message_does_not_call_llm_provider(
     responder = SpyDeterministicChatResponder()
     service_with_spy = ChatReceptionistService(
         conversations=service.conversations,
+        scheduling=service.scheduling,
         responder=responder,
     )
 
     with patch("app.services.chat_receptionist.openai", create=True) as openai_mock:
         result = service_with_spy.handle_message(
-            ChatMessageInput(message="Can I schedule a visit?"),
+            ChatMessageInput(message="Hello"),
         )
 
     assert responder.call_count == 1
