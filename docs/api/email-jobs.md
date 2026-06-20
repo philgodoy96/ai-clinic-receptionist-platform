@@ -32,6 +32,41 @@ Replay dead-letter job:
 
     POST /api/v1/email-jobs/{email_job_id}/replay
 
+Operational metrics:
+
+    GET /api/v1/email-jobs/metrics
+
+## Metrics
+
+Example response:
+
+    {
+      "total_jobs": 10,
+      "counts_by_status": {
+        "pending": 2,
+        "processing": 1,
+        "sent": 5,
+        "failed": 1,
+        "dead_letter": 1
+      },
+      "locked_count": 1,
+      "expired_lock_count": 0,
+      "overdue_pending_count": 2,
+      "oldest_pending_created_at": "2026-07-01T10:00:00Z",
+      "oldest_failed_created_at": "2026-07-01T10:05:00Z",
+      "newest_dead_letter_created_at": "2026-07-01T10:10:00Z"
+    }
+
+Metrics help inspect:
+
+- worker backlog
+- failed jobs
+- dead-letter accumulation
+- expired locks
+- jobs ready for processing
+
+The metrics endpoint returns aggregate counts and timestamps only. It does not expose job payload, email body, subject, recipient details, or other clinical or patient-identifying data. Use the list or get-by-id endpoints when per-job detail is required for debugging.
+
 ## Pagination
 
 The list endpoint uses cursor pagination.
@@ -158,6 +193,8 @@ Email job payload should not contain:
 - Insurance identifiers
 
 The payload is intended for operational metadata such as source, hold_id, call_id, and conversation_id.
+
+The metrics endpoint is intentionally narrower: it exposes only operational aggregates (status counts, lock health, backlog signals, and created-at timestamps). It never returns payload, body, subject, recipient_email, or appointment/patient identifiers. This keeps operator visibility useful without widening the clinical data surface.
 
 ## Current Limitations
 

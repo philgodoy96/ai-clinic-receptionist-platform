@@ -24,6 +24,7 @@ The current implementation includes:
 - RabbitMQ dispatch consumer
 - Email Job Debug API with cursor pagination
 - Manual retry and dead-letter replay controls
+- Email job operational metrics endpoint
 
 ## Worker Flow
 
@@ -103,6 +104,36 @@ After the database commit, the API publishes a RabbitMQ wake message for the new
 
 Replay creates a new job rather than mutating the original because dead_letter records represent the final exhausted state of a delivery attempt chain. Preserving that record keeps audit history intact and avoids overwriting failure context that may still be needed for root-cause analysis.
 
+## Operational Metrics
+
+The Email Job Debug API exposes aggregate operational metrics at:
+
+    GET /api/v1/email-jobs/metrics
+
+These metrics summarize queue health without returning per-job payload or clinical content.
+
+### Pending and failed backlog
+
+`counts_by_status.pending` and `counts_by_status.failed` show how many jobs are waiting for worker attention.
+
+`overdue_pending_count` counts jobs in `pending` or `failed` status whose `scheduled_for` is at or before the current time. These jobs are ready for processing or retry but have not yet been claimed. A rising overdue count usually means workers are saturated, dispatch is delayed, or jobs are stuck behind locks.
+
+`oldest_pending_created_at` and `oldest_failed_created_at` help detect aging backlog: the longer the oldest job has waited, the more likely an operator intervention or capacity change is needed.
+
+### Expired locks
+
+During processing, a worker sets `locked_by` and `locked_until`. While the lock is active (`locked_until >= now`), another worker will not claim the job.
+
+`locked_count` reports jobs with an active lock. `expired_lock_count` reports jobs still in `processing` whose lock has expired (`locked_until < now`). Expired locks often indicate a worker crash or timeout before the job was marked sent or failed. Once the lock expires, another worker can reclaim the job through the normal claim flow.
+
+### Dead-letter count
+
+`counts_by_status.dead_letter` shows how many jobs exhausted all retry attempts and require manual investigation.
+
+`newest_dead_letter_created_at` helps spot recent dead-letter accumulation. Sustained growth in dead-letter count may point to provider misconfiguration, invalid recipient data, or a systemic delivery failure that retry alone cannot fix. Operators can replay individual dead-letter jobs through the debug API when appropriate.
+
+See `docs/api/email-jobs.md` for the response shape and example payload.
+
 ## Email Job Debug API
 
 An Email Job Debug API now exists for local development and operator debugging.
@@ -110,6 +141,7 @@ An Email Job Debug API now exists for local development and operator debugging.
 Endpoints:
 
     GET /api/v1/email-jobs
+    GET /api/v1/email-jobs/metrics
     GET /api/v1/email-jobs/{email_job_id}
     POST /api/v1/email-jobs/{email_job_id}/retry
     POST /api/v1/email-jobs/{email_job_id}/replay
@@ -145,4 +177,4 @@ This implementation does not yet include:
 - DLQ exchange/queue configuration
 - Provider idempotency keys
 - Exponential backoff
-- Metrics
+- Prometheus/Grafana integration for metrics export
