@@ -26,6 +26,10 @@ from app.services.appointment_holds import (
     AppointmentHoldService,
 )
 from app.services.audit_logs import AuditLogCreate, AuditLogService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
 
 RETELL_TOOL_SOURCE = "retell_tool"
 
@@ -43,11 +47,13 @@ class RetellAppointmentBookingToolAdapter:
         booking_service: AppointmentBookingServiceForRetell,
         hold_service: AppointmentHoldService,
         audit_logs: AuditLogService,
+        email_jobs: EmailJobService,
     ) -> None:
         self.db = db
         self.booking_service = booking_service
         self.hold_service = hold_service
         self.audit_logs = audit_logs
+        self.email_jobs = email_jobs
 
     def book_appointment(
         self,
@@ -89,6 +95,20 @@ class RetellAppointmentBookingToolAdapter:
                     availability_slot_id=payload.availability_slot_id,
                     event_metadata={"hold_id": str(payload.hold_id)},
                 ),
+            )
+
+            self.email_jobs.enqueue_appointment_confirmation(
+                AppointmentConfirmationEmailJobCreate(
+                    appointment_id=appointment.id,
+                    patient_id=payload.patient_id,
+                    appointment_start_time=appointment.start_time.isoformat(),
+                    payload={
+                        "source": "retell_tool",
+                        "hold_id": str(payload.hold_id),
+                        "call_id": payload.call_id,
+                        "conversation_id": payload.conversation_id,
+                    },
+                )
             )
 
             self.db.commit()
