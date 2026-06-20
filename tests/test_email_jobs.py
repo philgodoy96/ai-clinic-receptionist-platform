@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+
+import pytest
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
@@ -9,6 +12,8 @@ from app.services.email_job_pagination import EmailJobCursor
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
+    InvalidEmailJobReplayStateError,
+    InvalidEmailJobRetryStateError,
 )
 
 
@@ -56,6 +61,92 @@ def test_enqueue_appointment_confirmation_does_not_require_recipient_email_yet()
 
     assert email_job.recipient_email is None
     assert email_job.status == EmailJobStatus.PENDING
+
+
+def test_retry_failed_email_job_moves_failed_job_to_pending() -> None:
+    failed_job = create_email_job(
+        status=EmailJobStatus.FAILED,
+        attempts=2,
+        last_error="smtp failure",
+    )
+    repository = FakeEmailJobRepository()
+    repository.add(failed_job)
+    service = EmailJobService(repository=repository)
+    retry_at = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
+
+    result = service.retry_failed_email_job(failed_job.id, now=retry_at)
+
+    assert result.status == EmailJobStatus.PENDING
+    assert result.scheduled_for == retry_at
+    assert result.locked_by is None
+    assert result.locked_until is None
+    assert result.attempts == 2
+    assert result.last_error == "smtp failure"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        EmailJobStatus.PENDING,
+        EmailJobStatus.SENT,
+        EmailJobStatus.PROCESSING,
+        EmailJobStatus.DEAD_LETTER,
+    ],
+)
+def test_retry_failed_email_job_rejects_non_failed_status(
+    status: EmailJobStatus,
+) -> None:
+    email_job = create_email_job(status=status)
+    repository = FakeEmailJobRepository()
+    repository.add(email_job)
+    service = EmailJobService(repository=repository)
+
+    with pytest.raises(InvalidEmailJobRetryStateError):
+        service.retry_failed_email_job(email_job.id)
+
+
+def test_replay_dead_letter_email_job_creates_new_pending_job() -> None:
+    original = create_email_job(
+        status=EmailJobStatus.DEAD_LETTER,
+        attempts=3,
+        last_error="max attempts exceeded",
+        payload={"source": "test"},
+    )
+    repository = FakeEmailJobRepository()
+    repository.add(original)
+    service = EmailJobService(repository=repository)
+    replay_at = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
+
+    replay = service.replay_dead_letter_email_job(original.id, now=replay_at)
+
+    assert original.status == EmailJobStatus.DEAD_LETTER
+    assert replay.id != original.id
+    assert replay.status == EmailJobStatus.PENDING
+    assert replay.attempts == 0
+    assert replay.payload["replayed_from_email_job_id"] == str(original.id)
+    assert replay.last_error is None
+    assert len(repository.email_jobs) == 2
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        EmailJobStatus.FAILED,
+        EmailJobStatus.PENDING,
+        EmailJobStatus.PROCESSING,
+        EmailJobStatus.SENT,
+    ],
+)
+def test_replay_dead_letter_email_job_rejects_non_dead_letter_status(
+    status: EmailJobStatus,
+) -> None:
+    email_job = create_email_job(status=status)
+    repository = FakeEmailJobRepository()
+    repository.add(email_job)
+    service = EmailJobService(repository=repository)
+
+    with pytest.raises(InvalidEmailJobReplayStateError):
+        service.replay_dead_letter_email_job(email_job.id)
 
 
 class FakeEmailJobRepository:
@@ -109,3 +200,86 @@ class FakeEmailJobRepository:
             jobs = [item for item in jobs if item.patient_id == patient_id]
 
         return jobs[:limit]
+
+    def schedule_retry(
+        self,
+        *,
+        email_job: EmailJob,
+        now: datetime,
+    ) -> EmailJob:
+        email_job.status = EmailJobStatus.PENDING
+        email_job.scheduled_for = now
+        email_job.locked_by = None
+        email_job.locked_until = None
+        email_job.updated_at = now
+
+        return email_job
+
+    def create_replay(
+        self,
+        *,
+        original_email_job: EmailJob,
+        now: datetime,
+    ) -> EmailJob:
+        replay_job = EmailJob(
+            id=uuid4(),
+            job_type=original_email_job.job_type,
+            status=EmailJobStatus.PENDING,
+            appointment_id=original_email_job.appointment_id,
+            patient_id=original_email_job.patient_id,
+            recipient_email=original_email_job.recipient_email,
+            subject=original_email_job.subject,
+            body=original_email_job.body,
+            attempts=0,
+            max_attempts=original_email_job.max_attempts,
+            locked_by=None,
+            locked_until=None,
+            last_error=None,
+            payload={
+                **original_email_job.payload,
+                "replayed_from_email_job_id": str(original_email_job.id),
+                "replayed_from_attempts": original_email_job.attempts,
+                "replayed_from_status": original_email_job.status.value,
+            },
+            scheduled_for=now,
+            sent_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return self.add(replay_job)
+
+
+def create_email_job(
+    *,
+    status: EmailJobStatus,
+    attempts: int = 1,
+    last_error: str | None = "smtp failure",
+    locked_by: str | None = "worker-1",
+    locked_until: datetime | None = None,
+    payload: dict[str, str] | None = None,
+) -> EmailJob:
+    created_at = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    effective_locked_until = locked_until
+    if effective_locked_until is None and locked_by is not None:
+        effective_locked_until = created_at + timedelta(minutes=5)
+
+    return EmailJob(
+        id=uuid4(),
+        job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
+        status=status,
+        appointment_id=uuid4(),
+        patient_id=uuid4(),
+        recipient_email="patient@example.test",
+        subject="Appointment confirmation",
+        body="Your appointment is confirmed.",
+        attempts=attempts,
+        max_attempts=3,
+        locked_by=locked_by,
+        locked_until=effective_locked_until,
+        last_error=last_error,
+        payload=payload or {"source": "test"},
+        scheduled_for=created_at,
+        created_at=created_at,
+        updated_at=created_at,
+    )
