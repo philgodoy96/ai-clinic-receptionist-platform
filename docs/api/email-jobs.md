@@ -196,6 +196,10 @@ The payload is intended for operational metadata such as source, hold_id, call_i
 
 The metrics endpoint is intentionally narrower: it exposes only operational aggregates (status counts, lock health, backlog signals, and created-at timestamps). It never returns payload, body, subject, recipient_email, or appointment/patient identifiers. This keeps operator visibility useful without widening the clinical data surface.
 
+## Error Responses
+
+HTTP errors from this API use the standardized error envelope documented in [error-responses.md](error-responses.md).
+
 ## Current Limitations
 
 This endpoint does not yet include:
