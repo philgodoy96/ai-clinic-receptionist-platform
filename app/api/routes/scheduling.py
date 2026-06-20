@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import (
     get_appointment_booking_service,
     get_appointment_hold_service,
+    get_audit_log_service,
     get_scheduling_service,
 )
 from app.db.session import get_db
+from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.schemas.scheduling import (
     AppointmentBookingRequestBody,
@@ -45,6 +47,7 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldOwnerError,
     InvalidAppointmentHoldWindowError,
 )
+from app.services.audit_logs import AuditLogCreate, AuditLogService
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
@@ -56,6 +59,23 @@ from app.services.scheduling import (
 )
 
 router = APIRouter(prefix="/api/v1/scheduling", tags=["scheduling"])
+
+SCHEDULING_API_SOURCE = "scheduling_api"
+
+
+def _commit_audit_best_effort(
+    db: Session,
+    audit_logs: AuditLogService,
+    payload: AuditLogCreate,
+) -> None:
+    try:
+        audit_logs.record(payload)
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            return
 
 
 @router.get("/specialties", response_model=list[SpecialtyResponse])
@@ -164,8 +184,10 @@ def list_upcoming_appointments(
 )
 def hold_appointment_slot(
     payload: AppointmentHoldCreateRequest,
+    db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> AppointmentHoldResponse:
     try:
         slot = scheduling_service.get_available_slot_for_hold(payload.availability_slot_id)
@@ -177,25 +199,94 @@ def hold_appointment_slot(
             owner_id=payload.owner_id,
         )
     except AvailabilitySlotNotFoundError as exc:
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_HOLD_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={"reason": "availability_slot_not_found"},
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="availability slot was not found",
         ) from exc
     except AvailabilitySlotUnavailableError as exc:
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_HOLD_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={"reason": "availability_slot_unavailable"},
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="availability slot is not available",
         ) from exc
     except AppointmentSlotAlreadyHeldError as exc:
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_HOLD_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={"reason": "slot_already_held"},
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="slot already has an active hold",
         ) from exc
     except (InvalidAppointmentHoldOwnerError, InvalidAppointmentHoldWindowError) as exc:
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_HOLD_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={"reason": "invalid_appointment_hold"},
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    _commit_audit_best_effort(
+        db,
+        audit_logs,
+        AuditLogCreate(
+            event_type=AuditEventType.APPOINTMENT_HOLD_CREATED,
+            outcome=AuditEventOutcome.SUCCESS,
+            actor_type=AuditActorType.API,
+            source=SCHEDULING_API_SOURCE,
+            actor_id=payload.owner_id,
+            availability_slot_id=hold.availability_slot_id,
+            metadata={
+                "hold_id": str(hold.hold_id),
+                "doctor_id": str(hold.doctor_id),
+            },
+        ),
+    )
 
     return AppointmentHoldResponse(
         hold_id=hold.hold_id,
@@ -221,6 +312,7 @@ def book_appointment(
         Depends(get_appointment_booking_service),
     ],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> Appointment:
     try:
         result = booking_service.book_appointment(
@@ -235,6 +327,20 @@ def book_appointment(
         appointment = result.appointment
         hold = result.hold
 
+        audit_logs.record_best_effort(
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_CONFIRMED,
+                outcome=AuditEventOutcome.SUCCESS,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                appointment_id=appointment.id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={"hold_id": str(payload.hold_id)},
+            ),
+        )
+
         db.commit()
         db.refresh(appointment)
 
@@ -247,60 +353,230 @@ def book_appointment(
         return appointment
     except IntegrityError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "appointment_conflict",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="appointment could not be booked because the slot is no longer available",
         ) from exc
     except BookingPatientNotFoundError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "patient_not_found",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="patient was not found",
         ) from exc
     except BookingDoctorNotFoundError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "doctor_not_found",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="doctor was not found or is inactive",
         ) from exc
     except BookingAvailabilitySlotNotFoundError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "availability_slot_not_found",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="availability slot was not found",
         ) from exc
     except BookingAvailabilitySlotUnavailableError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "availability_slot_unavailable",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="availability slot is not available",
         ) from exc
     except AppointmentSlotAlreadyBookedError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "slot_already_booked",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="doctor already has a scheduled appointment at this time",
         ) from exc
     except AppointmentBookingOwnerRequiredError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "missing_booking_owner",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="owner_id is required",
         ) from exc
     except AppointmentHoldNotFoundError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "appointment_hold_expired",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="appointment hold was not found or expired",
         ) from exc
     except AppointmentHoldMismatchError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "appointment_hold_mismatch",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="appointment hold id does not match",
         ) from exc
     except AppointmentHoldOwnershipError as exc:
         db.rollback()
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": "appointment_hold_owner_mismatch",
+                },
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="appointment hold belongs to another owner",

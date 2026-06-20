@@ -10,6 +10,7 @@ from app.cache.redis import get_redis_client
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
+from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
 from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyAppointmentRepository,
     SQLAlchemyAvailabilitySlotRepository,
@@ -19,6 +20,7 @@ from app.repositories.sqlalchemy.scheduling import (
 )
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
+from app.services.audit_logs import AuditLogService
 from app.services.scheduling import SchedulingService
 
 
@@ -58,6 +60,14 @@ def get_appointment_booking_service(
     )
 
 
+def get_audit_log_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> AuditLogService:
+    return AuditLogService(
+        repository=SQLAlchemyAuditLogRepository(db),
+    )
+
+
 def get_retell_scheduling_tool_adapter(
     service: Annotated[SchedulingService, Depends(get_scheduling_service)],
 ) -> RetellSchedulingToolAdapter:
@@ -65,12 +75,16 @@ def get_retell_scheduling_tool_adapter(
 
 
 def get_retell_appointment_hold_tool_adapter(
+    db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> RetellAppointmentHoldToolAdapter:
     return RetellAppointmentHoldToolAdapter(
+        db=db,
         scheduling_service=scheduling_service,
         hold_service=hold_service,
+        audit_logs=audit_logs,
     )
 
 
@@ -81,9 +95,11 @@ def get_retell_appointment_booking_tool_adapter(
         Depends(get_appointment_booking_service),
     ],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> RetellAppointmentBookingToolAdapter:
     return RetellAppointmentBookingToolAdapter(
         db=db,
         booking_service=booking_service,
         hold_service=hold_service,
+        audit_logs=audit_logs,
     )
