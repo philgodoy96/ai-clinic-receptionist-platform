@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
+from app.core.request_context import get_request_id
 from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
 from app.models.audit import AuditLog
 from app.repositories.audit_logs import AuditLogRepository
@@ -64,7 +65,7 @@ class AuditLogService:
             actor_type=payload.actor_type,
             actor_id=payload.actor_id,
             source=payload.source,
-            request_id=payload.request_id,
+            request_id=payload.request_id or get_request_id(),
             call_id=payload.call_id,
             conversation_id=payload.conversation_id,
             patient_id=payload.patient_id,
