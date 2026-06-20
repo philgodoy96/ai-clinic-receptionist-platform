@@ -60,7 +60,23 @@ The deterministic responder supports:
 - list_specialties
 - list_doctors
 - specialty_doctors
+- availability_request
+- availability_missing_date
+- availability_missing_doctor
+- availability_results
+- availability_no_slots
+- invalid_date
 - fallback
+
+## Availability Read Boundary
+
+Availability guidance reads scheduling data through SchedulingService.
+
+It does not mutate scheduling state.
+
+Showing a slot to the user is not the same as reserving it.
+
+A later implementation phase will add hold creation and booking confirmation.
 
 ## Safety Boundary
 
@@ -72,12 +88,12 @@ Emergency language is handled with safe guidance to contact emergency services o
 
 Planned future implementation phases include:
 
-- Chat availability guidance
 - Chat appointment hold flow
 - Chat booking confirmation flow
 - Conversation state machine
 - Slot filling
 - Fake LLM provider
 - Structured LLM output parsing
+- Natural-language date parsing
 - Human escalation
 - Retell webhook ingestion

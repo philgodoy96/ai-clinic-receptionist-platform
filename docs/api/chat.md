@@ -49,6 +49,12 @@ The deterministic responder currently supports:
 - list_specialties
 - list_doctors
 - specialty_doctors
+- availability_request
+- availability_missing_date
+- availability_missing_doctor
+- availability_results
+- availability_no_slots
+- invalid_date
 - fallback
 
 ## Scheduling-Aware Responses
@@ -79,6 +85,40 @@ It does not:
 - reschedule appointments
 - call an LLM
 
+## Availability Guidance
+
+The chat API can provide deterministic, read-only availability guidance.
+
+Supported examples:
+
+    "Dr. Emily Carter availability"
+    "Dr. Emily Carter on 2026-07-02"
+    "Dermatology on 2026-07-02"
+    "What times are available?"
+
+Dates must currently use:
+
+    YYYY-MM-DD
+
+The API may return these intents:
+
+- availability_request
+- availability_missing_date
+- availability_missing_doctor
+- availability_results
+- availability_no_slots
+- invalid_date
+
+This phase is read-only.
+
+It does not:
+
+- create Redis appointment holds
+- create appointments
+- confirm bookings
+- call an LLM
+- parse natural-language dates such as "tomorrow" or "next Monday"
+
 ## Error Responses
 
 HTTP errors use the standardized API error response envelope documented in:
@@ -100,6 +140,7 @@ This implementation does not yet include:
 - Appointment booking from chat
 - Appointment cancellation from chat
 - Appointment rescheduling from chat
+- Natural-language date parsing
 - Slot filling
 - Conversation state machine
 - Human escalation

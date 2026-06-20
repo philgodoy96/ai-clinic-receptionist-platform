@@ -33,6 +33,8 @@ Conversation storage records interaction history.
 
 Conversation metadata and message history do not own scheduling truth.
 
+`chat_context` inside `conversation_metadata` is conversational memory only. It helps the chat layer remember what the user has already said across turns, but it is not authoritative for appointments, availability, patients, doctors, or specialties.
+
 They may reference scheduling context in assistant replies, but appointments, availability, patients, doctors, and specialties remain authoritative in scheduling storage.
 
 ## Core Entities
@@ -54,6 +56,8 @@ Fields include:
 - started_at
 - ended_at
 - conversation_metadata
+
+`conversation_metadata` may include a `chat_context` object for conversational state such as selected doctor, selected specialty, and requested date. This is conversational memory for multi-turn chat guidance, not business truth. Scheduling truth remains in scheduling services and tables.
 
 ### ConversationMessage
 
@@ -122,7 +126,9 @@ This implementation does not include LLM orchestration.
 
 The Chat API (`POST /api/v1/chat/messages`) persists interaction history through `Conversation` and `ConversationMessage` records. Each request creates or reuses a conversation, stores the user message with role `user`, generates a deterministic assistant reply, and stores that reply with role `assistant`.
 
-Scheduling-aware replies are persisted in `ConversationMessage` content and `message_metadata`, including intent values such as `list_specialties`, `list_doctors`, and `specialty_doctors`.
+Scheduling-aware replies are persisted in `ConversationMessage` content and `message_metadata`, including intent values such as `list_specialties`, `list_doctors`, `specialty_doctors`, and availability guidance intents such as `availability_results` and `availability_missing_date`.
+
+Assistant `message_metadata` may also include `chat_context` snapshots when availability guidance updates conversational state.
 
 The future LLM layer should use conversation storage as context, but it should not own business rules.
 
@@ -132,10 +138,10 @@ Business rules remain in deterministic services.
 
 Planned future implementation phases include:
 
-- Chat availability guidance
 - Chat appointment hold flow
 - Chat booking confirmation flow
 - Fake LLM provider
+- Natural-language date parsing
 - Deterministic receptionist flow
 - Conversation state machine
 - Slot filling
