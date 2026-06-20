@@ -127,7 +127,9 @@ def test_create_appointment_hold_rejects_duplicate_hold(
 
     assert first_response.status_code == 201
     assert second_response.status_code == 409
-    assert second_response.json()["detail"] == "slot already has an active hold"
+    body = second_response.json()
+    assert body["error"]["message"] == "slot already has an active hold"
+    assert body["error"]["code"] == "appointment_slot_already_held"
 
 
 def test_create_appointment_hold_returns_not_found_for_unknown_slot(
@@ -142,7 +144,9 @@ def test_create_appointment_hold_returns_not_found_for_unknown_slot(
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "availability slot was not found"
+    body = response.json()
+    assert body["error"]["message"] == "availability slot was not found"
+    assert body["error"]["code"] == "availability_slot_not_found"
 
 
 def test_retell_hold_tool_creates_hold_with_call_id(

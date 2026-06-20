@@ -61,6 +61,14 @@ Retell-specific correlation still uses:
 - call_id
 - conversation_id
 
+## API Error Correlation
+
+Standardized HTTP error payloads include `request_id` and `correlation_id` in the `error` object.
+
+This links API error responses back to structured logs and audit records for the same request.
+
+See [error-responses.md](../api/error-responses.md) for the full error envelope.
+
 ## Privacy Boundary
 
 Structured logs should not contain:

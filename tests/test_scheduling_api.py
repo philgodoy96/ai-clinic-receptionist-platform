@@ -133,7 +133,9 @@ def test_check_availability_rejects_invalid_window(client: TestClient) -> None:
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "start_to must be greater than start_from"
+    body = response.json()
+    assert body["error"]["message"] == "start_to must be greater than start_from"
+    assert body["error"]["code"] == "invalid_availability_window"
 
 
 def test_check_availability_returns_not_found_for_unknown_doctor(client: TestClient) -> None:
@@ -146,7 +148,9 @@ def test_check_availability_returns_not_found_for_unknown_doctor(client: TestCli
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "doctor was not found or is inactive"
+    body = response.json()
+    assert body["error"]["message"] == "doctor was not found or is inactive"
+    assert body["error"]["code"] == "doctor_not_found"
 
 
 def test_lookup_patient_returns_patient_when_identity_is_sufficient(client: TestClient) -> None:
@@ -173,7 +177,9 @@ def test_lookup_patient_rejects_insufficient_identity(client: TestClient) -> Non
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "patient lookup requires phone_number or email"
+    body = response.json()
+    assert body["error"]["message"] == "patient lookup requires phone_number or email"
+    assert body["error"]["code"] == "invalid_patient_identity"
 
 
 def test_lookup_patient_returns_not_found_for_unknown_patient(client: TestClient) -> None:
@@ -187,7 +193,9 @@ def test_lookup_patient_returns_not_found_for_unknown_patient(client: TestClient
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "patient was not found"
+    body = response.json()
+    assert body["error"]["message"] == "patient was not found"
+    assert body["error"]["code"] == "patient_not_found"
 
 
 def test_list_upcoming_appointments_returns_appointments(client: TestClient) -> None:
@@ -216,7 +224,9 @@ def test_list_upcoming_appointments_rejects_insufficient_identity(client: TestCl
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "patient lookup requires phone_number or email"
+    body = response.json()
+    assert body["error"]["message"] == "patient lookup requires phone_number or email"
+    assert body["error"]["code"] == "invalid_patient_identity"
 
 
 class FakeSchedulingService:
