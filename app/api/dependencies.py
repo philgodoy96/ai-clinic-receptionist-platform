@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.adapters.retell.appointment_booking_tools import RetellAppointmentBookingToolAdapter
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
+from app.ai.fake_llm_provider import FakeLLMProvider
 from app.cache.redis import get_redis_client
 from app.core.config import get_settings
 from app.db.session import get_db
@@ -31,6 +32,7 @@ from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
+from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 
 
@@ -92,6 +94,10 @@ def get_conversation_service(
     return ConversationService(
         repository=SQLAlchemyConversationRepository(db),
     )
+
+
+def get_llm_receptionist_analysis_service() -> LLMReceptionistAnalysisService:
+    return LLMReceptionistAnalysisService(provider=FakeLLMProvider())
 
 
 def get_chat_receptionist_service(
