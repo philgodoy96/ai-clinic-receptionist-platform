@@ -62,6 +62,21 @@ Current actor types include:
 - patient
 - system
 
+## Request Correlation
+
+Audit logs include request_id.
+
+When an audit log is recorded during an HTTP request and no explicit request_id is provided, AuditLogService reads the current request_id from request context.
+
+This allows operators to correlate:
+
+- API logs
+- Retell tool calls
+- Audit events
+- Failure responses
+
+Retell flows should also include call_id and conversation_id when available.
+
 ## Privacy Boundary
 
 Audit logs should not store:
