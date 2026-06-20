@@ -142,6 +142,9 @@ class FakeConversationRepository:
         self.messages: list[ConversationMessage] = []
 
     def add(self, conversation: Conversation) -> Conversation:
+        if conversation.id is None:
+            conversation.id = uuid4()
+
         self.conversations.append(conversation)
 
         return conversation
@@ -169,6 +172,9 @@ class FakeConversationRepository:
         return None
 
     def add_message(self, message: ConversationMessage) -> ConversationMessage:
+        if message.id is None:
+            message.id = uuid4()
+
         self.messages.append(message)
 
         return message
