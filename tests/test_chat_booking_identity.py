@@ -109,6 +109,22 @@ def test_merge_patient_identity_preserves_existing_values() -> None:
     }
 
 
+def test_parse_seed_demo_phone_format(chat_service: ChatReceptionistService) -> None:
+    message = "John Miller, 1985-04-12, +1-555-0201, john.miller@example.test"
+
+    identity = chat_service.parse_patient_identity(message)
+
+    assert identity.full_name == "John Miller"
+    assert identity.date_of_birth == "1985-04-12"
+    assert identity.phone == "+1-555-0201"
+    assert identity.email == "john.miller@example.test"
+    assert identity.is_complete()
+
+
+def test_format_missing_identity_single_field(chat_service: ChatReceptionistService) -> None:
+    assert chat_service._format_missing_identity_fields(["phone"]) == "phone"
+
+
 def test_partial_identity_stored_in_chat_context(chat_service: ChatReceptionistService) -> None:
     result = chat_service.handle_message(
         ChatMessageInput(message="Jane Doe, 1990-05-15, jane.doe@example.com"),

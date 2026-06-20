@@ -122,6 +122,16 @@ def test_patient_repository_requires_sufficient_identity(db_session: Session) ->
     assert found is not None
     assert found.email == "john.miller@example.test"
 
+    normalized_match = repository.get_by_identity(
+        full_name="John Miller",
+        date_of_birth=date(1985, 4, 12),
+        phone_number="15550201",
+        email="john.miller@example.test",
+    )
+
+    assert normalized_match is not None
+    assert normalized_match.id == found.id
+
 
 def test_availability_repository_lists_available_slots(db_session: Session) -> None:
     doctor = create_doctor(db_session)

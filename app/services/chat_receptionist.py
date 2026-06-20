@@ -365,7 +365,11 @@ class ChatReceptionistService:
                 },
             ),
         )
-        reply = self._generate_reply(payload.message, conversation)
+        reply = self._generate_reply(
+            payload.message,
+            conversation,
+            request_patient_id=payload.patient_id,
+        )
         if reply.chat_context_updates:
             conversation = self.conversations.merge_chat_context(
                 conversation_id=conversation.id,
@@ -437,6 +441,8 @@ class ChatReceptionistService:
         self,
         message: str,
         conversation: Conversation,
+        *,
+        request_patient_id: UUID | None = None,
     ) -> ChatReceptionistReply:
         normalized_message = message.lower()
         existing_context = dict(conversation.conversation_metadata.get("chat_context", {}))
@@ -471,6 +477,7 @@ class ChatReceptionistService:
             conversation=conversation,
             merged_context=merged_context,
             context_updates=context_updates,
+            request_patient_id=request_patient_id,
         )
         if booking_reply is not None:
             return booking_reply
@@ -611,8 +618,11 @@ class ChatReceptionistService:
     def _extract_phone(self, message: str) -> str | None:
         for match in _PHONE_PATTERN.finditer(message):
             candidate = match.group(0).strip()
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+                continue
+
             digits = re.sub(r"\D", "", candidate)
-            if len(digits) >= 10:
+            if 7 <= len(digits) <= 15:
                 return candidate
         return None
 
@@ -742,6 +752,7 @@ class ChatReceptionistService:
         conversation: Conversation,
         merged_context: dict[str, Any],
         context_updates: dict[str, Any],
+        request_patient_id: UUID | None = None,
     ) -> ChatReceptionistReply | None:
         hold_id = merged_context.get("hold_id")
         booking_context = bool(hold_id)
@@ -842,6 +853,7 @@ class ChatReceptionistService:
             merged_context=merged_context,
             merged_identity=merged_identity,
             identity_updates=identity_updates,
+            request_patient_id=request_patient_id,
         )
 
     def _should_enter_booking_flow(
@@ -870,6 +882,7 @@ class ChatReceptionistService:
         merged_context: dict[str, Any],
         merged_identity: dict[str, Any],
         identity_updates: dict[str, Any],
+        request_patient_id: UUID | None = None,
     ) -> ChatReceptionistReply:
         hold_id_raw = merged_context.get("hold_id")
         slot_id_raw = merged_context.get("selected_availability_slot_id")
@@ -893,6 +906,7 @@ class ChatReceptionistService:
             patient = self._resolve_patient_for_booking(
                 merged_identity,
                 conversation_patient_id=conversation.patient_id,
+                request_patient_id=request_patient_id,
             )
         except InsufficientPatientIdentityError:
             missing_text = self._format_missing_identity_fields(
@@ -1011,9 +1025,11 @@ class ChatReceptionistService:
         merged_identity: dict[str, Any],
         *,
         conversation_patient_id: UUID | None,
+        request_patient_id: UUID | None = None,
     ) -> Patient | None:
-        if conversation_patient_id is not None:
-            patient = self.scheduling.patients.get_by_id(conversation_patient_id)
+        linked_patient_id = conversation_patient_id or request_patient_id
+        if linked_patient_id is not None:
+            patient = self.scheduling.patients.get_by_id(linked_patient_id)
 
             if patient is not None:
                 return patient
@@ -1537,6 +1553,12 @@ class ChatReceptionistService:
         return f"{prefix}{self._join_names(names)}."
 
     def _join_names(self, names: Sequence[str]) -> str:
+        if not names:
+            return ""
+
+        if len(names) == 1:
+            return names[0]
+
         if len(names) == 2:
             return f"{names[0]} and {names[1]}"
 

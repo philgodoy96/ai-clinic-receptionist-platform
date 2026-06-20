@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
+from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 
 
@@ -84,13 +85,23 @@ class SQLAlchemyPatientRepository:
             Patient.date_of_birth == date_of_birth,
         )
 
-        if phone_number is not None:
-            statement = statement.where(Patient.phone_number == phone_number)
-
         if email is not None:
             statement = statement.where(Patient.email == email)
 
-        return self.session.scalar(statement)
+        candidates = list(self.session.scalars(statement).all())
+
+        if not candidates:
+            return None
+
+        if phone_number is None:
+            return candidates[0]
+
+        normalized_phone = normalize_phone_digits(phone_number)
+        for patient in candidates:
+            if normalize_phone_digits(patient.phone_number) == normalized_phone:
+                return patient
+
+        return None
 
     def add(self, patient: Patient) -> Patient:
         self.session.add(patient)
