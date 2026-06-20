@@ -38,6 +38,16 @@ Scheduling truth remains in scheduling services and tables.
 
 The chat API must not create appointments unless it explicitly calls scheduling services in a future implementation phase.
 
+## Scheduling-Aware Read Boundary
+
+The chat layer may read scheduling data through SchedulingService.
+
+It must not mutate scheduling state in this implementation phase.
+
+Scheduling truth remains in scheduling tables.
+
+Chat conversation history records what the user asked and what the assistant answered.
+
 ## Current Intents
 
 The deterministic responder supports:
@@ -47,6 +57,9 @@ The deterministic responder supports:
 - cancel_request
 - reschedule_request
 - emergency
+- list_specialties
+- list_doctors
+- specialty_doctors
 - fallback
 
 ## Safety Boundary
@@ -59,7 +72,9 @@ Emergency language is handled with safe guidance to contact emergency services o
 
 Planned future implementation phases include:
 
-- Scheduling-aware chat tool calls
+- Chat availability guidance
+- Chat appointment hold flow
+- Chat booking confirmation flow
 - Conversation state machine
 - Slot filling
 - Fake LLM provider

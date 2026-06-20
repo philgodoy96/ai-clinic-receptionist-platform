@@ -46,7 +46,38 @@ The deterministic responder currently supports:
 - cancel_request
 - reschedule_request
 - emergency
+- list_specialties
+- list_doctors
+- specialty_doctors
 - fallback
+
+## Scheduling-Aware Responses
+
+The deterministic chat responder can now answer read-only scheduling questions using backend scheduling data.
+
+Supported examples:
+
+    "What specialties do you have?"
+    "Which doctors do you have?"
+    "I need a dermatologist"
+    "I need a cardiologist"
+
+The chat API may return intents such as:
+
+- list_specialties
+- list_doctors
+- specialty_doctors
+- appointment_request
+
+This implementation is read-only.
+
+It does not:
+
+- create appointment holds
+- book appointments
+- cancel appointments
+- reschedule appointments
+- call an LLM
 
 ## Error Responses
 
@@ -65,8 +96,10 @@ Examples:
 This implementation does not yet include:
 
 - LLM understanding
-- Scheduling tool calls
+- Appointment holds from chat
 - Appointment booking from chat
+- Appointment cancellation from chat
+- Appointment rescheduling from chat
 - Slot filling
 - Conversation state machine
 - Human escalation
