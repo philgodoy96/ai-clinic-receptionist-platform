@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -11,7 +13,7 @@ from app.domain.conversations.enums import (
     ConversationMessageRole,
 )
 from app.models.conversations import Conversation, ConversationMessage
-from app.models.scheduling import Doctor, Specialty
+from app.models.scheduling import AvailabilitySlot, Doctor, Specialty
 from app.services.conversations import (
     ConversationCreate,
     ConversationMessageCreate,
@@ -19,6 +21,7 @@ from app.services.conversations import (
 )
 from app.services.scheduling import SchedulingService
 
+_ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _EMERGENCY_KEYWORDS = [
     "emergency",
     "urgent",
@@ -45,6 +48,14 @@ _APPOINTMENT_KEYWORDS = [
     "schedule",
     "book",
 ]
+_AVAILABILITY_KEYWORDS = [
+    "available",
+    "availability",
+    "openings",
+    "times",
+    "slots",
+    "appointments on",
+]
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -56,7 +67,24 @@ class ChatReceptionistIntent(StrEnum):
     LIST_SPECIALTIES = "list_specialties"
     LIST_DOCTORS = "list_doctors"
     SPECIALTY_DOCTORS = "specialty_doctors"
+    AVAILABILITY_REQUEST = "availability_request"
+    AVAILABILITY_MISSING_DATE = "availability_missing_date"
+    AVAILABILITY_MISSING_DOCTOR = "availability_missing_doctor"
+    AVAILABILITY_RESULTS = "availability_results"
+    AVAILABILITY_NO_SLOTS = "availability_no_slots"
+    INVALID_DATE = "invalid_date"
     FALLBACK = "fallback"
+
+
+_AVAILABILITY_CONTEXT_INTENTS = frozenset(
+    {
+        ChatReceptionistIntent.AVAILABILITY_MISSING_DATE,
+        ChatReceptionistIntent.AVAILABILITY_MISSING_DOCTOR,
+        ChatReceptionistIntent.AVAILABILITY_RESULTS,
+        ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
+        ChatReceptionistIntent.INVALID_DATE,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +93,8 @@ class ChatReceptionistReply:
     content: str
     matched_specialty_id: UUID | None = None
     matched_specialty_name: str | None = None
+    chat_context_updates: dict[str, Any] = field(default_factory=dict)
+    availability_checked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +202,13 @@ class ChatReceptionistService:
                 },
             ),
         )
-        reply = self._generate_reply(payload.message)
+        reply = self._generate_reply(payload.message, conversation)
+        if reply.chat_context_updates:
+            conversation = self.conversations.merge_chat_context(
+                conversation_id=conversation.id,
+                chat_context=reply.chat_context_updates,
+            )
+
         assistant_metadata: dict[str, Any] = {
             "source": "chat_api",
             "intent": reply.intent.value,
@@ -181,6 +217,13 @@ class ChatReceptionistService:
             assistant_metadata["matched_specialty_id"] = str(reply.matched_specialty_id)
         if reply.matched_specialty_name is not None:
             assistant_metadata["matched_specialty_name"] = reply.matched_specialty_name
+        if reply.chat_context_updates or reply.intent in _AVAILABILITY_CONTEXT_INTENTS:
+            assistant_metadata["chat_context"] = conversation.conversation_metadata.get(
+                "chat_context",
+                {},
+            )
+        if reply.availability_checked:
+            assistant_metadata["availability_checked"] = True
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -199,8 +242,13 @@ class ChatReceptionistService:
             reply=reply.content,
         )
 
-    def _generate_reply(self, message: str) -> ChatReceptionistReply:
+    def _generate_reply(
+        self,
+        message: str,
+        conversation: Conversation,
+    ) -> ChatReceptionistReply:
         normalized_message = message.lower()
+        existing_context = dict(conversation.conversation_metadata.get("chat_context", {}))
 
         if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
             return self.responder.generate_reply(message=message)
@@ -210,6 +258,18 @@ class ChatReceptionistService:
 
         if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return self.responder.generate_reply(message=message)
+
+        if self._has_invalid_date_pattern(message):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.INVALID_DATE,
+                content=(
+                    "That date does not look valid. "
+                    "Please provide a date in YYYY-MM-DD format."
+                ),
+            )
+
+        context_updates = self._extract_context_updates(normalized_message, message)
+        merged_context = {**existing_context, **context_updates}
 
         if self.responder._contains_any(normalized_message, _SPECIALTY_LIST_KEYWORDS):
             specialties = self.scheduling.list_specialties()
@@ -226,7 +286,14 @@ class ChatReceptionistService:
             )
 
         matched_specialty = self._match_specialty_in_message(normalized_message)
-        if matched_specialty is not None:
+        if (
+            matched_specialty is not None
+            and not self._is_availability_request(normalized_message)
+            and not self._should_enter_availability_flow(
+                normalized_message,
+                merged_context,
+            )
+        ):
             doctors = self.scheduling.list_doctors(specialty_id=matched_specialty.id)
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.SPECIALTY_DOCTORS,
@@ -236,6 +303,18 @@ class ChatReceptionistService:
                 ),
                 matched_specialty_id=matched_specialty.id,
                 matched_specialty_name=matched_specialty.name,
+                chat_context_updates=context_updates,
+            )
+
+        if self._is_availability_request(normalized_message) or (
+            self._should_enter_availability_flow(
+                normalized_message,
+                merged_context,
+            )
+        ):
+            return self._handle_availability_flow(
+                merged_context=merged_context,
+                context_updates=context_updates,
             )
 
         if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
@@ -245,9 +324,216 @@ class ChatReceptionistService:
                     "I can help with appointment scheduling. Please tell me the "
                     "specialty or doctor you would like to see."
                 ),
+                chat_context_updates=context_updates,
             )
 
         return self.responder.generate_reply(message=message)
+
+    def _extract_context_updates(
+        self,
+        normalized_message: str,
+        message: str,
+    ) -> dict[str, Any]:
+        context_updates: dict[str, Any] = {}
+
+        extracted_date = self._extract_date(message)
+        if extracted_date is not None:
+            context_updates["requested_date"] = extracted_date.isoformat()
+
+        matched_specialty = self._match_specialty_in_message(normalized_message)
+        if matched_specialty is not None:
+            context_updates["selected_specialty_id"] = str(matched_specialty.id)
+            context_updates["selected_specialty_name"] = matched_specialty.name
+            specialty_doctors = self.scheduling.list_doctors(
+                specialty_id=matched_specialty.id,
+            )
+            if len(specialty_doctors) == 1:
+                context_updates["selected_doctor_id"] = str(specialty_doctors[0].id)
+                context_updates["selected_doctor_name"] = specialty_doctors[0].full_name
+
+        matched_doctor = self._match_doctor_in_message(normalized_message)
+        if matched_doctor is not None:
+            context_updates["selected_doctor_id"] = str(matched_doctor.id)
+            context_updates["selected_doctor_name"] = matched_doctor.full_name
+
+        return context_updates
+
+    def _handle_availability_flow(
+        self,
+        *,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        selected_doctor_id = merged_context.get("selected_doctor_id")
+        requested_date = merged_context.get("requested_date")
+
+        if not selected_doctor_id:
+            content = self._format_missing_doctor_prompt(merged_context)
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_MISSING_DOCTOR,
+                content=content,
+                chat_context_updates=context_updates,
+            )
+
+        if not requested_date:
+            doctor_name = merged_context.get("selected_doctor_name", "the selected doctor")
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_MISSING_DATE,
+                content=(
+                    f"Please provide the date you would like to check for {doctor_name} "
+                    "in YYYY-MM-DD format."
+                ),
+                chat_context_updates=context_updates,
+            )
+
+        slots = self._query_availability(
+            doctor_id=UUID(str(selected_doctor_id)),
+            requested_date=date.fromisoformat(str(requested_date)),
+        )
+        doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
+
+        if slots:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
+                content=self._format_availability_slots(
+                    slots,
+                    doctor_name=doctor_name,
+                    requested_date=str(requested_date),
+                ),
+                chat_context_updates=context_updates,
+                availability_checked=True,
+            )
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
+            content=(
+                f"I did not find open times for {doctor_name} on {requested_date}. "
+                "Please try another date or doctor."
+            ),
+            chat_context_updates=context_updates,
+            availability_checked=True,
+        )
+
+    def _format_missing_doctor_prompt(self, merged_context: dict[str, Any]) -> str:
+        specialty_id = merged_context.get("selected_specialty_id")
+        specialty_name = merged_context.get("selected_specialty_name")
+
+        if specialty_id is not None:
+            doctors = self.scheduling.list_doctors(specialty_id=UUID(str(specialty_id)))
+            if doctors:
+                doctor_names = self._join_names([doctor.full_name for doctor in doctors])
+                return (
+                    f"Please choose a doctor for {specialty_name}: {doctor_names}. "
+                    "Tell me the doctor name so I can check availability."
+                )
+
+        return (
+            "Please tell me which doctor or specialty you would like to check. "
+            "You can ask for our doctor list or mention a specialty."
+        )
+
+    def _query_availability(
+        self,
+        *,
+        doctor_id: UUID,
+        requested_date: date,
+    ) -> Sequence[AvailabilitySlot]:
+        start_from = datetime(
+            requested_date.year,
+            requested_date.month,
+            requested_date.day,
+            tzinfo=UTC,
+        )
+        start_to = start_from + timedelta(days=1)
+
+        return self.scheduling.check_availability(
+            doctor_id=doctor_id,
+            start_from=start_from,
+            start_to=start_to,
+        )
+
+    def _format_availability_slots(
+        self,
+        slots: Sequence[AvailabilitySlot],
+        *,
+        doctor_name: str,
+        requested_date: str,
+    ) -> str:
+        shown_slots = list(slots[:5])
+        times = [slot.start_time.strftime("%H:%M") for slot in shown_slots]
+        times_text = self._join_names(times)
+        suffix = ""
+
+        if len(slots) > 5:
+            suffix = f" There are {len(slots) - 5} more openings available."
+
+        return (
+            f"Open times for {doctor_name} on {requested_date}: {times_text}.{suffix} "
+            "You can choose a time, and booking will be handled in a later step."
+        )
+
+    def _extract_date(self, message: str) -> date | None:
+        match = _ISO_DATE_PATTERN.search(message)
+
+        if match is None:
+            return None
+
+        try:
+            return date.fromisoformat(match.group(1))
+        except ValueError:
+            return None
+
+    def _has_invalid_date_pattern(self, message: str) -> bool:
+        match = _ISO_DATE_PATTERN.search(message)
+
+        if match is None:
+            return False
+
+        try:
+            date.fromisoformat(match.group(1))
+        except ValueError:
+            return True
+
+        return False
+
+    def _is_availability_request(self, normalized_message: str) -> bool:
+        return self.responder._contains_any(normalized_message, _AVAILABILITY_KEYWORDS)
+
+    def _should_enter_availability_flow(
+        self,
+        normalized_message: str,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        if not self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
+            return False
+
+        return bool(
+            merged_context.get("selected_doctor_id")
+            or merged_context.get("requested_date"),
+        )
+
+    def _match_doctor_in_message(self, normalized_message: str) -> Doctor | None:
+        doctors = sorted(
+            self.scheduling.list_doctors(),
+            key=lambda doctor: len(doctor.full_name),
+            reverse=True,
+        )
+
+        for doctor in doctors:
+            if self._doctor_name_in_message(normalized_message, doctor.full_name):
+                return doctor
+
+        return None
+
+    def _doctor_name_in_message(self, normalized_message: str, full_name: str) -> bool:
+        normalized_name = full_name.replace(".", "").lower()
+
+        if normalized_name in normalized_message:
+            return True
+
+        name_terms = normalized_name.split()
+
+        return all(term in normalized_message for term in name_terms)
 
     def _match_specialty_in_message(self, normalized_message: str) -> Specialty | None:
         specialties = sorted(
