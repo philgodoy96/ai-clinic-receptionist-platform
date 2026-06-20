@@ -2,11 +2,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, desc, or_, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
+from app.services.email_job_metrics import EmailJobOperationalMetrics, EmailJobStatusCounts
 from app.services.email_job_pagination import EmailJobCursor
 
 
@@ -112,6 +114,76 @@ class SQLAlchemyEmailJobRepository:
         )
 
         return self.add(replay_job)
+
+    def get_operational_metrics(
+        self,
+        *,
+        now: datetime,
+    ) -> EmailJobOperationalMetrics:
+        total_jobs = self._count_jobs()
+        pending = self._count_jobs(EmailJob.status == EmailJobStatus.PENDING)
+        processing = self._count_jobs(EmailJob.status == EmailJobStatus.PROCESSING)
+        sent = self._count_jobs(EmailJob.status == EmailJobStatus.SENT)
+        failed = self._count_jobs(EmailJob.status == EmailJobStatus.FAILED)
+        dead_letter = self._count_jobs(EmailJob.status == EmailJobStatus.DEAD_LETTER)
+        locked_count = self._count_jobs(
+            EmailJob.locked_until.is_not(None),
+            EmailJob.locked_until >= now,
+        )
+        expired_lock_count = self._count_jobs(
+            EmailJob.status == EmailJobStatus.PROCESSING,
+            EmailJob.locked_until.is_not(None),
+            EmailJob.locked_until < now,
+        )
+        overdue_pending_count = self._count_jobs(
+            EmailJob.status.in_(
+                [
+                    EmailJobStatus.PENDING,
+                    EmailJobStatus.FAILED,
+                ],
+            ),
+            EmailJob.scheduled_for <= now,
+        )
+        oldest_pending_created_at = self.session.scalar(
+            select(func.min(EmailJob.created_at)).where(
+                EmailJob.status == EmailJobStatus.PENDING,
+            ),
+        )
+        oldest_failed_created_at = self.session.scalar(
+            select(func.min(EmailJob.created_at)).where(
+                EmailJob.status == EmailJobStatus.FAILED,
+            ),
+        )
+        newest_dead_letter_created_at = self.session.scalar(
+            select(func.max(EmailJob.created_at)).where(
+                EmailJob.status == EmailJobStatus.DEAD_LETTER,
+            ),
+        )
+
+        return EmailJobOperationalMetrics(
+            total_jobs=total_jobs,
+            counts_by_status=EmailJobStatusCounts(
+                pending=pending,
+                processing=processing,
+                sent=sent,
+                failed=failed,
+                dead_letter=dead_letter,
+            ),
+            locked_count=locked_count,
+            expired_lock_count=expired_lock_count,
+            overdue_pending_count=overdue_pending_count,
+            oldest_pending_created_at=oldest_pending_created_at,
+            oldest_failed_created_at=oldest_failed_created_at,
+            newest_dead_letter_created_at=newest_dead_letter_created_at,
+        )
+
+    def _count_jobs(self, *conditions: ColumnElement[bool]) -> int:
+        statement = select(func.count()).select_from(EmailJob)
+
+        if conditions:
+            statement = statement.where(*conditions)
+
+        return int(self.session.scalar(statement) or 0)
 
     def claim_next_available(
         self,

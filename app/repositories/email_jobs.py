@@ -5,6 +5,7 @@ from uuid import UUID
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
+from app.services.email_job_metrics import EmailJobOperationalMetrics
 from app.services.email_job_pagination import EmailJobCursor
 
 
@@ -41,6 +42,13 @@ class EmailJobRepository(Protocol):
         original_email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
+        raise NotImplementedError
+
+    def get_operational_metrics(
+        self,
+        *,
+        now: datetime,
+    ) -> EmailJobOperationalMetrics:
         raise NotImplementedError
 
 

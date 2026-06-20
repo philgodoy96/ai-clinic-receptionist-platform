@@ -9,6 +9,7 @@ from uuid import UUID
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
 from app.repositories.email_jobs import EmailJobRepository
+from app.services.email_job_metrics import EmailJobOperationalMetrics
 from app.services.email_job_pagination import (
     EmailJobCursor,
     decode_email_job_cursor,
@@ -172,6 +173,14 @@ class EmailJobService:
             original_email_job=email_job,
             now=effective_now,
         )
+
+    def get_operational_metrics(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> EmailJobOperationalMetrics:
+        current_time = now or datetime.now(UTC)
+        return self.repository.get_operational_metrics(now=current_time)
 
     def _build_confirmation_body(
         self,

@@ -8,6 +8,7 @@ import pytest
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
+from app.services.email_job_metrics import EmailJobOperationalMetrics, EmailJobStatusCounts
 from app.services.email_job_pagination import EmailJobCursor
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
@@ -248,6 +249,56 @@ class FakeEmailJobRepository:
         )
 
         return self.add(replay_job)
+
+    def get_operational_metrics(
+        self,
+        *,
+        now: datetime,
+    ) -> EmailJobOperationalMetrics:
+        jobs = self.email_jobs
+        pending_jobs = [job for job in jobs if job.status == EmailJobStatus.PENDING]
+        failed_jobs = [job for job in jobs if job.status == EmailJobStatus.FAILED]
+        dead_letter_jobs = [job for job in jobs if job.status == EmailJobStatus.DEAD_LETTER]
+
+        return EmailJobOperationalMetrics(
+            total_jobs=len(jobs),
+            counts_by_status=EmailJobStatusCounts(
+                pending=len(pending_jobs),
+                processing=sum(
+                    1 for job in jobs if job.status == EmailJobStatus.PROCESSING
+                ),
+                sent=sum(1 for job in jobs if job.status == EmailJobStatus.SENT),
+                failed=len(failed_jobs),
+                dead_letter=len(dead_letter_jobs),
+            ),
+            locked_count=sum(
+                1
+                for job in jobs
+                if job.locked_until is not None and job.locked_until >= now
+            ),
+            expired_lock_count=sum(
+                1
+                for job in jobs
+                if job.status == EmailJobStatus.PROCESSING
+                and job.locked_until is not None
+                and job.locked_until < now
+            ),
+            overdue_pending_count=sum(
+                1
+                for job in jobs
+                if job.status in (EmailJobStatus.PENDING, EmailJobStatus.FAILED)
+                and job.scheduled_for <= now
+            ),
+            oldest_pending_created_at=(
+                min((job.created_at for job in pending_jobs), default=None)
+            ),
+            oldest_failed_created_at=(
+                min((job.created_at for job in failed_jobs), default=None)
+            ),
+            newest_dead_letter_created_at=(
+                max((job.created_at for job in dead_letter_jobs), default=None)
+            ),
+        )
 
 
 def create_email_job(
