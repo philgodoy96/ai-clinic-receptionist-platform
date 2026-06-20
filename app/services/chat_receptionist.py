@@ -35,6 +35,10 @@ from app.services.conversations import (
     ConversationMessageCreate,
     ConversationService,
 )
+from app.services.llm_receptionist import (
+    LLMReceptionistAnalysisService,
+    ReceptionistAnalysisRequest,
+)
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
@@ -346,12 +350,14 @@ class ChatReceptionistService:
         appointment_holds: AppointmentHoldService,
         appointment_booking: AppointmentBookingService,
         responder: DeterministicChatResponder | None = None,
+        llm_analysis: LLMReceptionistAnalysisService | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
         self.appointment_holds = appointment_holds
         self.appointment_booking = appointment_booking
         self.responder = responder or DeterministicChatResponder()
+        self.llm_analysis = llm_analysis
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -365,6 +371,15 @@ class ChatReceptionistService:
                 },
             ),
         )
+        llm_analysis_result = None
+        if self.llm_analysis is not None:
+            chat_context = conversation.conversation_metadata.get("chat_context", {})
+            llm_analysis_result = self.llm_analysis.analyze_message(
+                ReceptionistAnalysisRequest(
+                    user_message=payload.message,
+                    conversation_context=chat_context,
+                ),
+            )
         reply = self._generate_reply(
             payload.message,
             conversation,
@@ -408,6 +423,23 @@ class ChatReceptionistService:
             assistant_metadata["booking_attempted"] = True
         if reply.booking_confirmed:
             assistant_metadata["booking_confirmed"] = True
+        if llm_analysis_result is not None:
+            analysis = llm_analysis_result.analysis
+            assistant_metadata["llm_shadow_analysis"] = {
+                "intent": analysis.intent.value,
+                "confidence": analysis.confidence,
+                "urgency": analysis.urgency.value,
+                "requires_human": analysis.requires_human,
+                "safety_flags": analysis.safety_flags,
+                "used_fallback": llm_analysis_result.used_fallback,
+                "failure_reason": llm_analysis_result.failure_reason.value,
+                "model": llm_analysis_result.model,
+                "input_tokens": llm_analysis_result.input_tokens,
+                "output_tokens": llm_analysis_result.output_tokens,
+                "estimated_cost_micros": llm_analysis_result.estimated_cost_micros,
+                "latency_ms": llm_analysis_result.latency_ms,
+                "attempt_count": llm_analysis_result.attempt_count,
+            }
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
