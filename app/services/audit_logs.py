@@ -46,3 +46,9 @@ class AuditLogService:
         )
 
         return self.repository.add(audit_log)
+
+    def record_best_effort(self, payload: AuditLogCreate) -> None:
+        try:
+            self.record(payload)
+        except Exception:
+            return

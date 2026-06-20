@@ -5,6 +5,7 @@ from typing import Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
 from app.models.scheduling import Appointment
 from app.schemas.retell_tools import RetellBookAppointmentRequest, RetellToolResponse
 from app.schemas.scheduling import AppointmentResponse
@@ -24,6 +25,9 @@ from app.services.appointment_holds import (
     AppointmentHoldOwnershipError,
     AppointmentHoldService,
 )
+from app.services.audit_logs import AuditLogCreate, AuditLogService
+
+RETELL_TOOL_SOURCE = "retell_tool"
 
 
 class AppointmentBookingServiceForRetell(Protocol):
@@ -38,10 +42,12 @@ class RetellAppointmentBookingToolAdapter:
         db: Session,
         booking_service: AppointmentBookingServiceForRetell,
         hold_service: AppointmentHoldService,
+        audit_logs: AuditLogService,
     ) -> None:
         self.db = db
         self.booking_service = booking_service
         self.hold_service = hold_service
+        self.audit_logs = audit_logs
 
     def book_appointment(
         self,
@@ -69,6 +75,22 @@ class RetellAppointmentBookingToolAdapter:
             appointment = booking_result.appointment
             hold = booking_result.hold
 
+            self.audit_logs.record_best_effort(
+                AuditLogCreate(
+                    event_type=AuditEventType.APPOINTMENT_BOOKING_CONFIRMED,
+                    outcome=AuditEventOutcome.SUCCESS,
+                    actor_type=AuditActorType.RETELL,
+                    source=RETELL_TOOL_SOURCE,
+                    actor_id=owner_id,
+                    call_id=payload.call_id,
+                    conversation_id=payload.conversation_id,
+                    patient_id=payload.patient_id,
+                    appointment_id=appointment.id,
+                    availability_slot_id=payload.availability_slot_id,
+                    metadata={"hold_id": str(payload.hold_id)},
+                ),
+            )
+
             self.db.commit()
             self.db.refresh(appointment)
 
@@ -79,57 +101,67 @@ class RetellAppointmentBookingToolAdapter:
             )
         except IntegrityError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "appointment_conflict")
             return self._error(
                 "appointment_conflict",
                 "The selected slot is no longer available.",
             )
         except BookingPatientNotFoundError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "patient_not_found")
             return self._error("patient_not_found", "The patient was not found.")
         except BookingDoctorNotFoundError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "doctor_not_found")
             return self._error(
                 "doctor_not_found",
                 "The doctor was not found or is inactive.",
             )
         except BookingAvailabilitySlotNotFoundError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "availability_slot_not_found")
             return self._error(
                 "availability_slot_not_found",
                 "The selected availability slot was not found.",
             )
         except BookingAvailabilitySlotUnavailableError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "availability_slot_unavailable")
             return self._error(
                 "availability_slot_unavailable",
                 "The selected availability slot is not available.",
             )
         except AppointmentSlotAlreadyBookedError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "slot_already_booked")
             return self._error(
                 "slot_already_booked",
                 "The selected slot is already booked.",
             )
         except AppointmentBookingOwnerRequiredError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "missing_booking_owner")
             return self._error(
                 "missing_booking_owner",
                 "A call_id, conversation_id, or owner_id is required.",
             )
         except AppointmentHoldNotFoundError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "appointment_hold_expired")
             return self._error(
                 "appointment_hold_expired",
                 "The temporary hold was not found or has expired.",
             )
         except AppointmentHoldMismatchError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "appointment_hold_mismatch")
             return self._error(
                 "appointment_hold_mismatch",
                 "The hold ID does not match the selected slot.",
             )
         except AppointmentHoldOwnershipError:
             self.db.rollback()
+            self._record_booking_failure(payload, owner_id, "appointment_hold_owner_mismatch")
             return self._error(
                 "appointment_hold_owner_mismatch",
                 "The appointment hold belongs to another caller.",
@@ -141,6 +173,40 @@ class RetellAppointmentBookingToolAdapter:
                 "appointment": self._appointment_to_result(appointment),
             },
         )
+
+    def _record_booking_failure(
+        self,
+        payload: RetellBookAppointmentRequest,
+        owner_id: str,
+        reason: str,
+    ) -> None:
+        self._commit_audit_best_effort(
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_BOOKING_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.RETELL,
+                source=RETELL_TOOL_SOURCE,
+                actor_id=owner_id,
+                call_id=payload.call_id,
+                conversation_id=payload.conversation_id,
+                patient_id=payload.patient_id,
+                availability_slot_id=payload.availability_slot_id,
+                metadata={
+                    "hold_id": str(payload.hold_id),
+                    "reason": reason,
+                },
+            ),
+        )
+
+    def _commit_audit_best_effort(self, payload: AuditLogCreate) -> None:
+        try:
+            self.audit_logs.record(payload)
+            self.db.commit()
+        except Exception:
+            try:
+                self.db.rollback()
+            except Exception:
+                return
 
     def _resolve_owner_id(self, payload: RetellBookAppointmentRequest) -> str | None:
         for candidate in [payload.owner_id, payload.call_id, payload.conversation_id]:

@@ -2,22 +2,28 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.api.dependencies import (
     get_appointment_hold_service,
+    get_audit_log_service,
     get_retell_appointment_hold_tool_adapter,
     get_scheduling_service,
 )
+from app.db.session import get_db
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AvailabilitySlotStatus
 from app.main import create_app
+from app.models.audit import AuditLog
 from app.models.scheduling import AvailabilitySlot
 from app.services.appointment_holds import AppointmentHoldService
+from app.services.audit_logs import AuditLogCreate, AuditLogService
 from app.services.scheduling import AvailabilitySlotNotFoundError, AvailabilitySlotUnavailableError
 
 
@@ -49,6 +55,8 @@ def client(
 ) -> Generator[TestClient, None, None]:
     app = create_app()
     scheduling_service = FakeSchedulingService(slot)
+    db = FakeDatabaseSession()
+    audit_logs = FakeAuditLogService()
 
     def override_scheduling_service() -> FakeSchedulingService:
         return scheduling_service
@@ -56,14 +64,24 @@ def client(
     def override_hold_service() -> AppointmentHoldService:
         return hold_service
 
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    def override_audit_log_service() -> AuditLogService:
+        return cast(AuditLogService, audit_logs)
+
     def override_retell_hold_adapter() -> RetellAppointmentHoldToolAdapter:
         return RetellAppointmentHoldToolAdapter(
+            db=cast(Session, db),
             scheduling_service=scheduling_service,
             hold_service=hold_service,
+            audit_logs=cast(AuditLogService, audit_logs),
         )
 
     app.dependency_overrides[get_scheduling_service] = override_scheduling_service
     app.dependency_overrides[get_appointment_hold_service] = override_hold_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_audit_log_service] = override_audit_log_service
     app.dependency_overrides[
         get_retell_appointment_hold_tool_adapter
     ] = override_retell_hold_adapter
@@ -196,6 +214,36 @@ class FakeSchedulingService:
             raise AvailabilitySlotUnavailableError
 
         return self.slot
+
+
+class FakeDatabaseSession:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class FakeAuditLogService:
+    def __init__(self) -> None:
+        self.records: list[AuditLogCreate] = []
+
+    def record(self, payload: AuditLogCreate) -> AuditLog:
+        self.records.append(payload)
+        return AuditLog(
+            event_type=payload.event_type,
+            outcome=payload.outcome,
+            actor_type=payload.actor_type,
+            source=payload.source,
+            event_metadata=payload.metadata,
+        )
+
+    def record_best_effort(self, payload: AuditLogCreate) -> None:
+        self.record(payload)
 
 
 class FakeAppointmentHoldRepository:

@@ -75,12 +75,16 @@ def get_retell_scheduling_tool_adapter(
 
 
 def get_retell_appointment_hold_tool_adapter(
+    db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> RetellAppointmentHoldToolAdapter:
     return RetellAppointmentHoldToolAdapter(
+        db=db,
         scheduling_service=scheduling_service,
         hold_service=hold_service,
+        audit_logs=audit_logs,
     )
 
 
@@ -91,9 +95,11 @@ def get_retell_appointment_booking_tool_adapter(
         Depends(get_appointment_booking_service),
     ],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
 ) -> RetellAppointmentBookingToolAdapter:
     return RetellAppointmentBookingToolAdapter(
         db=db,
         booking_service=booking_service,
         hold_service=hold_service,
+        audit_logs=audit_logs,
     )
