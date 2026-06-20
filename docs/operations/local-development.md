@@ -1,103 +1,59 @@
 # Local Development
 
-This document explains how to run the AI Clinic Receptionist Platform locally.
+## Services
 
-## Requirements
+The local Docker environment includes:
 
-- Python 3.12+
-- Docker
-- Docker Compose
-- Git
+- PostgreSQL
+- Redis
+- RabbitMQ
 
-## Environment Variables
+RabbitMQ Management UI:
 
-Create a local environment file from the example file:
+    http://localhost:15672
 
-    Copy-Item .env.example .env
+Default credentials:
 
-The local `.env` file is ignored by Git and must not be committed.
+    clinic / clinic
 
-## Running with Python
+## Start Services
 
-Create and activate a virtual environment:
+    docker compose up -d postgres redis rabbitmq
 
-    python -m venv .venv
-    .\.venv\Scripts\Activate.ps1
+## Run Migrations
 
-Install dependencies:
+    python -m alembic upgrade head
 
-    python -m pip install --upgrade pip
-    python -m pip install -e ".[dev]"
+## Seed Demo Data
 
-Run the API:
+    python -m scripts.seed_demo_data
+
+## Run API
 
     python -m uvicorn app.main:app --reload
 
-Open:
+## Run Email Job Worker Once
 
-    http://127.0.0.1:8000/health
+    python -m scripts.run_email_job_worker --once
 
-Expected response:
+## Run RabbitMQ Email Consumer
 
-    {
-      "status": "ok",
-      "service": "ai-clinic-receptionist-platform",
-      "environment": "local"
-    }
+    python -m scripts.run_email_job_consumer
 
-## Running with Docker Compose
+## Email Dispatch Configuration
 
-Start all local services:
+RabbitMQ dispatch is controlled by:
 
-    docker compose up --build
+    EMAIL_JOB_DISPATCH_ENABLED
 
-The API will be available at:
+When false, the API uses a noop publisher.
 
-    http://127.0.0.1:8000
+When true, the API publishes a RabbitMQ dispatch message after booking commits.
 
-Health endpoint:
+RabbitMQ URL:
 
-    http://127.0.0.1:8000/health
+    RABBITMQ_URL=amqp://clinic:clinic@localhost:5672/
 
-RabbitMQ management UI:
+Queue name:
 
-    http://127.0.0.1:15672
-
-Default local RabbitMQ credentials:
-
-    Username: clinic
-    Password: clinic
-
-Stop services:
-
-    docker compose down
-
-## Running Tests
-
-Run tests:
-
-    python -m pytest -q
-
-Run lint checks:
-
-    python -m ruff check .
-
-Run type checks:
-
-    python -m mypy app tests
-
-## Current Limitations
-
-This stage only includes the project scaffold and health endpoint.
-
-The following components are planned but not implemented yet:
-
-- Database models
-- Alembic migrations
-- Redis appointment holds
-- RabbitMQ workers
-- Chat conversation flow
-- Retell tool endpoints
-- Observability metrics
-- OpenTelemetry tracing
-- Admin/demo endpoints
+    EMAIL_JOB_QUEUE_NAME=email_jobs

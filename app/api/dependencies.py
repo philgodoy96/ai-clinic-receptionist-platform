@@ -9,6 +9,11 @@ from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.cache.redis import get_redis_client
 from app.core.config import get_settings
 from app.db.session import get_db
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisher,
+    NoopEmailJobDispatchPublisher,
+    RabbitMQEmailJobDispatchPublisher,
+)
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
@@ -78,6 +83,18 @@ def get_email_job_service(
     )
 
 
+def get_email_job_dispatch_publisher() -> EmailJobDispatchPublisher:
+    settings = get_settings()
+
+    if not settings.email_job_dispatch_enabled:
+        return NoopEmailJobDispatchPublisher()
+
+    return RabbitMQEmailJobDispatchPublisher(
+        rabbitmq_url=settings.rabbitmq_url,
+        queue_name=settings.email_job_queue_name,
+    )
+
+
 def get_retell_scheduling_tool_adapter(
     service: Annotated[SchedulingService, Depends(get_scheduling_service)],
 ) -> RetellSchedulingToolAdapter:
@@ -107,6 +124,10 @@ def get_retell_appointment_booking_tool_adapter(
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
     email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
 ) -> RetellAppointmentBookingToolAdapter:
     return RetellAppointmentBookingToolAdapter(
         db=db,
@@ -114,4 +135,5 @@ def get_retell_appointment_booking_tool_adapter(
         hold_service=hold_service,
         audit_logs=audit_logs,
         email_jobs=email_jobs,
+        email_job_dispatch=email_job_dispatch,
     )
