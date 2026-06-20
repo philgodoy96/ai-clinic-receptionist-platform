@@ -14,6 +14,7 @@ from app.api.dependencies import (
     get_appointment_booking_service,
     get_appointment_hold_service,
     get_audit_log_service,
+    get_email_job_service,
     get_retell_appointment_booking_tool_adapter,
 )
 from app.db.session import get_db
@@ -21,10 +22,15 @@ from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.main import create_app
 from app.models.audit import AuditLog
+from app.models.email_jobs import EmailJob
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogCreate, AuditLogService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
 
 
 @pytest.fixture()
@@ -85,6 +91,7 @@ def booking_context() -> BookingApiContext:
 def client(booking_context: BookingApiContext) -> Generator[TestClient, None, None]:
     app = create_app()
     audit_logs = FakeAuditLogService()
+    email_jobs = FakeEmailJobService()
 
     def override_booking_service() -> AppointmentBookingService:
         return booking_context.booking_service
@@ -98,18 +105,23 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
     def override_audit_log_service() -> AuditLogService:
         return cast(AuditLogService, audit_logs)
 
+    def override_email_job_service() -> EmailJobService:
+        return cast(EmailJobService, email_jobs)
+
     def override_retell_booking_adapter() -> RetellAppointmentBookingToolAdapter:
         return RetellAppointmentBookingToolAdapter(
             db=cast(Session, booking_context.db),
             booking_service=booking_context.booking_service,
             hold_service=booking_context.hold_service,
             audit_logs=cast(AuditLogService, audit_logs),
+            email_jobs=cast(EmailJobService, email_jobs),
         )
 
     app.dependency_overrides[get_appointment_booking_service] = override_booking_service
     app.dependency_overrides[get_appointment_hold_service] = override_hold_service
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_audit_log_service] = override_audit_log_service
+    app.dependency_overrides[get_email_job_service] = override_email_job_service
     app.dependency_overrides[get_retell_appointment_booking_tool_adapter] = (
         override_retell_booking_adapter
     )
@@ -279,6 +291,23 @@ class FakeAuditLogService:
 
     def record_best_effort(self, payload: AuditLogCreate) -> None:
         self.record(payload)
+
+
+class FakeEmailJobService:
+    def __init__(self) -> None:
+        self.jobs: list[AppointmentConfirmationEmailJobCreate] = []
+
+    def enqueue_appointment_confirmation(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> EmailJob:
+        self.jobs.append(payload)
+        return EmailJob(
+            appointment_id=payload.appointment_id,
+            patient_id=payload.patient_id,
+            subject="Appointment confirmation",
+            body="test",
+        )
 
 
 class FakePatientRepository:

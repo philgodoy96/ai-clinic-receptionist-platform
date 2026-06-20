@@ -21,9 +21,11 @@ A booking creates the durable business record.
 7. Backend validates the hold.
 8. Backend creates an appointment in PostgreSQL.
 9. Backend marks the availability slot as booked.
-10. Database transaction commits.
-11. Backend releases the Redis hold.
-12. Backend schedules confirmation email work.
+10. Backend records booking audit event.
+11. Backend creates pending confirmation email job.
+12. Database transaction commits.
+13. Backend releases the Redis hold.
+14. Future worker processes the email job.
 
 ## Current Implementation
 
@@ -34,6 +36,8 @@ The current implementation includes:
 - Retell booking tool endpoint
 - Postgres commit at the API/tool boundary
 - Redis hold release after successful commit
+- Durable audit logs for hold and booking events
+- Durable confirmation email jobs
 
 ## Transaction Boundary
 
@@ -45,6 +49,14 @@ The Redis hold is released only after the database commit succeeds.
 
 This avoids a failure mode where the hold is released but the appointment is not saved.
 
+## Durable Side Effects
+
+Booking confirmation now creates a pending email job before the transaction commits.
+
+This means appointment creation, audit logging, and email job creation can commit together.
+
+If the booking transaction rolls back, the email job rolls back too.
+
 ## Redis and PostgreSQL Consistency
 
 Redis and PostgreSQL do not participate in a single distributed transaction.
@@ -55,29 +67,26 @@ PostgreSQL remains the final consistency layer through durable records and datab
 
 The booking API still handles database conflict errors because two requests may race after passing application-level checks.
 
-## Why Hold Release Happens After Commit
+## Audit Logging
 
-If the system releases the hold before the database commit, a commit failure could make the slot appear available again even though the booking attempt was not completed.
+The booking flow records audit events for:
 
-Correct order:
+- Hold creation success
+- Hold creation failure
+- Booking confirmation success
+- Booking confirmation failure
 
-1. Validate hold
-2. Create appointment
-3. Mark slot booked
-4. Commit PostgreSQL transaction
-5. Release Redis hold
+Audit logs are durable operational records stored in PostgreSQL.
 
-If releasing the Redis hold fails after commit, the durable appointment still exists.
-
-The hold will eventually expire through Redis TTL.
+They should not contain clinical notes or unnecessary patient details.
 
 ## Current Limitations
 
 This implementation does not yet include:
 
 - Patient creation during booking
-- Audit logs
-- RabbitMQ confirmation email jobs
+- RabbitMQ confirmation email workers
+- Real email provider integration
 - Retell dashboard configuration
 - Webhook signature validation
 - Full concurrency simulation against PostgreSQL
