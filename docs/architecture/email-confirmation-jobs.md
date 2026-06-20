@@ -20,9 +20,12 @@ It includes:
 - Email job repository
 - Email job service
 - Confirmation job creation after booking
-- Tests for confirmation email job creation
+- Worker repository methods
+- Fake email delivery provider
+- Email job worker service
+- Tests for confirmation email job creation and processing
 
-The `email_jobs` table already includes `locked_by` and `locked_until` fields so the future worker can safely lease jobs and recover from crashes.
+The `email_jobs` table includes `locked_by` and `locked_until` fields to support future worker leasing and crash recovery.
 
 ## Flow
 
@@ -33,7 +36,9 @@ The `email_jobs` table already includes `locked_by` and `locked_until` fields so
 5. Backend creates pending confirmation email job.
 6. PostgreSQL transaction commits.
 7. Backend releases Redis hold.
-8. Future worker processes pending email jobs.
+8. Worker claims a pending email job.
+9. Worker sends the email through a provider.
+10. Worker marks the job as sent, failed, or dead_letter.
 
 ## Why the Job Is Created Before Commit
 
@@ -62,12 +67,12 @@ This implementation does not publish to RabbitMQ yet.
 A future implementation phase should add:
 
 - RabbitMQ publisher
-- Worker process
-- Fake email provider
-- Retry handling
-- Dead-letter behavior
-- Job execution tracking
-- Idempotency rules
+- RabbitMQ consumer
+- Queue and DLQ configuration
+- Message retry behavior
+- Worker wake-up events
+
+PostgreSQL should remain the source of truth for job state.
 
 ## Privacy Boundary
 
@@ -91,9 +96,8 @@ It may contain stable operational metadata such as:
 This implementation does not yet include:
 
 - Real email provider
-- Fake email provider execution
 - RabbitMQ publisher
 - RabbitMQ consumer
-- Retry scheduler
-- Dead-letter queue
+- Exponential backoff
 - Job listing API
+- Provider-level idempotency keys
