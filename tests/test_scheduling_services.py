@@ -373,6 +373,9 @@ class FakeAppointmentRepository:
         return None
 
     def add(self, appointment: Appointment) -> Appointment:
+        if appointment.id is None:
+            appointment.id = uuid4()
+
         self.appointments.append(appointment)
 
         return appointment

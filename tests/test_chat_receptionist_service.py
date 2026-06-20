@@ -9,7 +9,11 @@ import pytest
 from app.domain.conversations.enums import ConversationChannel, ConversationMessageRole
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.models.scheduling import Doctor
-from app.services.appointment_booking import AppointmentBookingService
+from app.services.appointment_booking import (
+    AppointmentBookingRequest,
+    AppointmentBookingResult,
+    AppointmentBookingService,
+)
 from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
@@ -80,6 +84,24 @@ class FakeAppointmentHoldService(AppointmentHoldService):
         )
 
 
+class TrackingAppointmentBookingService:
+    def __init__(
+        self,
+        inner: AppointmentBookingService,
+        *,
+        book_error: Exception | None = None,
+    ) -> None:
+        self.inner = inner
+        self.book_error = book_error
+        self.book_calls: list[AppointmentBookingRequest] = []
+
+    def book_appointment(self, request: AppointmentBookingRequest) -> AppointmentBookingResult:
+        self.book_calls.append(request)
+        if self.book_error is not None:
+            raise self.book_error
+        return self.inner.book_appointment(request)
+
+
 def _create_hold_service(
     *,
     create_hold_error: Exception | None = None,
@@ -105,10 +127,14 @@ def create_chat_receptionist_service(
     conversations: ConversationService,
     scheduling: SchedulingService,
     hold_service: FakeAppointmentHoldService | None = None,
+    appointment_booking: AppointmentBookingService | None = None,
     responder: DeterministicChatResponder | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
-    booking = create_appointment_booking_service_for_scheduling(scheduling, holds)
+    booking = appointment_booking or create_appointment_booking_service_for_scheduling(
+        scheduling,
+        holds,
+    )
     if responder is None:
         return ChatReceptionistService(
             conversations=conversations,
