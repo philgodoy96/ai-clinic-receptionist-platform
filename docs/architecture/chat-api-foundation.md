@@ -42,7 +42,9 @@ The chat API must not create appointments unless it explicitly calls scheduling 
 
 The chat layer may read scheduling data through SchedulingService.
 
-It must not mutate scheduling state in this implementation phase.
+It must not mutate durable Postgres scheduling state in this implementation phase.
+
+Temporary slot holds are created separately in Redis after the user chooses a specific offered slot.
 
 Scheduling truth remains in scheduling tables.
 
@@ -66,17 +68,37 @@ The deterministic responder supports:
 - availability_results
 - availability_no_slots
 - invalid_date
+- hold_request
+- hold_created
+- hold_missing_availability
+- hold_slot_not_found
+- hold_conflict
 - fallback
 
 ## Availability Read Boundary
 
 Availability guidance reads scheduling data through SchedulingService.
 
-It does not mutate scheduling state.
+It does not mutate durable scheduling state.
 
 Showing a slot to the user is not the same as reserving it.
 
-A later implementation phase will add hold creation and booking confirmation.
+## Temporary Hold Boundary
+
+The chat layer can create a Redis appointment hold only after the user chooses a specific offered slot.
+
+A hold is temporary and does not represent a confirmed appointment.
+
+The booking service remains responsible for durable appointment creation in a later implementation phase.
+
+Showing a slot:
+- read-only
+
+Holding a slot:
+- temporary Redis mutation
+
+Booking a slot:
+- durable Postgres mutation
 
 ## Safety Boundary
 
@@ -88,11 +110,12 @@ Emergency language is handled with safe guidance to contact emergency services o
 
 Planned future implementation phases include:
 
-- Chat appointment hold flow
 - Chat booking confirmation flow
+- Patient identity collection/validation
 - Conversation state machine
 - Slot filling
 - Fake LLM provider
+- Hold expiration handling in chat
 - Structured LLM output parsing
 - Natural-language date parsing
 - Human escalation
