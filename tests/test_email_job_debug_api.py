@@ -236,6 +236,89 @@ def test_get_email_job_endpoint_returns_not_found_for_missing_id(
     assert response.json()["detail"] == "email job was not found"
 
 
+METRICS_NOW = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture()
+def metrics_client() -> Generator[TestClient, None, None]:
+    app = create_app()
+    jobs = [
+        create_email_job(status=EmailJobStatus.PENDING, locked_by=None),
+        create_email_job(status=EmailJobStatus.PROCESSING, locked_by=None),
+        create_email_job(status=EmailJobStatus.SENT, locked_by=None, last_error=None),
+        create_email_job(status=EmailJobStatus.FAILED, locked_by=None),
+        create_email_job(status=EmailJobStatus.DEAD_LETTER, locked_by=None),
+        create_email_job(
+            status=EmailJobStatus.PROCESSING,
+            locked_by="worker-1",
+            locked_until=METRICS_NOW + timedelta(minutes=5),
+        ),
+        create_email_job(
+            status=EmailJobStatus.PROCESSING,
+            locked_by="worker-1",
+            locked_until=METRICS_NOW - timedelta(minutes=1),
+        ),
+        create_email_job(
+            status=EmailJobStatus.PENDING,
+            locked_by=None,
+            scheduled_for=METRICS_NOW - timedelta(hours=1),
+        ),
+    ]
+    repository = FakeEmailJobRepository(jobs)
+
+    class MetricsEmailJobService(EmailJobService):
+        def get_operational_metrics(
+            self,
+            *,
+            now: datetime | None = None,
+        ) -> EmailJobOperationalMetrics:
+            return repository.get_operational_metrics(now=METRICS_NOW)
+
+    service = MetricsEmailJobService(repository=repository)
+
+    def override_email_job_service() -> MetricsEmailJobService:
+        return service
+
+    app.dependency_overrides[get_email_job_service] = override_email_job_service
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
+def test_get_email_job_operational_metrics_endpoint_returns_metrics(
+    metrics_client: TestClient,
+) -> None:
+    response = metrics_client.get("/api/v1/email-jobs/metrics")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["total_jobs"] == 8
+    assert body["counts_by_status"]["pending"] == 2
+    assert body["counts_by_status"]["processing"] == 3
+    assert body["counts_by_status"]["sent"] == 1
+    assert body["counts_by_status"]["failed"] == 1
+    assert body["counts_by_status"]["dead_letter"] == 1
+    assert body["locked_count"] == 1
+    assert body["expired_lock_count"] == 1
+    assert body["overdue_pending_count"] == 3
+    assert "oldest_pending_created_at" in body
+    assert "oldest_failed_created_at" in body
+    assert "newest_dead_letter_created_at" in body
+
+
+def test_get_email_job_operational_metrics_is_not_captured_by_id_route(
+    metrics_client: TestClient,
+) -> None:
+    response = metrics_client.get("/api/v1/email-jobs/metrics")
+
+    assert response.status_code == 200
+    assert "counts_by_status" in response.json()
+
+
 class FakeEmailJobRepository:
     def __init__(self, email_jobs: Sequence[EmailJob]) -> None:
         self.email_jobs = list(email_jobs)
@@ -406,11 +489,14 @@ def create_email_job(
     locked_by: str | None = "worker-1",
     locked_until: datetime | None = None,
     payload: dict[str, str] | None = None,
+    created_at: datetime | None = None,
+    scheduled_for: datetime | None = None,
 ) -> EmailJob:
-    created_at = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    effective_created_at = created_at or datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    effective_scheduled_for = scheduled_for or effective_created_at
     effective_locked_until = locked_until
     if effective_locked_until is None and locked_by is not None:
-        effective_locked_until = created_at + timedelta(minutes=5)
+        effective_locked_until = effective_created_at + timedelta(minutes=5)
 
     return EmailJob(
         id=uuid4(),
@@ -427,9 +513,9 @@ def create_email_job(
         locked_until=effective_locked_until,
         last_error=last_error,
         payload=payload or {"source": "test"},
-        scheduled_for=created_at,
-        created_at=created_at,
-        updated_at=created_at,
+        scheduled_for=effective_scheduled_for,
+        created_at=effective_created_at,
+        updated_at=effective_created_at,
     )
 
 
