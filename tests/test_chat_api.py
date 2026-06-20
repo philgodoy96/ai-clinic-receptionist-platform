@@ -1,17 +1,36 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from uuid import uuid4
+from typing import cast
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_chat_receptionist_service
+from app.api.dependencies import (
+    get_appointment_hold_service,
+    get_chat_receptionist_service,
+    get_email_job_dispatch_publisher,
+    get_email_job_service,
+)
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationChannel
 from app.main import create_app
+from app.messaging.email_job_dispatch import (
+    EmailJobDispatchPublisherError,
+    InMemoryEmailJobDispatchPublisher,
+)
+from app.models.email_jobs import EmailJob
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationCreate, ConversationService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
+from tests.test_chat_booking_confirmation_flow import (
+    FULL_IDENTITY_WITH_CONFIRM,
+    create_jane_doe_patient,
+)
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     create_chat_receptionist_service,
@@ -49,6 +68,136 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
             db=db,
             repository=repository,
             chat_service=chat_service,
+        )
+
+    app.dependency_overrides.clear()
+
+
+class FakeEmailJobService:
+    def __init__(self) -> None:
+        self.jobs: list[AppointmentConfirmationEmailJobCreate] = []
+
+    def enqueue_appointment_confirmation(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> EmailJob:
+        self.jobs.append(payload)
+        return EmailJob(
+            id=uuid4(),
+            appointment_id=payload.appointment_id,
+            patient_id=payload.patient_id,
+            subject="Appointment confirmation",
+            body="test",
+        )
+
+
+class FailingEmailJobDispatchPublisher:
+    def publish_email_job_ready(self, *, email_job_id: UUID) -> None:
+        raise EmailJobDispatchPublisherError("publish failed")
+
+
+@pytest.fixture()
+def booking_chat_api_client() -> Generator[BookingChatApiContext, None, None]:
+    app = create_app()
+    repository = FakeConversationRepository()
+    conversation_service = ConversationService(repository=repository)
+    hold_service = FakeAppointmentHoldService()
+    chat_service = create_chat_receptionist_service(
+        conversations=conversation_service,
+        scheduling=create_demo_scheduling_service_with_emily_july_availability(
+            patients=[create_jane_doe_patient()],
+        ),
+        hold_service=hold_service,
+    )
+    email_jobs = FakeEmailJobService()
+    dispatch_publisher = InMemoryEmailJobDispatchPublisher()
+    db = FakeDatabaseSession()
+
+    def override_chat_service() -> ChatReceptionistService:
+        return chat_service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    def override_hold_service() -> FakeAppointmentHoldService:
+        return hold_service
+
+    def override_email_job_service() -> EmailJobService:
+        return cast(EmailJobService, email_jobs)
+
+    def override_email_job_dispatch_publisher() -> InMemoryEmailJobDispatchPublisher:
+        return dispatch_publisher
+
+    app.dependency_overrides[get_chat_receptionist_service] = override_chat_service
+    app.dependency_overrides[get_appointment_hold_service] = override_hold_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_email_job_service] = override_email_job_service
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        override_email_job_dispatch_publisher
+    )
+
+    with TestClient(app) as test_client:
+        yield BookingChatApiContext(
+            client=test_client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+            email_jobs=email_jobs,
+            dispatch_publisher=dispatch_publisher,
+            hold_service=hold_service,
+        )
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def booking_chat_api_client_failing_dispatch() -> Generator[BookingChatApiContext, None, None]:
+    app = create_app()
+    repository = FakeConversationRepository()
+    conversation_service = ConversationService(repository=repository)
+    hold_service = FakeAppointmentHoldService()
+    chat_service = create_chat_receptionist_service(
+        conversations=conversation_service,
+        scheduling=create_demo_scheduling_service_with_emily_july_availability(
+            patients=[create_jane_doe_patient()],
+        ),
+        hold_service=hold_service,
+    )
+    email_jobs = FakeEmailJobService()
+    db = FakeDatabaseSession()
+
+    def override_chat_service() -> ChatReceptionistService:
+        return chat_service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    def override_hold_service() -> FakeAppointmentHoldService:
+        return hold_service
+
+    def override_email_job_service() -> EmailJobService:
+        return cast(EmailJobService, email_jobs)
+
+    def override_email_job_dispatch_publisher() -> FailingEmailJobDispatchPublisher:
+        return FailingEmailJobDispatchPublisher()
+
+    app.dependency_overrides[get_chat_receptionist_service] = override_chat_service
+    app.dependency_overrides[get_appointment_hold_service] = override_hold_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_email_job_service] = override_email_job_service
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        override_email_job_dispatch_publisher
+    )
+
+    with TestClient(app) as test_client:
+        yield BookingChatApiContext(
+            client=test_client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+            email_jobs=email_jobs,
+            dispatch_publisher=InMemoryEmailJobDispatchPublisher(),
+            hold_service=hold_service,
         )
 
     app.dependency_overrides.clear()
@@ -258,6 +407,77 @@ def test_success_response_does_not_include_request_or_correlation_ids(
     assert "error" not in body
 
 
+def test_post_chat_message_booking_success_returns_booking_confirmed(
+    booking_chat_api_client: BookingChatApiContext,
+) -> None:
+    availability_response = booking_chat_api_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Dr. Emily Carter on 2026-07-02"},
+    )
+    assert availability_response.status_code == 200
+    conversation_id = availability_response.json()["conversation_id"]
+
+    hold_response = booking_chat_api_client.client.post(
+        "/api/v1/chat/messages",
+        json={
+            "message": "I'll take 09:00",
+            "conversation_id": conversation_id,
+        },
+    )
+    assert hold_response.status_code == 200
+
+    booking_response = booking_chat_api_client.client.post(
+        "/api/v1/chat/messages",
+        json={
+            "message": FULL_IDENTITY_WITH_CONFIRM,
+            "conversation_id": conversation_id,
+        },
+    )
+
+    assert booking_response.status_code == 200
+    assert booking_chat_api_client.db.committed is True
+
+    body = booking_response.json()
+    assert body["intent"] == "booking_confirmed"
+    assert body["booking_confirmed"] is True
+    assert body["appointment_id"]
+
+
+def test_post_chat_message_dispatch_failure_does_not_fail_booking(
+    booking_chat_api_client_failing_dispatch: BookingChatApiContext,
+) -> None:
+    client = booking_chat_api_client_failing_dispatch
+
+    availability_response = client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Dr. Emily Carter on 2026-07-02"},
+    )
+    conversation_id = availability_response.json()["conversation_id"]
+
+    client.client.post(
+        "/api/v1/chat/messages",
+        json={
+            "message": "I'll take 09:00",
+            "conversation_id": conversation_id,
+        },
+    )
+
+    booking_response = client.client.post(
+        "/api/v1/chat/messages",
+        json={
+            "message": FULL_IDENTITY_WITH_CONFIRM,
+            "conversation_id": conversation_id,
+        },
+    )
+
+    assert booking_response.status_code == 200
+
+    body = booking_response.json()
+    assert body["intent"] == "booking_confirmed"
+    assert body["booking_confirmed"] is True
+    assert body["appointment_id"]
+
+
 class ChatApiContext:
     def __init__(
         self,
@@ -271,6 +491,29 @@ class ChatApiContext:
         self.db = db
         self.repository = repository
         self.chat_service = chat_service
+
+
+class BookingChatApiContext(ChatApiContext):
+    def __init__(
+        self,
+        *,
+        client: TestClient,
+        db: FakeDatabaseSession,
+        repository: FakeConversationRepository,
+        chat_service: ChatReceptionistService,
+        email_jobs: FakeEmailJobService,
+        dispatch_publisher: InMemoryEmailJobDispatchPublisher,
+        hold_service: FakeAppointmentHoldService,
+    ) -> None:
+        super().__init__(
+            client=client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+        )
+        self.email_jobs = email_jobs
+        self.dispatch_publisher = dispatch_publisher
+        self.hold_service = hold_service
 
 
 class FakeDatabaseSession:

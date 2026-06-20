@@ -140,6 +140,11 @@ def test_booking_confirmed_creates_appointment_and_updates_context(
     chat_context = result.conversation.conversation_metadata["chat_context"]
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
+    assert result.booking_confirmed is True
+    assert result.appointment_id is not None
+    assert result.hold_id_to_release
+    assert result.booked_patient_id is not None
+    assert result.booked_appointment_start_time is not None
     assert "booked" in result.reply.lower()
     assert "Dr. Emily Carter" in result.reply
     assert "2026-07-02" in result.reply
