@@ -19,7 +19,12 @@ class Settings(BaseSettings):
         default=300,
         alias="APPOINTMENT_HOLD_TTL_SECONDS",
     )
-    rabbitmq_url: str = Field(default="amqp://clinic:clinic@localhost:5672/", alias="RABBITMQ_URL")
+    rabbitmq_url: str = Field(
+        default="amqp://guest:guest@localhost:5672/",
+        alias="RABBITMQ_URL",
+    )
+    email_job_queue_name: str = Field(default="email_jobs", alias="EMAIL_JOB_QUEUE_NAME")
+    email_job_dispatch_enabled: bool = Field(default=False, alias="EMAIL_JOB_DISPATCH_ENABLED")
 
     retell_api_key: str = Field(default="", alias="RETELL_API_KEY")
     retell_webhook_secret: str = Field(default="", alias="RETELL_WEBHOOK_SECRET")
