@@ -378,6 +378,43 @@ class FakeAppointmentRepository:
         return appointment
 
 
+def create_demo_scheduling_service() -> SchedulingService:
+    dermatology = create_specialty(name="Dermatology")
+    cardiology = create_specialty(name="Cardiology")
+    primary_care = create_specialty(name="Primary Care")
+    doctors = [
+        Doctor(
+            id=uuid4(),
+            specialty_id=dermatology.id,
+            full_name="Dr. Emily Carter",
+            email="emily.carter@example-clinic.test",
+            phone_number="+1-555-0101",
+            is_active=True,
+        ),
+        Doctor(
+            id=uuid4(),
+            specialty_id=cardiology.id,
+            full_name="Dr. Michael Reed",
+            email="michael.reed@example-clinic.test",
+            phone_number="+1-555-0102",
+            is_active=True,
+        ),
+        Doctor(
+            id=uuid4(),
+            specialty_id=primary_care.id,
+            full_name="Dr. Sarah Mitchell",
+            email="sarah.mitchell@example-clinic.test",
+            phone_number="+1-555-0103",
+            is_active=True,
+        ),
+    ]
+
+    return create_service(
+        specialties=[dermatology, cardiology, primary_care],
+        doctors=doctors,
+    )
+
+
 def create_service(
     *,
     specialties: Sequence[Specialty] = (),

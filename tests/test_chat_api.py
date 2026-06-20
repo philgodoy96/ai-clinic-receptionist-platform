@@ -13,6 +13,7 @@ from app.main import create_app
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationCreate, ConversationService
 from tests.test_conversations import FakeConversationRepository
+from tests.test_scheduling_services import create_demo_scheduling_service
 
 
 @pytest.fixture()
@@ -20,7 +21,10 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
     app = create_app()
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
-    chat_service = ChatReceptionistService(conversations=conversation_service)
+    chat_service = ChatReceptionistService(
+        conversations=conversation_service,
+        scheduling=create_demo_scheduling_service(),
+    )
     db = FakeDatabaseSession()
 
     def override_chat_service() -> ChatReceptionistService:
@@ -131,6 +135,40 @@ def test_post_chat_message_with_empty_message_returns_standardized_validation_er
     assert error["details"] is not None
     assert "errors" in error["details"]
     assert len(error["details"]["errors"]) >= 1
+
+
+def test_post_chat_message_with_list_specialties_returns_200_and_intent(
+    chat_client: ChatApiContext,
+) -> None:
+    response = chat_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "What specialties do you have?"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["intent"] == "list_specialties"
+    assert "Dermatology" in body["reply"]
+    assert "Cardiology" in body["reply"]
+    assert "Primary Care" in body["reply"]
+
+
+def test_post_chat_message_with_dermatologist_request_returns_200_and_intent(
+    chat_client: ChatApiContext,
+) -> None:
+    response = chat_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "I need a dermatologist"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["intent"] == "specialty_doctors"
+    assert "Dr. Emily Carter" in body["reply"]
 
 
 def test_success_response_does_not_include_request_or_correlation_ids(

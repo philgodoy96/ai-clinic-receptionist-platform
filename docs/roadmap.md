@@ -107,10 +107,13 @@ Implemented:
 
 - Chat API foundation (`POST /api/v1/chat/messages`) with deterministic receptionist responses
 - Conversation and message persistence via `Conversation` and `ConversationMessage`
+- Scheduling-aware chat flow with read-only specialty and doctor responses
 
 Upcoming:
 
-- Scheduling-aware chat flow
+- Chat availability guidance
+- Chat appointment hold flow
+- Chat booking confirmation flow
 - Fake LLM provider
 
 ## Stage 7 — Retell Tool Integration

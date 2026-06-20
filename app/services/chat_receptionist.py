@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -10,11 +11,40 @@ from app.domain.conversations.enums import (
     ConversationMessageRole,
 )
 from app.models.conversations import Conversation, ConversationMessage
+from app.models.scheduling import Doctor, Specialty
 from app.services.conversations import (
     ConversationCreate,
     ConversationMessageCreate,
     ConversationService,
 )
+from app.services.scheduling import SchedulingService
+
+_EMERGENCY_KEYWORDS = [
+    "emergency",
+    "urgent",
+    "chest pain",
+    "can't breathe",
+    "cannot breathe",
+]
+_CANCEL_KEYWORDS = ["cancel", "cancellation"]
+_RESCHEDULE_KEYWORDS = ["reschedule", "move appointment"]
+_SPECIALTY_LIST_KEYWORDS = [
+    "specialties",
+    "specialty",
+    "services",
+    "what do you offer",
+]
+_DOCTOR_LIST_KEYWORDS = [
+    "doctors",
+    "physicians",
+    "clinicians",
+    "providers",
+]
+_APPOINTMENT_KEYWORDS = [
+    "appointment",
+    "schedule",
+    "book",
+]
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -23,6 +53,9 @@ class ChatReceptionistIntent(StrEnum):
     CANCEL_REQUEST = "cancel_request"
     RESCHEDULE_REQUEST = "reschedule_request"
     EMERGENCY = "emergency"
+    LIST_SPECIALTIES = "list_specialties"
+    LIST_DOCTORS = "list_doctors"
+    SPECIALTY_DOCTORS = "specialty_doctors"
     FALLBACK = "fallback"
 
 
@@ -30,6 +63,8 @@ class ChatReceptionistIntent(StrEnum):
 class ChatReceptionistReply:
     intent: ChatReceptionistIntent
     content: str
+    matched_specialty_id: UUID | None = None
+    matched_specialty_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +88,7 @@ class DeterministicChatResponder:
     def generate_reply(self, *, message: str) -> ChatReceptionistReply:
         normalized_message = message.lower()
 
-        if self._contains_any(
-            normalized_message,
-            ["emergency", "urgent", "chest pain", "can't breathe", "cannot breathe"],
-        ):
+        if self._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.EMERGENCY,
                 content=(
@@ -65,7 +97,7 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(normalized_message, ["cancel", "cancellation"]):
+        if self._contains_any(normalized_message, _CANCEL_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.CANCEL_REQUEST,
                 content=(
@@ -74,7 +106,7 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(normalized_message, ["reschedule", "move appointment"]):
+        if self._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
                 content=(
@@ -83,18 +115,7 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(
-            normalized_message,
-            [
-                "appointment",
-                "schedule",
-                "book",
-                "doctor",
-                "dermatology",
-                "cardiology",
-                "primary care",
-            ],
-        ):
+        if self._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
                 content=(
@@ -132,9 +153,11 @@ class ChatReceptionistService:
         self,
         *,
         conversations: ConversationService,
+        scheduling: SchedulingService,
         responder: DeterministicChatResponder | None = None,
     ) -> None:
         self.conversations = conversations
+        self.scheduling = scheduling
         self.responder = responder or DeterministicChatResponder()
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
@@ -149,16 +172,22 @@ class ChatReceptionistService:
                 },
             ),
         )
-        reply = self.responder.generate_reply(message=payload.message)
+        reply = self._generate_reply(payload.message)
+        assistant_metadata: dict[str, Any] = {
+            "source": "chat_api",
+            "intent": reply.intent.value,
+        }
+        if reply.matched_specialty_id is not None:
+            assistant_metadata["matched_specialty_id"] = str(reply.matched_specialty_id)
+        if reply.matched_specialty_name is not None:
+            assistant_metadata["matched_specialty_name"] = reply.matched_specialty_name
+
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
                 conversation_id=conversation.id,
                 role=ConversationMessageRole.ASSISTANT,
                 content=reply.content,
-                message_metadata={
-                    "source": "chat_api",
-                    "intent": reply.intent.value,
-                },
+                message_metadata=assistant_metadata,
             ),
         )
 
@@ -169,6 +198,131 @@ class ChatReceptionistService:
             intent=reply.intent,
             reply=reply.content,
         )
+
+    def _generate_reply(self, message: str) -> ChatReceptionistReply:
+        normalized_message = message.lower()
+
+        if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
+            return self.responder.generate_reply(message=message)
+
+        if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
+            return self.responder.generate_reply(message=message)
+
+        if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
+            return self.responder.generate_reply(message=message)
+
+        if self.responder._contains_any(normalized_message, _SPECIALTY_LIST_KEYWORDS):
+            specialties = self.scheduling.list_specialties()
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.LIST_SPECIALTIES,
+                content=self._format_specialties(specialties),
+            )
+
+        if self.responder._contains_any(normalized_message, _DOCTOR_LIST_KEYWORDS):
+            doctors = self.scheduling.list_doctors()
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.LIST_DOCTORS,
+                content=self._format_doctors(doctors),
+            )
+
+        matched_specialty = self._match_specialty_in_message(normalized_message)
+        if matched_specialty is not None:
+            doctors = self.scheduling.list_doctors(specialty_id=matched_specialty.id)
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.SPECIALTY_DOCTORS,
+                content=self._format_doctors(
+                    doctors,
+                    specialty_name=matched_specialty.name,
+                ),
+                matched_specialty_id=matched_specialty.id,
+                matched_specialty_name=matched_specialty.name,
+            )
+
+        if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                content=(
+                    "I can help with appointment scheduling. Please tell me the "
+                    "specialty or doctor you would like to see."
+                ),
+            )
+
+        return self.responder.generate_reply(message=message)
+
+    def _match_specialty_in_message(self, normalized_message: str) -> Specialty | None:
+        specialties = sorted(
+            self.scheduling.list_specialties(),
+            key=lambda specialty: len(specialty.name),
+            reverse=True,
+        )
+
+        for specialty in specialties:
+            if any(
+                term in normalized_message
+                for term in self._specialty_match_terms(specialty)
+            ):
+                return specialty
+
+        return None
+
+    def _specialty_match_terms(self, specialty: Specialty) -> list[str]:
+        name = specialty.name.lower()
+        terms = [name]
+
+        if name.endswith("ology"):
+            terms.append(f"{name.removesuffix('ology')}ologist")
+
+        return terms
+
+    def _format_specialties(self, specialties: Sequence[Specialty]) -> str:
+        if not specialties:
+            return (
+                "We do not currently have any specialties listed. "
+                "Please contact the clinic for assistance."
+            )
+
+        names = [specialty.name for specialty in specialties]
+
+        if len(names) == 1:
+            return f"We offer the following specialty: {names[0]}."
+
+        return f"We offer the following specialties: {self._join_names(names)}."
+
+    def _format_doctors(
+        self,
+        doctors: Sequence[Doctor],
+        *,
+        specialty_name: str | None = None,
+    ) -> str:
+        if not doctors:
+            if specialty_name is not None:
+                return (
+                    f"We do not currently have any doctors listed for {specialty_name}. "
+                    "Please contact the clinic for assistance."
+                )
+
+            return (
+                "We do not currently have any doctors listed. "
+                "Please contact the clinic for assistance."
+            )
+
+        names = [doctor.full_name for doctor in doctors]
+
+        if specialty_name is not None:
+            prefix = f"The following doctors are available for {specialty_name}: "
+        else:
+            prefix = "Our available doctors are: "
+
+        if len(names) == 1:
+            return f"{prefix}{names[0]}."
+
+        return f"{prefix}{self._join_names(names)}."
+
+    def _join_names(self, names: Sequence[str]) -> str:
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+
+        return ", ".join(names[:-1]) + f", and {names[-1]}"
 
     def _get_or_create_conversation(
         self,
