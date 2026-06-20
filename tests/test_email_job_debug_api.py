@@ -7,9 +7,14 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_email_job_service
+from app.api.dependencies import (
+    get_email_job_dispatch_publisher,
+    get_email_job_service,
+)
+from app.db.session import get_db
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.main import create_app
+from app.messaging.email_job_dispatch import NoopEmailJobDispatchPublisher
 from app.models.email_jobs import EmailJob
 from app.services.email_job_pagination import (
     EmailJobCursor,
@@ -68,6 +73,96 @@ def client_and_jobs() -> Generator[tuple[TestClient, list[EmailJob]], None, None
         yield test_client, jobs
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def retry_replay_client() -> Generator[tuple[TestClient, dict[str, EmailJob]], None, None]:
+    app = create_app()
+    fake_db = FakeDatabaseSession()
+    jobs = {
+        "failed": create_email_job(status=EmailJobStatus.FAILED),
+        "sent": create_email_job(status=EmailJobStatus.SENT, last_error=None, locked_by=None),
+        "dead_letter": create_email_job(
+            status=EmailJobStatus.DEAD_LETTER,
+            attempts=3,
+            last_error="max attempts exceeded",
+        ),
+    }
+    service = EmailJobService(repository=FakeEmailJobRepository(list(jobs.values())))
+
+    def override_email_job_service() -> EmailJobService:
+        return service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield fake_db
+
+    def override_email_job_dispatch_publisher() -> NoopEmailJobDispatchPublisher:
+        return NoopEmailJobDispatchPublisher()
+
+    app.dependency_overrides[get_email_job_service] = override_email_job_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        override_email_job_dispatch_publisher
+    )
+
+    with TestClient(app) as test_client:
+        yield test_client, jobs
+
+    app.dependency_overrides.clear()
+
+
+def test_retry_email_job_endpoint_returns_200_for_failed(
+    retry_replay_client: tuple[TestClient, dict[str, EmailJob]],
+) -> None:
+    client, jobs = retry_replay_client
+    failed_job = jobs["failed"]
+    response = client.post(f"/api/v1/email-jobs/{failed_job.id}/retry")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["id"] == str(failed_job.id)
+    assert body["status"] == "pending"
+    assert body["last_error"] == "smtp failure"
+
+
+def test_retry_email_job_endpoint_returns_409_for_sent(
+    retry_replay_client: tuple[TestClient, dict[str, EmailJob]],
+) -> None:
+    client, jobs = retry_replay_client
+    response = client.post(f"/api/v1/email-jobs/{jobs['sent'].id}/retry")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "only failed email jobs can be retried"
+
+
+def test_replay_email_job_endpoint_returns_200_for_dead_letter(
+    retry_replay_client: tuple[TestClient, dict[str, EmailJob]],
+) -> None:
+    client, jobs = retry_replay_client
+    dead_letter_job = jobs["dead_letter"]
+    response = client.post(f"/api/v1/email-jobs/{dead_letter_job.id}/replay")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["id"] != str(dead_letter_job.id)
+    assert body["status"] == "pending"
+    assert body["attempts"] == 0
+    assert body["payload"]["replayed_from_email_job_id"] == str(dead_letter_job.id)
+    assert body["last_error"] is None
+
+
+def test_replay_email_job_endpoint_returns_409_for_failed(
+    retry_replay_client: tuple[TestClient, dict[str, EmailJob]],
+) -> None:
+    client, jobs = retry_replay_client
+    response = client.post(f"/api/v1/email-jobs/{jobs['failed'].id}/replay")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "only dead-letter email jobs can be replayed"
 
 
 def test_list_email_jobs_endpoint_returns_items_and_cursor(
@@ -213,6 +308,7 @@ class FakeEmailJobRepository:
         now: datetime,
     ) -> EmailJob:
         replay_job = EmailJob(
+            id=uuid4(),
             job_type=original_email_job.job_type,
             status=EmailJobStatus.PENDING,
             appointment_id=original_email_job.appointment_id,
@@ -238,6 +334,52 @@ class FakeEmailJobRepository:
         )
 
         return self.add(replay_job)
+
+
+class FakeDatabaseSession:
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def refresh(self, instance: object) -> None:
+        return None
+
+
+def create_email_job(
+    *,
+    status: EmailJobStatus,
+    attempts: int = 1,
+    last_error: str | None = "smtp failure",
+    locked_by: str | None = "worker-1",
+    locked_until: datetime | None = None,
+    payload: dict[str, str] | None = None,
+) -> EmailJob:
+    created_at = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    effective_locked_until = locked_until
+    if effective_locked_until is None and locked_by is not None:
+        effective_locked_until = created_at + timedelta(minutes=5)
+
+    return EmailJob(
+        id=uuid4(),
+        job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
+        status=status,
+        appointment_id=uuid4(),
+        patient_id=uuid4(),
+        recipient_email="patient@example.test",
+        subject="Appointment confirmation",
+        body="Your appointment is confirmed.",
+        attempts=attempts,
+        max_attempts=3,
+        locked_by=locked_by,
+        locked_until=effective_locked_until,
+        last_error=last_error,
+        payload=payload or {"source": "test"},
+        scheduled_for=created_at,
+        created_at=created_at,
+        updated_at=created_at,
+    )
 
 
 def create_email_jobs(*, count: int) -> list[EmailJob]:
