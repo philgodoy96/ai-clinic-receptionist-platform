@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 
 from app.domain.conversations.enums import ConversationChannel, ConversationMessageRole
-from app.models.scheduling import Doctor
 from app.services.chat_receptionist import (
     ChatMessageInput,
     ChatReceptionistIntent,
@@ -17,7 +15,12 @@ from app.services.chat_receptionist import (
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.scheduling import SchedulingService
 from tests.test_conversations import FakeConversationRepository
-from tests.test_scheduling_services import create_doctor, create_service, create_specialty
+from tests.test_scheduling_services import (
+    FakeAppointmentRepository,
+    create_demo_scheduling_service,
+    create_service,
+    create_specialty,
+)
 
 
 @pytest.fixture()
@@ -34,31 +37,16 @@ def chat_service() -> tuple[ChatReceptionistService, FakeConversationRepository]
 
 
 @pytest.fixture()
-def scheduling_chat_service() -> ChatReceptionistService:
-    dermatology = create_specialty(name="Dermatology")
-    cardiology = create_specialty(name="Cardiology")
-    dermatology_doctor = Doctor(
-        id=uuid4(),
-        specialty_id=dermatology.id,
-        full_name="Dr. Jane Adams",
-        email="jane.adams@example-clinic.test",
-        phone_number="+1-555-0101",
-        is_active=True,
-    )
-    cardiology_doctor = create_doctor(
-        specialty_id=cardiology.id,
-        doctor_id=uuid4(),
-    )
-    scheduling = create_service(
-        specialties=[dermatology, cardiology],
-        doctors=[dermatology_doctor, cardiology_doctor],
-    )
-    conversations = ConversationService(repository=FakeConversationRepository())
-
-    return ChatReceptionistService(
+def scheduling_chat_service() -> tuple[ChatReceptionistService, FakeConversationRepository]:
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service()
+    service = ChatReceptionistService(
         conversations=conversations,
         scheduling=scheduling,
     )
+
+    return service, repository
 
 
 def test_handle_message_creates_conversation_when_conversation_id_missing(
@@ -116,17 +104,68 @@ def test_assistant_message_is_persisted_with_role_assistant(
     assert result.assistant_message in repository.messages
 
 
-def test_appointment_request_message_returns_intent_appointment_request(
-    chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+def test_list_specialties_returns_intent_and_real_specialty_names(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
-    service, _repository = chat_service
+    service, _repository = scheduling_chat_service
 
     result = service.handle_message(
-        ChatMessageInput(message="I would like to book an appointment."),
+        ChatMessageInput(message="What specialties do you have?"),
     )
 
+    assert result.intent == ChatReceptionistIntent.LIST_SPECIALTIES
+    assert "Dermatology" in result.reply
+    assert "Cardiology" in result.reply
+    assert "Primary Care" in result.reply
+
+
+def test_list_doctors_returns_intent_and_real_doctor_names(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="Which doctors do you have?"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.LIST_DOCTORS
+    assert "Dr. Emily Carter" in result.reply
+    assert "Dr. Michael Reed" in result.reply
+    assert "Dr. Sarah Mitchell" in result.reply
+
+
+def test_dermatologist_request_matches_specialty_and_lists_doctors(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need a dermatologist"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
+    assert "Dr. Emily Carter" in result.reply
+    assert "Dr. Michael Reed" not in result.reply
+    assert result.assistant_message.message_metadata["matched_specialty_name"] == "Dermatology"
+    assert result.assistant_message.message_metadata["intent"] == "specialty_doctors"
+
+
+def test_appointment_request_message_returns_intent_appointment_request(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, repository = scheduling_chat_service
+    appointments = service.scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+
+    with patch.object(appointments, "add", wraps=appointments.add) as add_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="I need an appointment"),
+        )
+
     assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
-    assert "appointment scheduling" in result.reply.lower()
+    assert "specialty or doctor" in result.reply.lower()
+    assert result.conversation.appointment_id is None
+    add_appointment_mock.assert_not_called()
 
 
 def test_emergency_message_returns_intent_emergency_and_safe_guidance(
@@ -144,70 +183,39 @@ def test_emergency_message_returns_intent_emergency_and_safe_guidance(
 
 
 def test_emergency_message_does_not_call_scheduling(
-    scheduling_chat_service: ChatReceptionistService,
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
-    service = scheduling_chat_service
+    service, _repository = scheduling_chat_service
     scheduling = service.scheduling
 
     with patch.object(
         SchedulingService,
         "list_specialties",
         wraps=scheduling.list_specialties,
-    ) as list_specialties_mock:
+    ) as list_specialties_mock, patch.object(
+        SchedulingService,
+        "list_doctors",
+        wraps=scheduling.list_doctors,
+    ) as list_doctors_mock:
         result = service.handle_message(
             ChatMessageInput(message="This is an emergency and I have chest pain."),
         )
 
     assert result.intent == ChatReceptionistIntent.EMERGENCY
     list_specialties_mock.assert_not_called()
+    list_doctors_mock.assert_not_called()
 
 
 def test_cancel_request_takes_priority_over_doctor_listing(
-    scheduling_chat_service: ChatReceptionistService,
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
-    result = scheduling_chat_service.handle_message(
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
         ChatMessageInput(message="Please cancel my appointment with the doctors office."),
     )
 
     assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
-
-
-def test_list_specialties_returns_real_specialties(
-    scheduling_chat_service: ChatReceptionistService,
-) -> None:
-    result = scheduling_chat_service.handle_message(
-        ChatMessageInput(message="What specialties do you offer?"),
-    )
-
-    assert result.intent == ChatReceptionistIntent.LIST_SPECIALTIES
-    assert "Dermatology" in result.reply
-    assert "Cardiology" in result.reply
-
-
-def test_list_doctors_returns_real_doctors(
-    scheduling_chat_service: ChatReceptionistService,
-) -> None:
-    result = scheduling_chat_service.handle_message(
-        ChatMessageInput(message="Which doctors are available?"),
-    )
-
-    assert result.intent == ChatReceptionistIntent.LIST_DOCTORS
-    assert "Dr. Jane Adams" in result.reply
-    assert "Dr. Sarah Mitchell" in result.reply
-
-
-def test_specialty_name_in_message_lists_doctors_for_specialty(
-    scheduling_chat_service: ChatReceptionistService,
-) -> None:
-    result = scheduling_chat_service.handle_message(
-        ChatMessageInput(message="I need to see someone in dermatology."),
-    )
-
-    assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
-    assert "Dr. Jane Adams" in result.reply
-    assert "Dr. Sarah Mitchell" not in result.reply
-    assert result.assistant_message.message_metadata["matched_specialty_name"] == "Dermatology"
-    assert result.assistant_message.message_metadata["intent"] == "specialty_doctors"
 
 
 def test_specialty_with_no_doctors_returns_safe_message(

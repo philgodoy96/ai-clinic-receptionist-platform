@@ -257,10 +257,22 @@ class ChatReceptionistService:
         )
 
         for specialty in specialties:
-            if specialty.name.lower() in normalized_message:
+            if any(
+                term in normalized_message
+                for term in self._specialty_match_terms(specialty)
+            ):
                 return specialty
 
         return None
+
+    def _specialty_match_terms(self, specialty: Specialty) -> list[str]:
+        name = specialty.name.lower()
+        terms = [name]
+
+        if name.endswith("ology"):
+            terms.append(f"{name.removesuffix('ology')}ologist")
+
+        return terms
 
     def _format_specialties(self, specialties: Sequence[Specialty]) -> str:
         if not specialties:
