@@ -186,7 +186,7 @@ def test_booking_api_rejects_expired_hold(
     assert response.status_code == 409
     body = response.json()
     assert body["error"]["message"] == "appointment hold was not found or expired"
-    assert body["error"]["code"] == "http_409"
+    assert body["error"]["code"] == "appointment_hold_not_found"
 
 
 def test_retell_booking_tool_books_appointment_with_call_id(

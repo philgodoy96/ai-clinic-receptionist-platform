@@ -16,6 +16,7 @@ from app.api.dependencies import (
     get_email_job_service,
     get_scheduling_service,
 )
+from app.api.errors import APIError
 from app.db.session import get_db
 from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
 from app.messaging.email_job_dispatch import (
@@ -122,14 +123,16 @@ def check_doctor_availability(
             start_to=start_to,
         )
     except InvalidAvailabilityWindowError as exc:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="start_to must be greater than start_from",
+            code="invalid_availability_window",
+            message="start_to must be greater than start_from",
         ) from exc
     except DoctorNotFoundError as exc:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="doctor was not found or is inactive",
+            code="doctor_not_found",
+            message="doctor was not found or is inactive",
         ) from exc
 
 
@@ -148,15 +151,17 @@ def lookup_patient(
     try:
         patient = service.lookup_patient(criteria)
     except InsufficientPatientIdentityError as exc:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="patient lookup requires phone_number or email",
+            code="invalid_patient_identity",
+            message="patient lookup requires phone_number or email",
         ) from exc
 
     if patient is None:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="patient was not found",
+            code="patient_not_found",
+            message="patient was not found",
         )
 
     return patient
@@ -183,9 +188,10 @@ def list_upcoming_appointments(
             start_from=payload.start_from,
         )
     except InsufficientPatientIdentityError as exc:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="patient lookup requires phone_number or email",
+            code="invalid_patient_identity",
+            message="patient lookup requires phone_number or email",
         ) from exc
 
 
@@ -224,9 +230,10 @@ def hold_appointment_slot(
                 event_metadata={"reason": "availability_slot_not_found"},
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="availability slot was not found",
+            code="availability_slot_not_found",
+            message="availability slot was not found",
         ) from exc
     except AvailabilitySlotUnavailableError as exc:
         _commit_audit_best_effort(
@@ -242,9 +249,10 @@ def hold_appointment_slot(
                 event_metadata={"reason": "availability_slot_unavailable"},
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="availability slot is not available",
+            code="availability_slot_unavailable",
+            message="availability slot is not available",
         ) from exc
     except AppointmentSlotAlreadyHeldError as exc:
         _commit_audit_best_effort(
@@ -260,9 +268,10 @@ def hold_appointment_slot(
                 event_metadata={"reason": "slot_already_held"},
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="slot already has an active hold",
+            code="appointment_slot_already_held",
+            message="slot already has an active hold",
         ) from exc
     except (InvalidAppointmentHoldOwnerError, InvalidAppointmentHoldWindowError) as exc:
         _commit_audit_best_effort(
@@ -434,9 +443,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="patient was not found",
+            code="patient_not_found",
+            message="patient was not found",
         ) from exc
     except BookingDoctorNotFoundError as exc:
         db.rollback()
@@ -457,9 +467,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="doctor was not found or is inactive",
+            code="doctor_not_found",
+            message="doctor was not found or is inactive",
         ) from exc
     except BookingAvailabilitySlotNotFoundError as exc:
         db.rollback()
@@ -480,9 +491,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="availability slot was not found",
+            code="availability_slot_not_found",
+            message="availability slot was not found",
         ) from exc
     except BookingAvailabilitySlotUnavailableError as exc:
         db.rollback()
@@ -503,9 +515,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="availability slot is not available",
+            code="availability_slot_unavailable",
+            message="availability slot is not available",
         ) from exc
     except AppointmentSlotAlreadyBookedError as exc:
         db.rollback()
@@ -526,9 +539,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="doctor already has a scheduled appointment at this time",
+            code="appointment_slot_already_booked",
+            message="doctor already has a scheduled appointment at this time",
         ) from exc
     except AppointmentBookingOwnerRequiredError as exc:
         db.rollback()
@@ -572,9 +586,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="appointment hold was not found or expired",
+            code="appointment_hold_not_found",
+            message="appointment hold was not found or expired",
         ) from exc
     except AppointmentHoldMismatchError as exc:
         db.rollback()
@@ -595,9 +610,10 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_409_CONFLICT,
-            detail="appointment hold id does not match",
+            code="appointment_hold_mismatch",
+            message="appointment hold id does not match",
         ) from exc
     except AppointmentHoldOwnershipError as exc:
         db.rollback()
@@ -618,7 +634,8 @@ def book_appointment(
                 },
             ),
         )
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="appointment hold belongs to another owner",
+            code="appointment_hold_ownership_error",
+            message="appointment hold belongs to another owner",
         ) from exc

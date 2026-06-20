@@ -87,8 +87,8 @@ def test_list_audit_logs_endpoint_rejects_invalid_cursor(client: TestClient) -> 
 
     assert response.status_code == 400
     body = response.json()
-    assert body["error"]["message"] == "invalid audit log cursor"
-    assert body["error"]["code"] == "http_400"
+    assert body["error"]["message"] == "Invalid audit log cursor."
+    assert body["error"]["code"] == "invalid_audit_log_cursor"
 
 
 class FakeAuditLogRepository:

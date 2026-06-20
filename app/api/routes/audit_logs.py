@@ -1,9 +1,10 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_audit_log_service
+from app.api.errors import APIError
 from app.domain.audit.enums import AuditActorType, AuditEventOutcome, AuditEventType
 from app.schemas.audit_logs import AuditLogListResponse, AuditLogResponse
 from app.services.audit_log_pagination import InvalidAuditLogCursorError
@@ -46,14 +47,16 @@ def list_audit_logs(
             ),
         )
     except InvalidAuditLogCursorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid audit log cursor",
+        raise APIError(
+            status_code=400,
+            code="invalid_audit_log_cursor",
+            message="Invalid audit log cursor.",
         ) from exc
     except InvalidAuditLogLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="limit must be between 1 and 100",
+        raise APIError(
+            status_code=400,
+            code="invalid_audit_log_limit",
+            message="Audit log limit must be between 1 and 100.",
         ) from exc
 
     return AuditLogListResponse(

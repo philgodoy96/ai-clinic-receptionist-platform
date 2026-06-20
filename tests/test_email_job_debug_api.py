@@ -136,8 +136,8 @@ def test_retry_email_job_endpoint_returns_409_for_sent(
 
     assert response.status_code == 409
     body = response.json()
-    assert body["error"]["message"] == "only failed email jobs can be retried"
-    assert body["error"]["code"] == "http_409"
+    assert body["error"]["message"] == "Only failed email jobs can be retried."
+    assert body["error"]["code"] == "invalid_email_job_retry_state"
 
 
 def test_replay_email_job_endpoint_returns_200_for_dead_letter(
@@ -166,8 +166,8 @@ def test_replay_email_job_endpoint_returns_409_for_failed(
 
     assert response.status_code == 409
     body = response.json()
-    assert body["error"]["message"] == "only dead-letter email jobs can be replayed"
-    assert body["error"]["code"] == "http_409"
+    assert body["error"]["message"] == "Only dead-letter email jobs can be replayed."
+    assert body["error"]["code"] == "invalid_email_job_replay_state"
 
 
 def test_list_email_jobs_endpoint_returns_items_and_cursor(
@@ -211,8 +211,8 @@ def test_list_email_jobs_endpoint_rejects_invalid_cursor(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["error"]["message"] == "invalid email job cursor"
-    assert body["error"]["code"] == "http_400"
+    assert body["error"]["message"] == "Invalid email job cursor."
+    assert body["error"]["code"] == "invalid_email_job_cursor"
 
 
 def test_get_email_job_endpoint_returns_job(
@@ -240,8 +240,8 @@ def test_get_email_job_endpoint_returns_not_found_for_missing_id(
 
     assert response.status_code == 404
     body = response.json()
-    assert body["error"]["message"] == "email job was not found"
-    assert body["error"]["code"] == "http_404"
+    assert body["error"]["message"] == "Email job was not found."
+    assert body["error"]["code"] == "email_job_not_found"
 
 
 METRICS_NOW = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)

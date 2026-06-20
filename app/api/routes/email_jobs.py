@@ -2,13 +2,14 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
     get_email_job_dispatch_publisher,
     get_email_job_service,
 )
+from app.api.errors import APIError
 from app.db.session import get_db
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.messaging.email_job_dispatch import (
@@ -56,14 +57,16 @@ def list_email_jobs(
             ),
         )
     except InvalidEmailJobCursorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid email job cursor",
+        raise APIError(
+            status_code=400,
+            code="invalid_email_job_cursor",
+            message="Invalid email job cursor.",
         ) from exc
     except InvalidEmailJobLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="limit must be between 1 and 100",
+        raise APIError(
+            status_code=400,
+            code="invalid_email_job_limit",
+            message="Email job limit must be between 1 and 100.",
         ) from exc
 
     return EmailJobListResponse(
@@ -103,9 +106,10 @@ def get_email_job(
     try:
         email_job = service.get_email_job(email_job_id)
     except EmailJobNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="email job was not found",
+        raise APIError(
+            status_code=404,
+            code="email_job_not_found",
+            message="Email job was not found.",
         ) from exc
 
     return EmailJobResponse.model_validate(email_job)
@@ -141,15 +145,17 @@ def retry_failed_email_job(
         return EmailJobResponse.model_validate(email_job)
     except EmailJobNotFoundError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="email job was not found",
+        raise APIError(
+            status_code=404,
+            code="email_job_not_found",
+            message="Email job was not found.",
         ) from exc
     except InvalidEmailJobRetryStateError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="only failed email jobs can be retried",
+        raise APIError(
+            status_code=409,
+            code="invalid_email_job_retry_state",
+            message="Only failed email jobs can be retried.",
         ) from exc
     except Exception:
         db.rollback()
@@ -188,15 +194,17 @@ def replay_dead_letter_email_job(
         return EmailJobResponse.model_validate(replayed_email_job)
     except EmailJobNotFoundError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="email job was not found",
+        raise APIError(
+            status_code=404,
+            code="email_job_not_found",
+            message="Email job was not found.",
         ) from exc
     except InvalidEmailJobReplayStateError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="only dead-letter email jobs can be replayed",
+        raise APIError(
+            status_code=409,
+            code="invalid_email_job_replay_state",
+            message="Only dead-letter email jobs can be replayed.",
         ) from exc
     except Exception:
         db.rollback()
