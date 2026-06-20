@@ -23,6 +23,7 @@ The current implementation includes:
 - Worker locking using locked_by and locked_until
 - RabbitMQ dispatch consumer
 - Email Job Debug API with cursor pagination
+- Manual retry and dead-letter replay controls
 
 ## Worker Flow
 
@@ -65,6 +66,43 @@ Once locked_until expires, another worker can claim the job.
 
 This makes the job recoverable without requiring manual cleanup.
 
+## Manual Recovery Controls
+
+When automatic worker retries are not enough, operators can use the Email Job Debug API to recover stuck or exhausted jobs.
+
+### Failed job retry
+
+    POST /api/v1/email-jobs/{email_job_id}/retry
+
+Retry applies only to jobs with status `failed`.
+
+The service reuses the same job record:
+
+- status becomes `pending`
+- scheduled_for is set to now
+- locked_by and locked_until are cleared
+- attempts and last_error are preserved
+
+After the database commit, the API publishes a RabbitMQ wake message so a worker can claim the job again.
+
+This is appropriate when a transient provider failure occurred and the job still has remaining attempts.
+
+### Dead-letter replay
+
+    POST /api/v1/email-jobs/{email_job_id}/replay
+
+Replay applies only to jobs with status `dead_letter`.
+
+The service creates a new pending job instead of mutating the original:
+
+- the original dead_letter job remains unchanged for investigation
+- the new job gets a new ID, attempts reset to 0, and last_error cleared
+- replay metadata is added to the new job payload, including `replayed_from_email_job_id`
+
+After the database commit, the API publishes a RabbitMQ wake message for the new job.
+
+Replay creates a new job rather than mutating the original because dead_letter records represent the final exhausted state of a delivery attempt chain. Preserving that record keeps audit history intact and avoids overwriting failure context that may still be needed for root-cause analysis.
+
 ## Email Job Debug API
 
 An Email Job Debug API now exists for local development and operator debugging.
@@ -73,6 +111,8 @@ Endpoints:
 
     GET /api/v1/email-jobs
     GET /api/v1/email-jobs/{email_job_id}
+    POST /api/v1/email-jobs/{email_job_id}/retry
+    POST /api/v1/email-jobs/{email_job_id}/replay
 
 The list endpoint uses cursor pagination ordered by:
 
@@ -89,7 +129,7 @@ Supported optional filters:
 
 See `docs/api/email-jobs.md` for request/response details.
 
-This API does not yet include authentication, manual retry, or dead-letter replay.
+This API does not yet include authentication or RBAC. Manual retry and dead-letter replay are available for local development and operator debugging.
 
 ## Idempotency Notes
 
