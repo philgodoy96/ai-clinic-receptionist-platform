@@ -116,7 +116,7 @@ Goals:
 
 ## Stage 8 — Background Email Jobs
 
-Status: Planned
+Status: In progress
 
 Goals:
 
@@ -124,6 +124,14 @@ Goals:
 - Add FakeEmailProvider
 - Persist job execution records
 - Add idempotency and retry readiness
+
+Implemented:
+
+- Email job debug API with cursor pagination
+
+Future work:
+
+- Manual retry/replay endpoint
 
 ## Stage 9 — Observability
 
