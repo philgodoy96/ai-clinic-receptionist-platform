@@ -79,8 +79,8 @@ Planned stack:
 - Docker
 - Docker Compose
 - Retell Web Calls
-- FakeLLMProvider first
-- GroqProvider or OpenAIProvider later
+- FakeLLMProvider by default
+- Optional Bedrock LLM provider adapter
 - FakeEmailProvider first
 - ResendProvider later
 - Prometheus
@@ -138,6 +138,16 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 ## Current Status
 
-Documentation foundation in progress.
+Architecture and runtime implementation are in progress.
 
-Runtime implementation has not started yet.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, and an LLM provider boundary with fake as the default provider and optional Bedrock adapter.
+
+Configuration reference:
+
+- `docs/configuration.md`
+- `.env.example`
+
+Architecture docs:
+
+- `docs/architecture/real-llm-provider-adapter.md`
+- `docs/architecture/llm-provider-foundation.md`

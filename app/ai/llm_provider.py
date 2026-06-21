@@ -9,6 +9,11 @@ class LLMProviderError(RuntimeError):
     pass
 
 
+class LLMProviderName(StrEnum):
+    FAKE = "fake"
+    BEDROCK = "bedrock"
+
+
 class LLMFinishReason(StrEnum):
     STOP = "stop"
     LENGTH = "length"

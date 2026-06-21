@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session
 from app.adapters.retell.appointment_booking_tools import RetellAppointmentBookingToolAdapter
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
-from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai import build_llm_provider
+from app.ai.llm_provider import LLMProvider
 from app.cache.redis import get_redis_client
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisher,
@@ -123,8 +124,19 @@ def get_conversation_health_service() -> ConversationHealthService:
     return ConversationHealthService()
 
 
-def get_llm_receptionist_analysis_service() -> LLMReceptionistAnalysisService:
-    return LLMReceptionistAnalysisService(provider=FakeLLMProvider())
+def get_llm_provider(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LLMProvider:
+    return build_llm_provider(settings)
+
+
+def get_llm_receptionist_analysis_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LLMReceptionistAnalysisService | None:
+    if not settings.llm_enabled:
+        return None
+
+    return LLMReceptionistAnalysisService(provider=build_llm_provider(settings))
 
 
 def get_natural_language_date_parser() -> NaturalLanguageDateParser:
@@ -171,7 +183,7 @@ def get_chat_receptionist_service(
         Depends(get_appointment_booking_service),
     ],
     llm_analysis: Annotated[
-        LLMReceptionistAnalysisService,
+        LLMReceptionistAnalysisService | None,
         Depends(get_llm_receptionist_analysis_service),
     ],
     slot_filling: Annotated[
