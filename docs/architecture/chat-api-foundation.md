@@ -129,15 +129,39 @@ The chat responder does not provide diagnosis or clinical advice.
 
 Emergency language is handled with safe guidance to contact emergency services or go to the nearest emergency room.
 
+## LLM Shadow Analysis
+
+`ChatReceptionistService` may invoke `LLMReceptionistAnalysisService` in shadow mode after the user message is stored and before the deterministic reply is generated.
+
+The deterministic flow remains the source of behavior:
+
+- Assistant intent and reply text come from the deterministic responder and scheduling/booking services.
+- Holds, bookings, identity collection, and confirmation gates are unchanged.
+- LLM analysis does not create holds, create bookings, or bypass identity or confirmation requirements.
+
+Shadow analysis uses `FakeLLMProvider` only in this phase. No real provider calls are made.
+
+Results are persisted on the assistant message as internal `llm_shadow_analysis` metadata, including classified intent, confidence, urgency, safety flags, reliability signals, and token/cost fields.
+
+Shadow metadata intentionally excludes:
+
+- raw prompts
+- raw provider output
+- extracted patient identity
+
+This enables observability and comparison between deterministic behavior and LLM classification without changing successful API response semantics.
+
 ## Future Work
 
 Planned future implementation phases include:
 
-- Fake LLM provider
-- Structured output parser
+- Structured-output-assisted slot filling
+- Conversation health and escalation signals
+- Human escalation foundation
+- Real provider adapter
+- LLM reliability and fallbacks
+- Cost tracking aggregation
 - Natural-language date parsing
-- Human escalation
 - Conversation state machine
-- Slot filling
 - Hold expiration handling in chat
 - Retell webhook ingestion
