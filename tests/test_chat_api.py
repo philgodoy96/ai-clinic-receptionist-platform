@@ -7,12 +7,15 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from app.ai.fake_llm_provider import FakeLLMProvider
 from app.api.dependencies import (
     get_appointment_hold_service,
     get_chat_receptionist_service,
     get_email_job_dispatch_publisher,
     get_email_job_service,
+    get_llm_receptionist_analysis_service,
 )
+from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationChannel
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
@@ -25,12 +28,16 @@ from app.models.email_jobs import EmailJob
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
+from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
 )
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
+from app.services.llm_receptionist import LLMReceptionistAnalysisService
+from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_chat_booking_confirmation_flow import (
     FULL_IDENTITY_WITH_CONFIRM,
     create_jane_doe_patient,
@@ -43,6 +50,7 @@ from tests.test_conversations import FakeConversationRepository
 from tests.test_email_jobs import FakeEmailJobRepository
 from tests.test_human_escalations import FakeHumanEscalationRepository
 from tests.test_scheduling_services import (
+    create_demo_scheduling_service,
     create_demo_scheduling_service_with_emily_july_availability,
 )
 
@@ -632,6 +640,77 @@ def test_post_chat_message_dispatch_failure_does_not_fail_booking(
     assert body["intent"] == "booking_confirmed"
     assert body["booking_confirmed"] is True
     assert body["appointment_id"]
+
+
+@pytest.fixture()
+def chat_client_with_default_fake_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[ChatApiContext, None, None]:
+    get_settings.cache_clear()
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+
+    settings = Settings(_env_file=None)
+    llm_analysis = get_llm_receptionist_analysis_service(settings=settings)
+    assert isinstance(llm_analysis, LLMReceptionistAnalysisService)
+    assert isinstance(llm_analysis.provider, FakeLLMProvider)
+
+    app = create_app()
+    repository = FakeConversationRepository()
+    conversation_service = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service()
+    chat_service = create_chat_receptionist_service(
+        conversations=conversation_service,
+        scheduling=scheduling,
+        hold_service=FakeAppointmentHoldService(),
+        llm_analysis=llm_analysis,
+        slot_filling=LLMChatSlotFillingService(
+            scheduling=scheduling,
+            date_parser=NaturalLanguageDateParser(),
+            time_preference_parser=TimePreferenceParser(),
+        ),
+        conversation_health=ConversationHealthService(),
+    )
+    db = FakeDatabaseSession()
+
+    def override_chat_service() -> ChatReceptionistService:
+        return chat_service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    app.dependency_overrides[get_chat_receptionist_service] = override_chat_service
+    app.dependency_overrides[get_db] = override_db
+
+    with TestClient(app) as test_client:
+        yield ChatApiContext(
+            client=test_client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+        )
+
+    app.dependency_overrides.clear()
+    get_settings.cache_clear()
+
+
+def test_chat_api_with_default_fake_llm_dependency_returns_greeting(
+    chat_client_with_default_fake_llm: ChatApiContext,
+) -> None:
+    response = chat_client_with_default_fake_llm.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Hello"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intent"] == "greeting"
+
+    assistant_message = chat_client_with_default_fake_llm.repository.messages[-1]
+    assert assistant_message.role.value == "assistant"
+    assert "llm_shadow_analysis" in assistant_message.message_metadata
+    shadow = assistant_message.message_metadata["llm_shadow_analysis"]
+    assert shadow["used_fallback"] is False
+    assert "raw_provider_output" not in shadow
 
 
 class ChatApiContext:

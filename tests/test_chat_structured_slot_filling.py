@@ -18,6 +18,7 @@ from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from tests.llm_provider_test_helpers import RaisingLLMProvider, StaticContentLLMProvider
 from tests.test_chat_receptionist_service import (
     TrackingAppointmentBookingService,
     _create_hold_service,
@@ -25,10 +26,6 @@ from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
-from tests.test_llm_receptionist_analysis import (
-    RaisingLLMProvider,
-    StaticContentLLMProvider,
-)
 from tests.test_scheduling_services import create_demo_scheduling_service
 
 

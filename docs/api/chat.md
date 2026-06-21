@@ -8,6 +8,8 @@ It records user messages and assistant replies in durable conversation storage.
 
 Deterministic rules drive the public response. Optional LLM shadow analysis runs internally for observability only.
 
+Chat behavior remains deterministic even when a real provider is enabled. Public response fields such as `intent`, `reply`, `appointment_id`, and `booking_confirmed` are not driven by raw LLM output.
+
 ## Endpoint
 
 Send a message:
