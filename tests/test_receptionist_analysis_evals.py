@@ -155,6 +155,52 @@ def test_load_receptionist_analysis_eval_cases_invalid_expected_intent_raises(
         load_receptionist_analysis_eval_cases(dataset_path)
 
 
+def test_load_receptionist_analysis_eval_cases_accepts_historical_prompt_version(
+    tmp_path: Path,
+) -> None:
+    legacy_version = "receptionist-analysis-v0"
+    dataset_path = tmp_path / "historical_prompt_version.jsonl"
+    dataset_path.write_text(
+        json.dumps(
+            _case_payload(
+                prompt_version=legacy_version,
+                recorded_output=_matching_recorded_output(),
+            ),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cases = load_receptionist_analysis_eval_cases(dataset_path)
+
+    assert len(cases) == 1
+    assert cases[0].prompt_version == legacy_version
+    assert cases[0].prompt_version != _default_prompt_version()
+
+
+def test_evaluation_summary_lists_prompt_versions_seen() -> None:
+    current_version = _default_prompt_version()
+    legacy_version = "receptionist-analysis-v0"
+    summary = evaluate_receptionist_analysis_cases(
+        [
+            _build_case(
+                case_id="current",
+                prompt_version=current_version,
+                recorded_output=_matching_recorded_output(),
+            ),
+            _build_case(
+                case_id="legacy",
+                prompt_version=legacy_version,
+                recorded_output=_matching_recorded_output(),
+            ),
+        ],
+    )
+
+    assert summary.prompt_versions == (legacy_version, current_version)
+    assert legacy_version in summary.metrics_by_prompt_version
+    assert current_version in summary.metrics_by_prompt_version
+
+
 def test_perfect_recorded_output_gives_full_accuracy() -> None:
     case = _build_case(
         case_id="perfect",
