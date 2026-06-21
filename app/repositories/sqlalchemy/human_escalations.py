@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import and_, desc, or_, select
@@ -53,6 +54,10 @@ class SQLAlchemyHumanEscalationRepository:
         conversation_id: UUID | None = None,
         patient_id: UUID | None = None,
         appointment_id: UUID | None = None,
+        assigned_to: str | None = None,
+        unassigned: bool | None = None,
+        overdue: bool | None = None,
+        now: datetime | None = None,
     ) -> Sequence[HumanEscalation]:
         statement = select(HumanEscalation)
 
@@ -88,6 +93,34 @@ class SQLAlchemyHumanEscalationRepository:
             statement = statement.where(
                 HumanEscalation.appointment_id == appointment_id,
             )
+
+        if assigned_to is not None:
+            statement = statement.where(HumanEscalation.assigned_to == assigned_to)
+
+        if unassigned is True:
+            statement = statement.where(HumanEscalation.assigned_to.is_(None))
+        elif unassigned is False:
+            statement = statement.where(HumanEscalation.assigned_to.isnot(None))
+
+        if overdue is not None:
+            if now is None:
+                msg = "now is required when the overdue filter is set"
+                raise ValueError(msg)
+
+            if overdue:
+                statement = statement.where(
+                    HumanEscalation.due_at.isnot(None),
+                    HumanEscalation.due_at < now,
+                    HumanEscalation.status.in_(_ACTIVE_STATUSES),
+                )
+            else:
+                statement = statement.where(
+                    or_(
+                        HumanEscalation.due_at.is_(None),
+                        HumanEscalation.due_at >= now,
+                        HumanEscalation.status.notin_(_ACTIVE_STATUSES),
+                    ),
+                )
 
         statement = statement.order_by(
             desc(HumanEscalation.created_at),
