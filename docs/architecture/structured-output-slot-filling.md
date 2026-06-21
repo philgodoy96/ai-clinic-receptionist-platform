@@ -2,7 +2,7 @@
 
 ## Context
 
-The platform already has a deterministic chat booking flow and a fake LLM provider foundation.
+The platform already has a deterministic chat booking flow and an LLM provider foundation with fake as the default provider.
 
 This implementation phase allows validated LLM structured output to assist slot filling without giving the LLM control over business side effects.
 
@@ -27,6 +27,8 @@ The LLM analysis may suggest:
 - patient identity fields
 
 These values are treated as untrusted candidates.
+
+Real provider output is treated the same as fake provider output: untrusted candidates that must pass backend validation before merge into `chat_context`.
 
 ## Validation Boundary
 
@@ -100,7 +102,6 @@ The deterministic chat flow continues.
 Future implementation phases may add:
 
 - human escalation records
-- real provider adapters
 - model evaluation fixtures
 
-See also: [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md).
+See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md).

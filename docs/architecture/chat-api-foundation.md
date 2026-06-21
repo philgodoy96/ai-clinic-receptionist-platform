@@ -143,7 +143,7 @@ The deterministic flow remains the source of behavior:
 - Holds, bookings, identity collection, and confirmation gates are unchanged.
 - LLM analysis does not create holds, create bookings, or bypass identity or confirmation requirements.
 
-Shadow analysis uses `FakeLLMProvider` only in this phase. No real provider calls are made.
+Shadow analysis uses `FakeLLMProvider` by default. A real provider such as Bedrock may be selected through configuration, but the same reliability and safety boundaries apply.
 
 Results are persisted on the assistant message as internal `llm_shadow_analysis` metadata, including classified intent, confidence, urgency, safety flags, reliability signals, and token/cost fields.
 

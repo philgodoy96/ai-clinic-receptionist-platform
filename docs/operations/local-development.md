@@ -57,3 +57,13 @@ RabbitMQ URL:
 Queue name:
 
     EMAIL_JOB_QUEUE_NAME=email_jobs
+
+## LLM Provider Configuration
+
+LLM settings are documented in `docs/configuration.md`.
+
+Local development and CI should keep:
+
+    LLM_PROVIDER=fake
+
+Optional Bedrock configuration requires runtime AWS credentials and is not needed for the default demo flow.
