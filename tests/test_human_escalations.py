@@ -427,6 +427,10 @@ class FakeHumanEscalationRepository:
         conversation_id: UUID | None = None,
         patient_id: UUID | None = None,
         appointment_id: UUID | None = None,
+        assigned_to: str | None = None,
+        unassigned: bool | None = None,
+        overdue: bool | None = None,
+        now: datetime | None = None,
     ) -> Sequence[HumanEscalation]:
         items = sorted(
             self.escalations,
@@ -462,6 +466,41 @@ class FakeHumanEscalationRepository:
             items = [
                 item for item in items if item.appointment_id == appointment_id
             ]
+
+        if assigned_to is not None:
+            items = [item for item in items if item.assigned_to == assigned_to]
+
+        if unassigned is True:
+            items = [item for item in items if item.assigned_to is None]
+        elif unassigned is False:
+            items = [item for item in items if item.assigned_to is not None]
+
+        if overdue is not None:
+            if now is None:
+                msg = "now is required when the overdue filter is set"
+                raise ValueError(msg)
+
+            active_statuses = {
+                HumanEscalationStatus.OPEN,
+                HumanEscalationStatus.ACKNOWLEDGED,
+            }
+
+            if overdue:
+                items = [
+                    item
+                    for item in items
+                    if item.due_at is not None
+                    and item.due_at < now
+                    and item.status in active_statuses
+                ]
+            else:
+                items = [
+                    item
+                    for item in items
+                    if item.due_at is None
+                    or item.due_at >= now
+                    or item.status not in active_statuses
+                ]
 
         return items[:limit]
 

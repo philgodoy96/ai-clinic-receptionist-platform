@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from typing import Any, NoReturn
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from app.domain.human_escalations import (
 )
 from app.models.human_escalation import HumanEscalation
 from app.repositories.human_escalations import HumanEscalationRepository
+from app.services.clock import Clock, SystemClock
 from app.services.human_escalation_pagination import (
     HumanEscalationCursor,
     decode_human_escalation_cursor,
@@ -41,6 +42,22 @@ class HumanEscalationListFilters:
     conversation_id: UUID | None = None
     patient_id: UUID | None = None
     appointment_id: UUID | None = None
+    assigned_to: str | None = None
+    unassigned: bool | None = None
+    overdue: bool | None = None
+
+
+def compute_due_at(
+    priority: HumanEscalationPriority,
+    now: datetime,
+) -> datetime:
+    if priority == HumanEscalationPriority.URGENT:
+        return now + timedelta(minutes=15)
+
+    if priority == HumanEscalationPriority.HIGH:
+        return now + timedelta(hours=4)
+
+    return now + timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,8 +67,14 @@ class HumanEscalationListResult:
 
 
 class HumanEscalationService:
-    def __init__(self, *, repository: HumanEscalationRepository) -> None:
+    def __init__(
+        self,
+        *,
+        repository: HumanEscalationRepository,
+        clock: Clock | None = None,
+    ) -> None:
         self.repository = repository
+        self._clock = clock or SystemClock()
 
     def create_or_get_active_escalation(
         self,
@@ -70,7 +93,7 @@ class HumanEscalationService:
         if existing is not None:
             return existing
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
         escalation = HumanEscalation(
             conversation_id=conversation_id,
             patient_id=patient_id,
@@ -87,6 +110,9 @@ class HumanEscalationService:
         )
 
         return self.repository.add(escalation)
+
+    def current_time(self) -> datetime:
+        return self._clock.now()
 
     def get_active_escalation_for_conversation(
         self,
@@ -116,6 +142,9 @@ class HumanEscalationService:
             decode_human_escalation_cursor(cursor) if cursor is not None else None
         )
         normalized_filters = filters or HumanEscalationListFilters()
+        list_now = (
+            self._clock.now() if normalized_filters.overdue is not None else None
+        )
         fetched_items = list(
             self.repository.list(
                 limit=limit + 1,
@@ -126,6 +155,10 @@ class HumanEscalationService:
                 conversation_id=normalized_filters.conversation_id,
                 patient_id=normalized_filters.patient_id,
                 appointment_id=normalized_filters.appointment_id,
+                assigned_to=normalized_filters.assigned_to,
+                unassigned=normalized_filters.unassigned,
+                overdue=normalized_filters.overdue,
+                now=list_now,
             ),
         )
 
@@ -162,7 +195,7 @@ class HumanEscalationService:
                 "Only open escalations can be acknowledged.",
             )
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
         escalation.status = HumanEscalationStatus.ACKNOWLEDGED
         escalation.acknowledged_at = now
         escalation.acknowledged_by = acknowledged_by
@@ -187,7 +220,7 @@ class HumanEscalationService:
                 "Cancelled escalations cannot be resolved.",
             )
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
         escalation.status = HumanEscalationStatus.RESOLVED
         escalation.resolved_at = now
         escalation.resolved_by = resolved_by
@@ -213,10 +246,68 @@ class HumanEscalationService:
                 "Resolved escalations cannot be cancelled.",
             )
 
-        now = datetime.now(UTC)
+        now = self._clock.now()
         escalation.status = HumanEscalationStatus.CANCELLED
         escalation.resolved_by = cancelled_by
         escalation.resolution_notes = notes
+        escalation.updated_at = now
+
+        return self.repository.update(escalation)
+
+    def assign_escalation(
+        self,
+        escalation_id: UUID,
+        *,
+        assigned_to: str,
+    ) -> HumanEscalation:
+        escalation = self.get_escalation(escalation_id)
+        normalized_assigned_to = assigned_to.strip()
+
+        if not normalized_assigned_to:
+            self._raise_invalid_assignment(
+                "assigned_to must be a non-empty string.",
+            )
+
+        if escalation.status not in _ACTIVE_STATUSES:
+            self._raise_invalid_transition(
+                "Only open or acknowledged escalations can be assigned.",
+            )
+
+        if (
+            escalation.assigned_to is not None
+            and escalation.assigned_to == normalized_assigned_to
+        ):
+            return escalation
+
+        now = self._clock.now()
+        escalation.assigned_to = normalized_assigned_to
+        escalation.assigned_at = now
+        escalation.due_at = compute_due_at(escalation.priority, now)
+
+        if escalation.status == HumanEscalationStatus.OPEN:
+            escalation.status = HumanEscalationStatus.ACKNOWLEDGED
+
+        escalation.updated_at = now
+
+        return self.repository.update(escalation)
+
+    def unassign_escalation(
+        self,
+        escalation_id: UUID,
+    ) -> HumanEscalation:
+        escalation = self.get_escalation(escalation_id)
+
+        if escalation.status not in _ACTIVE_STATUSES:
+            self._raise_invalid_transition(
+                "Only open or acknowledged escalations can be unassigned.",
+            )
+
+        if escalation.assigned_to is None and escalation.assigned_at is None:
+            return escalation
+
+        now = self._clock.now()
+        escalation.assigned_to = None
+        escalation.assigned_at = None
         escalation.updated_at = now
 
         return self.repository.update(escalation)
@@ -247,5 +338,12 @@ class HumanEscalationService:
         raise APIError(
             status_code=409,
             code="invalid_human_escalation_transition",
+            message=message,
+        )
+
+    def _raise_invalid_assignment(self, message: str) -> NoReturn:
+        raise APIError(
+            status_code=400,
+            code="invalid_human_escalation_assignment",
             message=message,
         )

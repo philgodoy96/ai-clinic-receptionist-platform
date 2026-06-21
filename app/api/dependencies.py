@@ -31,6 +31,7 @@ from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.clock import SystemClock
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
 from app.services.date_parsing import NaturalLanguageDateParser
@@ -114,6 +115,7 @@ def get_human_escalation_service(
 ) -> HumanEscalationService:
     return HumanEscalationService(
         repository=SQLAlchemyHumanEscalationRepository(db),
+        clock=SystemClock(),
     )
 
 
