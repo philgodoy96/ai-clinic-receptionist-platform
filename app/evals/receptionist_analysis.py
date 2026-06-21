@@ -163,3 +163,216 @@ def _validate_enum_value(
             f"Invalid {field} '{value}' at line {line_number}. "
             f"Allowed values: {allowed_values}"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationFieldResult:
+    field: str
+    passed: bool
+    expected: Any
+    actual: Any
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationCaseResult:
+    case_id: str
+    passed: bool
+    field_results: tuple[EvaluationFieldResult, ...]
+    failure_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationSummary:
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    accuracy: float
+    intent_accuracy: float
+    urgency_accuracy: float
+    requires_human_accuracy: float
+    safety_flag_accuracy: float
+    extracted_field_accuracy: float
+    case_results: tuple[EvaluationCaseResult, ...]
+
+
+def evaluate_receptionist_analysis_cases(
+    cases: list[ReceptionistAnalysisEvalCase],
+) -> EvaluationSummary:
+    case_results = [_evaluate_case(case) for case in cases]
+    return _build_summary(case_results)
+
+
+def _evaluate_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
+    if case.recorded_output is None:
+        return EvaluationCaseResult(
+            case_id=case.id,
+            passed=False,
+            field_results=(),
+            failure_reason="missing_recorded_output",
+        )
+
+    field_results = (
+        _compare_scalar_field(
+            field="intent",
+            expected=case.expected.intent,
+            recorded=case.recorded_output,
+            key="intent",
+        ),
+        _compare_scalar_field(
+            field="urgency",
+            expected=case.expected.urgency,
+            recorded=case.recorded_output,
+            key="urgency",
+        ),
+        _compare_scalar_field(
+            field="requires_human",
+            expected=case.expected.requires_human,
+            recorded=case.recorded_output,
+            key="requires_human",
+        ),
+        _compare_safety_flags(
+            expected=case.expected.safety_flags,
+            recorded=case.recorded_output,
+        ),
+        *_compare_extracted_fields(
+            expected=case.expected.extracted,
+            recorded=case.recorded_output,
+        ),
+    )
+    passed = all(result.passed for result in field_results)
+    return EvaluationCaseResult(
+        case_id=case.id,
+        passed=passed,
+        field_results=field_results,
+    )
+
+
+def _compare_scalar_field(
+    *,
+    field: str,
+    expected: Any,
+    recorded: dict[str, Any],
+    key: str,
+) -> EvaluationFieldResult:
+    actual = _normalize_scalar(recorded.get(key))
+    normalized_expected = _normalize_scalar(expected)
+    return EvaluationFieldResult(
+        field=field,
+        passed=actual == normalized_expected,
+        expected=normalized_expected,
+        actual=actual,
+    )
+
+
+def _compare_safety_flags(
+    *,
+    expected: list[str],
+    recorded: dict[str, Any],
+) -> EvaluationFieldResult:
+    actual_flags = recorded.get("safety_flags")
+    if actual_flags is None:
+        actual_set: set[str] = set()
+    elif isinstance(actual_flags, list):
+        actual_set = {str(item) for item in actual_flags}
+    else:
+        actual_set = {str(actual_flags)}
+
+    expected_set = set(expected)
+    return EvaluationFieldResult(
+        field="safety_flags",
+        passed=actual_set == expected_set,
+        expected=sorted(expected_set),
+        actual=sorted(actual_set),
+    )
+
+
+def _compare_extracted_fields(
+    *,
+    expected: dict[str, Any],
+    recorded: dict[str, Any],
+) -> tuple[EvaluationFieldResult, ...]:
+    recorded_extracted = recorded.get("extracted")
+    extracted: dict[str, Any] = recorded_extracted if isinstance(recorded_extracted, dict) else {}
+
+    results: list[EvaluationFieldResult] = []
+    for field_name, expected_value in expected.items():
+        actual_value = _normalize_scalar(extracted.get(field_name))
+        normalized_expected = _normalize_scalar(expected_value)
+        results.append(
+            EvaluationFieldResult(
+                field=f"extracted.{field_name}",
+                passed=actual_value == normalized_expected,
+                expected=normalized_expected,
+                actual=actual_value,
+            ),
+        )
+
+    return tuple(results)
+
+
+def _normalize_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    return value
+
+
+def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummary:
+    total_cases = len(case_results)
+    passed_cases = sum(1 for result in case_results if result.passed)
+    failed_cases = total_cases - passed_cases
+
+    intent_results = _collect_field_results(case_results, "intent")
+    urgency_results = _collect_field_results(case_results, "urgency")
+    requires_human_results = _collect_field_results(case_results, "requires_human")
+    safety_flag_results = _collect_field_results(case_results, "safety_flags")
+    extracted_results = _collect_field_results(case_results, prefix="extracted.")
+
+    return EvaluationSummary(
+        total_cases=total_cases,
+        passed_cases=passed_cases,
+        failed_cases=failed_cases,
+        accuracy=_ratio(passed_cases, total_cases),
+        intent_accuracy=_ratio(
+            sum(1 for item in intent_results if item.passed),
+            len(intent_results),
+        ),
+        urgency_accuracy=_ratio(
+            sum(1 for item in urgency_results if item.passed),
+            len(urgency_results),
+        ),
+        requires_human_accuracy=_ratio(
+            sum(1 for item in requires_human_results if item.passed),
+            len(requires_human_results),
+        ),
+        safety_flag_accuracy=_ratio(
+            sum(1 for item in safety_flag_results if item.passed),
+            len(safety_flag_results),
+        ),
+        extracted_field_accuracy=_ratio(
+            sum(1 for item in extracted_results if item.passed),
+            len(extracted_results),
+        ),
+        case_results=tuple(case_results),
+    )
+
+
+def _collect_field_results(
+    case_results: list[EvaluationCaseResult],
+    field: str | None = None,
+    *,
+    prefix: str | None = None,
+) -> list[EvaluationFieldResult]:
+    collected: list[EvaluationFieldResult] = []
+    for case_result in case_results:
+        for field_result in case_result.field_results:
+            if field is not None and field_result.field == field:
+                collected.append(field_result)
+            elif prefix is not None and field_result.field.startswith(prefix):
+                collected.append(field_result)
+    return collected
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return numerator / denominator
