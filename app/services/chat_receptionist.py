@@ -70,6 +70,12 @@ from app.services.slot_filling import (
     SlotFillingRejectedField,
     SlotFillingResult,
 )
+from app.services.time_preferences import (
+    TimePreferenceParser,
+    TimePreferenceStatus,
+    TimeWindow,
+    is_time_in_window,
+)
 
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
@@ -163,6 +169,14 @@ _DATE_CLARIFICATION_MESSAGE = (
     "Please provide a specific date in YYYY-MM-DD or say something like "
     "tomorrow or next Monday."
 )
+_TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
+    "Please specify a time-of-day preference such as morning, afternoon, or "
+    "evening, or provide an exact time in HH:MM format."
+)
+_HELD_TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
+    "You already have a time held. Please complete or release that hold before "
+    "changing your time-of-day preference."
+)
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -179,7 +193,9 @@ class ChatReceptionistIntent(StrEnum):
     AVAILABILITY_MISSING_DOCTOR = "availability_missing_doctor"
     AVAILABILITY_RESULTS = "availability_results"
     AVAILABILITY_NO_SLOTS = "availability_no_slots"
+    AVAILABILITY_NO_MATCHING_TIME_WINDOW = "availability_no_matching_time_window"
     INVALID_DATE = "invalid_date"
+    INVALID_TIME_PREFERENCE = "invalid_time_preference"
     HOLD_REQUEST = "hold_request"
     HOLD_CREATED = "hold_created"
     HOLD_MISSING_AVAILABILITY = "hold_missing_availability"
@@ -204,7 +220,9 @@ _AVAILABILITY_CONTEXT_INTENTS = frozenset(
         ChatReceptionistIntent.AVAILABILITY_MISSING_DOCTOR,
         ChatReceptionistIntent.AVAILABILITY_RESULTS,
         ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
+        ChatReceptionistIntent.AVAILABILITY_NO_MATCHING_TIME_WINDOW,
         ChatReceptionistIntent.INVALID_DATE,
+        ChatReceptionistIntent.INVALID_TIME_PREFERENCE,
     }
 )
 _MAX_OFFERED_SLOTS = 5
@@ -299,6 +317,13 @@ class _RequestedDateExtraction:
 
 
 @dataclass(frozen=True, slots=True)
+class _TimePreferenceExtraction:
+    window: dict[str, str] | None = None
+    time_preference_parsing: dict[str, object] | None = None
+    requires_clarification: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ChatReceptionistReply:
     intent: ChatReceptionistIntent
     content: str
@@ -316,6 +341,7 @@ class ChatReceptionistReply:
     booked_appointment_start_time: datetime | None = None
     pending_hold_release: PendingHoldRelease | None = None
     date_parsing: dict[str, object] | None = None
+    time_preference_parsing: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,6 +455,7 @@ class ChatReceptionistService:
         human_escalations: HumanEscalationService | None = None,
         human_handoff_notifications: HumanHandoffNotificationService | None = None,
         date_parser: NaturalLanguageDateParser | None = None,
+        time_preference_parser: TimePreferenceParser | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -441,6 +468,7 @@ class ChatReceptionistService:
         self.human_escalations = human_escalations
         self.human_handoff_notifications = human_handoff_notifications
         self.date_parser = date_parser
+        self.time_preference_parser = time_preference_parser
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -582,6 +610,8 @@ class ChatReceptionistService:
             )
         if reply.date_parsing is not None:
             assistant_metadata["date_parsing"] = reply.date_parsing
+        if reply.time_preference_parsing is not None:
+            assistant_metadata["time_preference"] = reply.time_preference_parsing
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -845,11 +875,17 @@ class ChatReceptionistService:
             return self.responder.generate_reply(message=message)
 
         date_extraction = self._extract_requested_date(message)
+        time_extraction = self._extract_time_preference(message)
 
         def finish(reply: ChatReceptionistReply) -> ChatReceptionistReply:
-            if date_extraction.date_parsing is None:
-                return reply
-            return replace(reply, date_parsing=date_extraction.date_parsing)
+            if date_extraction.date_parsing is not None:
+                reply = replace(reply, date_parsing=date_extraction.date_parsing)
+            if time_extraction.time_preference_parsing is not None:
+                reply = replace(
+                    reply,
+                    time_preference_parsing=time_extraction.time_preference_parsing,
+                )
+            return reply
 
         if date_extraction.requires_clarification and self._is_clearly_asking_availability(
             normalized_message,
@@ -860,11 +896,34 @@ class ChatReceptionistService:
                 message,
                 existing_context=existing_context,
                 date_extraction=date_extraction,
+                time_extraction=time_extraction,
             )
             return finish(
                 ChatReceptionistReply(
                     intent=ChatReceptionistIntent.INVALID_DATE,
                     content=_DATE_CLARIFICATION_MESSAGE,
+                    chat_context_updates=context_updates,
+                ),
+            )
+
+        if (
+            time_extraction.requires_clarification
+            and self._is_clearly_asking_availability_with_time_preference(
+                normalized_message,
+                time_preference_parsing=time_extraction.time_preference_parsing,
+            )
+        ):
+            context_updates = self._extract_context_updates(
+                normalized_message,
+                message,
+                existing_context=existing_context,
+                date_extraction=date_extraction,
+                time_extraction=time_extraction,
+            )
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.INVALID_TIME_PREFERENCE,
+                    content=_TIME_PREFERENCE_CLARIFICATION_MESSAGE,
                     chat_context_updates=context_updates,
                 ),
             )
@@ -900,8 +959,27 @@ class ChatReceptionistService:
             message,
             existing_context=existing_context,
             date_extraction=date_extraction,
+            time_extraction=time_extraction,
         )
         merged_context = {**existing_context, **context_updates}
+
+        if (
+            time_extraction.window is not None
+            and existing_context.get("hold_id")
+            and isinstance(existing_context.get("requested_time_window"), dict)
+            and not self._time_windows_equal(
+                existing_context["requested_time_window"],
+                time_extraction.window,
+            )
+        ):
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.HOLD_REQUEST,
+                    content=_HELD_TIME_PREFERENCE_CLARIFICATION_MESSAGE,
+                    chat_context_updates=context_updates,
+                    hold_created=False,
+                ),
+            )
 
         booking_reply = self._handle_booking_flow(
             message=message,
@@ -1004,6 +1082,7 @@ class ChatReceptionistService:
         *,
         existing_context: dict[str, Any] | None = None,
         date_extraction: _RequestedDateExtraction | None = None,
+        time_extraction: _TimePreferenceExtraction | None = None,
     ) -> dict[str, Any]:
         context_updates: dict[str, Any] = {}
         context = existing_context or {}
@@ -1011,8 +1090,14 @@ class ChatReceptionistService:
         if date_extraction is None:
             date_extraction = self._extract_requested_date(message)
 
+        if time_extraction is None:
+            time_extraction = self._extract_time_preference(message)
+
         if date_extraction.normalized_date is not None and not context.get("hold_id"):
             context_updates["requested_date"] = date_extraction.normalized_date
+
+        if time_extraction.window is not None and not context.get("hold_id"):
+            context_updates["requested_time_window"] = time_extraction.window
 
         matched_specialty = self._match_specialty_in_message(normalized_message)
         if matched_specialty is not None:
@@ -1546,6 +1631,29 @@ class ChatReceptionistService:
             requested_date=date.fromisoformat(str(requested_date)),
         )
         doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
+        requested_time_window = merged_context.get("requested_time_window")
+
+        if isinstance(requested_time_window, dict):
+            filtered_slots = self._filter_slots_by_time_window(
+                slots,
+                requested_time_window,
+            )
+            if slots and not filtered_slots:
+                label = str(requested_time_window.get("label", "requested"))
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.AVAILABILITY_NO_MATCHING_TIME_WINDOW,
+                    content=(
+                        f"I don't see any {label} openings for that date. "
+                        "Would you like another time window or another date?"
+                    ),
+                    chat_context_updates={
+                        **context_updates,
+                        "offered_slots": [],
+                    },
+                    availability_checked=True,
+                    offered_slot_count=0,
+                )
+            slots = filtered_slots
 
         if slots:
             shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
@@ -1675,11 +1783,128 @@ class ChatReceptionistService:
             )
 
         if parse_result.status == DateParseStatus.NOT_FOUND:
+            extracted_date = self._extract_iso_date(message)
+            if extracted_date is not None:
+                return _RequestedDateExtraction(
+                    normalized_date=extracted_date.isoformat(),
+                    date_parsing={
+                        "status": DateParseStatus.PARSED.value,
+                        "normalized_date": extracted_date.isoformat(),
+                        "source_text": extracted_date.isoformat(),
+                        "reason": None,
+                    },
+                )
             return _RequestedDateExtraction()
+
+        extracted_date = self._extract_iso_date(message)
+        if extracted_date is not None:
+            return _RequestedDateExtraction(
+                normalized_date=extracted_date.isoformat(),
+                date_parsing={
+                    "status": DateParseStatus.PARSED.value,
+                    "normalized_date": extracted_date.isoformat(),
+                    "source_text": extracted_date.isoformat(),
+                    "reason": None,
+                },
+            )
 
         return _RequestedDateExtraction(
             date_parsing=metadata,
             requires_clarification=True,
+        )
+
+    def _extract_time_preference(self, message: str) -> _TimePreferenceExtraction:
+        if self.time_preference_parser is None:
+            return _TimePreferenceExtraction()
+
+        parse_result = self.time_preference_parser.parse(message)
+        metadata = parse_result.to_metadata()
+
+        if (
+            parse_result.status == TimePreferenceStatus.PARSED
+            and parse_result.window is not None
+        ):
+            window = parse_result.window
+            return _TimePreferenceExtraction(
+                window={
+                    "label": window.label,
+                    "start_time": window.start_time,
+                    "end_time": window.end_time,
+                },
+                time_preference_parsing=metadata,
+            )
+
+        if parse_result.status == TimePreferenceStatus.NOT_FOUND:
+            return _TimePreferenceExtraction()
+
+        return _TimePreferenceExtraction(
+            time_preference_parsing=metadata,
+            requires_clarification=True,
+        )
+
+    def _is_clearly_asking_availability_with_time_preference(
+        self,
+        normalized_message: str,
+        *,
+        time_preference_parsing: dict[str, object] | None,
+    ) -> bool:
+        if self._is_availability_request(normalized_message):
+            return True
+
+        has_scheduling_target = (
+            self._match_doctor_in_message(normalized_message) is not None
+            or self._match_specialty_in_message(normalized_message) is not None
+        )
+        if not has_scheduling_target:
+            return False
+
+        if time_preference_parsing is None:
+            return False
+
+        status = time_preference_parsing.get("status")
+        return status in {
+            TimePreferenceStatus.UNSUPPORTED.value,
+            TimePreferenceStatus.AMBIGUOUS.value,
+        }
+
+    def _filter_slots_by_time_window(
+        self,
+        slots: Sequence[AvailabilitySlot],
+        window: dict[str, Any],
+    ) -> list[AvailabilitySlot]:
+        label = window.get("label")
+        start_time = window.get("start_time")
+        end_time = window.get("end_time")
+        if (
+            not isinstance(label, str)
+            or not isinstance(start_time, str)
+            or not isinstance(end_time, str)
+        ):
+            return list(slots)
+
+        time_window = TimeWindow(
+            label=label,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        return [
+            slot
+            for slot in slots
+            if is_time_in_window(
+                time_value=slot.start_time.strftime("%H:%M"),
+                window=time_window,
+            )
+        ]
+
+    def _time_windows_equal(
+        self,
+        existing: dict[str, Any],
+        window: dict[str, str],
+    ) -> bool:
+        return (
+            existing.get("label") == window["label"]
+            and existing.get("start_time") == window["start_time"]
+            and existing.get("end_time") == window["end_time"]
         )
 
     def _is_clearly_asking_availability(
@@ -1767,6 +1992,7 @@ class ChatReceptionistService:
             "requested_date",
             "selected_doctor_id",
             "selected_specialty_id",
+            "requested_time_window",
         }
 
         return bool(relevant_updates & context_updates.keys())
