@@ -5,6 +5,14 @@ import logging
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
 from app.ai.llm_provider import LLMProvider, LLMProviderName
+from app.ai.prompt_versions import (
+    CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION,
+    get_current_receptionist_analysis_prompt_metadata,
+)
+from app.ai.receptionist_prompt import (
+    build_receptionist_system_prompt,
+    get_receptionist_analysis_prompt_version,
+)
 from app.core.config import Settings
 
 logger = logging.getLogger("app.llm_provider")
@@ -43,6 +51,10 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
 
 
 __all__ = [
+    "CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION",
     "LLMProviderConfigurationError",
     "build_llm_provider",
+    "build_receptionist_system_prompt",
+    "get_current_receptionist_analysis_prompt_metadata",
+    "get_receptionist_analysis_prompt_version",
 ]
