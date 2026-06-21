@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.evals.receptionist_analysis import (
     EvaluationError,
     EvaluationExpected,
@@ -15,9 +16,14 @@ from app.evals.receptionist_analysis import (
 )
 
 
+def _default_prompt_version() -> str:
+    return get_current_receptionist_analysis_prompt_metadata().version
+
+
 def _case_payload(
     *,
     case_id: str = "case_1",
+    prompt_version: str | None = None,
     intent: str = "greeting",
     urgency: str = "normal",
     requires_human: bool = False,
@@ -27,6 +33,7 @@ def _case_payload(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": case_id,
+        "prompt_version": prompt_version or _default_prompt_version(),
         "input": {"message": "Hello"},
         "expected": {
             "intent": intent,
@@ -67,11 +74,13 @@ def _matching_recorded_output(**overrides: object) -> dict[str, object]:
 def _build_case(
     *,
     case_id: str,
+    prompt_version: str | None = None,
     expected: EvaluationExpected | None = None,
     recorded_output: dict[str, object] | None = None,
 ) -> ReceptionistAnalysisEvalCase:
     return ReceptionistAnalysisEvalCase(
         id=case_id,
+        prompt_version=prompt_version or _default_prompt_version(),
         input=EvaluationInput(message="Hello"),
         expected=expected
         or EvaluationExpected(
@@ -101,6 +110,7 @@ def test_load_receptionist_analysis_eval_cases_loads_jsonl_dataset(tmp_path: Pat
 
     assert len(cases) == 1
     assert cases[0].id == "case_1"
+    assert cases[0].prompt_version == _default_prompt_version()
     assert cases[0].input.message == "Hello"
     assert cases[0].expected.intent == "greeting"
     assert cases[0].recorded_output is not None
@@ -114,6 +124,21 @@ def test_load_receptionist_analysis_eval_cases_invalid_jsonl_raises_with_line_nu
     dataset_path.write_text("{ not valid json }\n", encoding="utf-8")
 
     with pytest.raises(EvaluationError, match=r"Invalid JSONL at .*:1:"):
+        load_receptionist_analysis_eval_cases(dataset_path)
+
+
+def test_load_receptionist_analysis_eval_cases_missing_prompt_version_raises(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "missing_prompt_version.jsonl"
+    payload = _case_payload()
+    del payload["prompt_version"]
+    dataset_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        EvaluationError,
+        match="Field 'prompt_version' must be a non-empty string at line 1",
+    ):
         load_receptionist_analysis_eval_cases(dataset_path)
 
 
@@ -199,6 +224,7 @@ def test_wrong_requires_human_fails_requires_human_metric() -> None:
 def test_safety_flags_compare_as_sets_not_order_sensitive() -> None:
     matching_case = ReceptionistAnalysisEvalCase(
         id="safety_flags_match",
+        prompt_version=_default_prompt_version(),
         input=EvaluationInput(message="Emergency"),
         expected=EvaluationExpected(
             intent="emergency",
@@ -228,6 +254,7 @@ def test_safety_flags_compare_as_sets_not_order_sensitive() -> None:
 
     mismatch_case = ReceptionistAnalysisEvalCase(
         id="safety_flags_mismatch",
+        prompt_version=_default_prompt_version(),
         input=EvaluationInput(message="Emergency"),
         expected=EvaluationExpected(
             intent="emergency",
@@ -305,3 +332,37 @@ def test_missing_recorded_output_fails_case() -> None:
     assert summary.case_results[0].passed is False
     assert summary.case_results[0].failure_reason == "missing_recorded_output"
     assert summary.case_results[0].field_results == ()
+
+
+def test_multiple_prompt_versions_produce_grouped_metrics() -> None:
+    current_version = _default_prompt_version()
+    legacy_version = "receptionist-analysis-v0"
+
+    cases = [
+        _build_case(
+            case_id="current_pass",
+            prompt_version=current_version,
+            recorded_output=_matching_recorded_output(),
+        ),
+        _build_case(
+            case_id="current_fail",
+            prompt_version=current_version,
+            recorded_output=_matching_recorded_output(intent="fallback"),
+        ),
+        _build_case(
+            case_id="legacy_pass",
+            prompt_version=legacy_version,
+            recorded_output=_matching_recorded_output(),
+        ),
+    ]
+
+    summary = evaluate_receptionist_analysis_cases(cases)
+
+    assert summary.prompt_versions == (legacy_version, current_version)
+    assert summary.metrics_by_prompt_version[current_version].total_cases == 2
+    assert summary.metrics_by_prompt_version[current_version].passed_cases == 1
+    assert summary.metrics_by_prompt_version[current_version].failed_cases == 1
+    assert summary.metrics_by_prompt_version[current_version].accuracy == 0.5
+    assert summary.metrics_by_prompt_version[legacy_version].total_cases == 1
+    assert summary.metrics_by_prompt_version[legacy_version].passed_cases == 1
+    assert summary.metrics_by_prompt_version[legacy_version].accuracy == 1.0
