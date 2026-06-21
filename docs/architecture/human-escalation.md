@@ -19,10 +19,13 @@ The current implementation includes:
 - `HumanEscalation` persistence model
 - `HumanEscalationService`
 - idempotent active escalation creation
+- durable `human_escalation_notification` email jobs for immediate escalations
+- `HumanHandoffNotificationService` with idempotent job creation per escalation
 - internal/debug listing API
 - acknowledge endpoint
 - resolve endpoint
 - chat integration for immediate escalation signals
+- chat-triggered notification job enqueue and post-commit RabbitMQ dispatch wake-up
 
 ## When Escalation Is Created
 
@@ -41,6 +44,8 @@ If an active escalation already exists, repeated requests reuse the existing rec
 
 This protects against duplicate user messages, retries, and future duplicate webhook delivery.
 
+The same idempotency applies to notification jobs: one durable `human_escalation_notification` email job is created per escalation, and repeated immediate signals reuse the existing job.
+
 ## Boundaries
 
 Human escalation does not:
@@ -49,7 +54,7 @@ Human escalation does not:
 - create appointments
 - send confirmation emails
 - call an LLM
-- notify real staff in this phase
+- send real staff email in this phase
 - implement a human chat dashboard
 
 ## Operational States
@@ -71,9 +76,9 @@ In production, these endpoints must require staff authentication and role-based 
 
 Future implementation phases may add:
 
-- staff notification job
 - escalation listing dashboard
-- escalation assignment
+- escalation assignment workflow
+- staff notification provider adapter
 - voice provider call transfer
 - audit trail expansion
 - staff user identity integration

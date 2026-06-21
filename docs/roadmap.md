@@ -115,13 +115,14 @@ Implemented:
 - Structured-output-assisted slot filling with validated merge into `chat_context`
 - Conversation health and escalation signals with deterministic health metadata and soft handoff behavior
 - Human escalation foundation with durable `HumanEscalation` records, handoff context, and internal listing/acknowledge/resolve API
+- Human handoff notification job with durable `human_escalation_notification` email jobs, idempotent enqueue, chat integration, fake worker delivery, and post-commit RabbitMQ dispatch wake-up
 
 Upcoming:
 
-- Human handoff notification job
-- Escalation assignment/resolution workflow
+- Escalation assignment workflow
+- Staff notification provider adapter
 - Natural-language date parsing
-- Real provider adapter
+- Real LLM provider adapter
 - Voice provider transfer integration
 - LLM reliability/fallbacks
 - Cost tracking aggregation
@@ -154,6 +155,7 @@ Implemented:
 - Email job debug API with cursor pagination
 - Manual retry/replay endpoint
 - Email job operational metrics
+- `human_escalation_notification` worker rendering and fake delivery
 
 Future work:
 

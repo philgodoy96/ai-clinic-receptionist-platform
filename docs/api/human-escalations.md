@@ -4,6 +4,8 @@ This API is an internal/debug API for operational handoff records.
 
 It is not a public patient-facing API.
 
+Immediate escalations may also create an associated durable `human_escalation_notification` email job for staff handoff. That job is inspectable through the Email Job Debug API, not through the Human Escalations API response shape.
+
 ## List Escalations
 
 `GET /api/v1/human-escalations`
