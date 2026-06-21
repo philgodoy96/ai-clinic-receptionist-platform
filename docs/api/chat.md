@@ -96,7 +96,9 @@ The deterministic responder currently supports:
 - availability_missing_doctor
 - availability_results
 - availability_no_slots
+- availability_no_matching_time_window
 - invalid_date
+- invalid_time_preference
 - hold_request
 - hold_created
 - hold_missing_availability
@@ -147,8 +149,10 @@ Supported examples:
     "Dr. Emily Carter availability"
     "Dr. Emily Carter on 2026-07-02"
     "Dr. Emily Carter tomorrow"
+    "Dr. Emily Carter tomorrow morning"
     "Dermatology on 2026-07-02"
     "Dermatology next Monday"
+    "Dermatology next Monday afternoon"
     "What times are available?"
 
 Dates may use ISO format:
@@ -156,6 +160,8 @@ Dates may use ISO format:
     YYYY-MM-DD
 
 Or simple natural-language expressions such as `today`, `tomorrow`, `this Monday`, `next Monday`, and `in 3 days`.
+
+Time-of-day preferences such as `morning`, `afternoon`, and `evening` narrow availability results to matching slots. Unsupported time phrases such as `after lunch` return a clarification reply asking for one supported window or an exact time.
 
 Unsupported date phrases such as `next week` return a clarification reply asking for a specific date rather than silently choosing one.
 
@@ -166,7 +172,9 @@ The API may return these intents:
 - availability_missing_doctor
 - availability_results
 - availability_no_slots
+- availability_no_matching_time_window
 - invalid_date
+- invalid_time_preference
 
 This phase is read-only for availability lookup.
 

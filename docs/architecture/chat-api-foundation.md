@@ -84,7 +84,9 @@ The deterministic responder supports:
 - availability_missing_doctor
 - availability_results
 - availability_no_slots
+- availability_no_matching_time_window
 - invalid_date
+- invalid_time_preference
 - hold_request
 - hold_created
 - hold_missing_availability
@@ -203,6 +205,32 @@ Assistant message metadata may include `date_parsing` when a date expression was
 
 See also: [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md).
 
+## Time-of-Day Preference Boundary
+
+The deterministic chat flow and LLM slot filling may resolve broad time-of-day phrases through `TimePreferenceParser`.
+
+The parser:
+
+- normalizes supported preferences such as `morning`, `afternoon`, and `evening` into `requested_time_window`
+- rejects unsupported or ambiguous phrases with clarification instead of silently choosing a window
+- filters availability results before offered slots are stored in `chat_context`
+
+Time preference parsing does not:
+
+- create Redis holds
+- create appointments
+- send emails
+- call an LLM
+- bypass emergency handling
+- bypass booking confirmation
+- replace explicit time selection such as `I'll take 09:00`
+
+When LLM slot filling suggests a broad time phrase, the deterministic parser normalizes and validates it before it is applied to `chat_context`. The deterministic availability flow uses the same parser when extracting preferences from user messages.
+
+Assistant message metadata may include `time_preference` when a time-of-day expression was processed.
+
+See also: [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md).
+
 ## Conversation Health Boundary
 
 After the deterministic reply and `chat_context` updates are resolved, `ChatReceptionistService` may evaluate conversation health through `ConversationHealthService` before the assistant message is persisted.
@@ -264,8 +292,8 @@ Planned future implementation phases include:
 
 - Human handoff notification job
 - Escalation assignment/resolution workflow
-- Time-of-day preference parsing
 - Real provider adapter
+- Clinic timezone settings
 - Voice provider transfer integration
 - LLM reliability and fallbacks
 - Cost tracking aggregation

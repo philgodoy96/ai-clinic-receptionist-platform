@@ -35,10 +35,12 @@ Before a field is applied to `conversation_metadata.chat_context`:
 - specialty must exist in `SchedulingService`
 - doctor must exist in `SchedulingService`
 - date must be normalized to valid `YYYY-MM-DD` by `NaturalLanguageDateParser`
-- time must be valid `HH:MM`
+- time must be valid `HH:MM`, or a supported time-of-day preference normalized to `requested_time_window`
 - patient identity fields must pass deterministic validation
 
 Natural-language date candidates suggested by the LLM (for example `tomorrow` or `next Monday`) are normalized by the deterministic parser before they are applied to `chat_context`. Unsupported or ambiguous date phrases are rejected and recorded in metadata.
+
+Broad time phrases such as `morning` or `afternoon` are normalized by `TimePreferenceParser` into `requested_time_window` with `label`, `start_time`, and `end_time`. Exact times such as `09:00` are stored as `requested_time`.
 
 Unknown or conflicting values are rejected and recorded in metadata.
 
@@ -78,6 +80,7 @@ Assistant message metadata may include:
 - slot filling rejected fields
 - rejection reasons
 - date parsing results when a date candidate was processed
+- time preference parsing results when a time-of-day candidate was processed
 - conversation health signals derived from recent message history
 
 Rejected fields are not applied to `chat_context`, but their count can contribute to current or future conversation health signals such as repeated slot-filling rejection thresholds.
@@ -100,4 +103,4 @@ Future implementation phases may add:
 - real provider adapters
 - model evaluation fixtures
 
-See also: [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md).
+See also: [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md).
