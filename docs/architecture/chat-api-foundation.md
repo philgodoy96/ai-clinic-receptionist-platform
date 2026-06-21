@@ -96,6 +96,8 @@ The deterministic responder supports:
 - booking_hold_missing
 - booking_hold_expired
 - booking_conflict
+- human_escalation_requested
+- escalation_suggested
 - fallback
 
 ## Availability Read Boundary
@@ -176,16 +178,44 @@ Slot filling is skipped when analysis used fallback, failed reliability checks, 
 
 See also: [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
 
+## Conversation Health Boundary
+
+After the deterministic reply and `chat_context` updates are resolved, `ChatReceptionistService` may evaluate conversation health through `ConversationHealthService` before the assistant message is persisted.
+
+Health evaluation is deterministic. It uses:
+
+- the current user message
+- the current or updated `conversation_metadata.chat_context`
+- a bounded window of recent conversation messages
+
+Results are persisted on the assistant message as internal `conversation_health` metadata, including signal counts, escalation flags, and escalation reason.
+
+Conversation health does not:
+
+- create `HumanEscalation` records
+- notify a real human
+- use another LLM to impersonate a human
+- create holds or appointments
+- override emergency deterministic responses
+- append handoff suggestions to successful booking, availability, or hold outcomes
+
+When the user explicitly asks for a human, the deterministic reply becomes a handoff-style message and the conversation status may be updated to `escalated` when supported. No durable human queue exists in this phase.
+
+When repeated fallback, slot-filling rejection, low-confidence shadow analysis, booking conflict, or no-progress signals are detected, the assistant may append a soft handoff suggestion only for fallback or otherwise stuck responses.
+
+Emergency language still wins over other health-driven reply changes.
+
 ## Future Work
 
 Planned future implementation phases include:
 
-- Conversation health and escalation signals
 - Human escalation foundation
+- Escalation listing API
+- Human handoff notification job
+- Natural-language date parsing
 - Real provider adapter
 - LLM reliability and fallbacks
 - Cost tracking aggregation
-- Natural-language date parsing
 - Conversation state machine
 - Hold expiration handling in chat
 - Retell webhook ingestion
