@@ -117,12 +117,13 @@ Implemented:
 - Human escalation foundation with durable `HumanEscalation` records, handoff context, and internal listing/acknowledge/resolve API
 - Human handoff notification job with durable `human_escalation_notification` email jobs, idempotent enqueue, chat integration, fake worker delivery, and post-commit RabbitMQ dispatch wake-up
 - Natural-language date parsing with deterministic `NaturalLanguageDateParser` for chat availability guidance and LLM slot filling
+- Time-of-day preference parsing with deterministic `TimePreferenceParser` for chat availability filtering and LLM slot filling
 
 Upcoming:
 
-- Time-of-day preference parsing
 - Escalation assignment workflow
 - Real LLM provider adapter
+- Clinic timezone settings
 - Voice provider transfer integration
 - Staff notification provider adapter
 - LLM reliability/fallbacks
