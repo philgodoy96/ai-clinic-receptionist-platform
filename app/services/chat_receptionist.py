@@ -47,6 +47,10 @@ from app.services.conversations import (
     ConversationMessageCreate,
     ConversationService,
 )
+from app.services.date_parsing import (
+    DateParseStatus,
+    NaturalLanguageDateParser,
+)
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import (
@@ -154,6 +158,10 @@ _HANDOFF_CONTEXT_KEYS = (
 )
 _ESCALATION_SUGGESTION_SUFFIX = (
     " If you prefer, I can transfer this to a human receptionist."
+)
+_DATE_CLARIFICATION_MESSAGE = (
+    "Please provide a specific date in YYYY-MM-DD or say something like "
+    "tomorrow or next Monday."
 )
 
 
@@ -284,6 +292,13 @@ class PendingHoldRelease:
 
 
 @dataclass(frozen=True, slots=True)
+class _RequestedDateExtraction:
+    normalized_date: str | None = None
+    date_parsing: dict[str, object] | None = None
+    requires_clarification: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ChatReceptionistReply:
     intent: ChatReceptionistIntent
     content: str
@@ -300,6 +315,7 @@ class ChatReceptionistReply:
     booked_patient_id: UUID | None = None
     booked_appointment_start_time: datetime | None = None
     pending_hold_release: PendingHoldRelease | None = None
+    date_parsing: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +428,7 @@ class ChatReceptionistService:
         conversation_health: ConversationHealthService | None = None,
         human_escalations: HumanEscalationService | None = None,
         human_handoff_notifications: HumanHandoffNotificationService | None = None,
+        date_parser: NaturalLanguageDateParser | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -423,6 +440,7 @@ class ChatReceptionistService:
         self.conversation_health = conversation_health
         self.human_escalations = human_escalations
         self.human_handoff_notifications = human_handoff_notifications
+        self.date_parser = date_parser
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -562,6 +580,8 @@ class ChatReceptionistService:
             assistant_metadata["human_handoff_notification"] = (
                 human_handoff_notification_metadata
             )
+        if reply.date_parsing is not None:
+            assistant_metadata["date_parsing"] = reply.date_parsing
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -824,12 +844,54 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return self.responder.generate_reply(message=message)
 
-        if self._has_invalid_date_pattern(message):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.INVALID_DATE,
-                content=(
-                    "That date does not look valid. "
-                    "Please provide a date in YYYY-MM-DD format."
+        date_extraction = self._extract_requested_date(message)
+
+        def finish(reply: ChatReceptionistReply) -> ChatReceptionistReply:
+            if date_extraction.date_parsing is None:
+                return reply
+            return replace(reply, date_parsing=date_extraction.date_parsing)
+
+        if date_extraction.requires_clarification and self._is_clearly_asking_availability(
+            normalized_message,
+            date_parsing=date_extraction.date_parsing,
+        ):
+            context_updates = self._extract_context_updates(
+                normalized_message,
+                message,
+                existing_context=existing_context,
+                date_extraction=date_extraction,
+            )
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.INVALID_DATE,
+                    content=_DATE_CLARIFICATION_MESSAGE,
+                    chat_context_updates=context_updates,
+                ),
+            )
+
+        if self.date_parser is None and self._has_invalid_date_pattern(message):
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.INVALID_DATE,
+                    content=(
+                        "That date does not look valid. "
+                        "Please provide a date in YYYY-MM-DD format."
+                    ),
+                ),
+            )
+
+        if (
+            self.date_parser is not None
+            and date_extraction.date_parsing is not None
+            and date_extraction.date_parsing.get("status") == DateParseStatus.INVALID.value
+        ):
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.INVALID_DATE,
+                    content=(
+                        "That date does not look valid. "
+                        "Please provide a date in YYYY-MM-DD format."
+                    ),
                 ),
             )
 
@@ -837,6 +899,7 @@ class ChatReceptionistService:
             normalized_message,
             message,
             existing_context=existing_context,
+            date_extraction=date_extraction,
         )
         merged_context = {**existing_context, **context_updates}
 
@@ -848,20 +911,24 @@ class ChatReceptionistService:
             request_patient_id=request_patient_id,
         )
         if booking_reply is not None:
-            return booking_reply
+            return finish(booking_reply)
 
         if self.responder._contains_any(normalized_message, _SPECIALTY_LIST_KEYWORDS):
             specialties = self.scheduling.list_specialties()
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.LIST_SPECIALTIES,
-                content=self._format_specialties(specialties),
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.LIST_SPECIALTIES,
+                    content=self._format_specialties(specialties),
+                ),
             )
 
         if self.responder._contains_any(normalized_message, _DOCTOR_LIST_KEYWORDS):
             doctors = self.scheduling.list_doctors()
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.LIST_DOCTORS,
-                content=self._format_doctors(doctors),
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.LIST_DOCTORS,
+                    content=self._format_doctors(doctors),
+                ),
             )
 
         matched_specialty = self._match_specialty_in_message(normalized_message)
@@ -879,24 +946,28 @@ class ChatReceptionistService:
             and not completing_availability
         ):
             doctors = self.scheduling.list_doctors(specialty_id=matched_specialty.id)
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.SPECIALTY_DOCTORS,
-                content=self._format_doctors(
-                    doctors,
-                    specialty_name=matched_specialty.name,
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.SPECIALTY_DOCTORS,
+                    content=self._format_doctors(
+                        doctors,
+                        specialty_name=matched_specialty.name,
+                    ),
+                    matched_specialty_id=matched_specialty.id,
+                    matched_specialty_name=matched_specialty.name,
+                    chat_context_updates=context_updates,
                 ),
-                matched_specialty_id=matched_specialty.id,
-                matched_specialty_name=matched_specialty.name,
-                chat_context_updates=context_updates,
             )
 
         if self._is_hold_request(normalized_message, merged_context, message):
-            return self._handle_hold_flow(
-                message=message,
-                normalized_message=normalized_message,
-                conversation=conversation,
-                merged_context=merged_context,
-                context_updates=context_updates,
+            return finish(
+                self._handle_hold_flow(
+                    message=message,
+                    normalized_message=normalized_message,
+                    conversation=conversation,
+                    merged_context=merged_context,
+                    context_updates=context_updates,
+                ),
             )
 
         if self._is_availability_request(normalized_message) or (
@@ -905,22 +976,26 @@ class ChatReceptionistService:
                 merged_context,
             )
         ) or completing_availability:
-            return self._handle_availability_flow(
-                merged_context=merged_context,
-                context_updates=context_updates,
+            return finish(
+                self._handle_availability_flow(
+                    merged_context=merged_context,
+                    context_updates=context_updates,
+                ),
             )
 
         if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
-                content=(
-                    "I can help with appointment scheduling. Please tell me the "
-                    "specialty or doctor you would like to see."
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                    content=(
+                        "I can help with appointment scheduling. Please tell me the "
+                        "specialty or doctor you would like to see."
+                    ),
+                    chat_context_updates=context_updates,
                 ),
-                chat_context_updates=context_updates,
             )
 
-        return self.responder.generate_reply(message=message)
+        return finish(self.responder.generate_reply(message=message))
 
     def _extract_context_updates(
         self,
@@ -928,13 +1003,16 @@ class ChatReceptionistService:
         message: str,
         *,
         existing_context: dict[str, Any] | None = None,
+        date_extraction: _RequestedDateExtraction | None = None,
     ) -> dict[str, Any]:
         context_updates: dict[str, Any] = {}
         context = existing_context or {}
 
-        extracted_date = self._extract_date(message)
-        if extracted_date is not None and not context.get("hold_id"):
-            context_updates["requested_date"] = extracted_date.isoformat()
+        if date_extraction is None:
+            date_extraction = self._extract_requested_date(message)
+
+        if date_extraction.normalized_date is not None and not context.get("hold_id"):
+            context_updates["requested_date"] = date_extraction.normalized_date
 
         matched_specialty = self._match_specialty_in_message(normalized_message)
         if matched_specialty is not None:
@@ -1575,7 +1653,62 @@ class ChatReceptionistService:
             "You can choose a time, and booking will be handled in a later step."
         )
 
-    def _extract_date(self, message: str) -> date | None:
+    def _extract_requested_date(self, message: str) -> _RequestedDateExtraction:
+        if self.date_parser is None:
+            extracted_date = self._extract_iso_date(message)
+            if extracted_date is not None:
+                return _RequestedDateExtraction(
+                    normalized_date=extracted_date.isoformat(),
+                )
+            return _RequestedDateExtraction()
+
+        parse_result = self.date_parser.parse(message)
+        metadata = parse_result.to_metadata()
+
+        if (
+            parse_result.status == DateParseStatus.PARSED
+            and parse_result.normalized_date is not None
+        ):
+            return _RequestedDateExtraction(
+                normalized_date=parse_result.normalized_date,
+                date_parsing=metadata,
+            )
+
+        if parse_result.status == DateParseStatus.NOT_FOUND:
+            return _RequestedDateExtraction()
+
+        return _RequestedDateExtraction(
+            date_parsing=metadata,
+            requires_clarification=True,
+        )
+
+    def _is_clearly_asking_availability(
+        self,
+        normalized_message: str,
+        *,
+        date_parsing: dict[str, object] | None,
+    ) -> bool:
+        if self._is_availability_request(normalized_message):
+            return True
+
+        has_scheduling_target = (
+            self._match_doctor_in_message(normalized_message) is not None
+            or self._match_specialty_in_message(normalized_message) is not None
+        )
+        if not has_scheduling_target:
+            return False
+
+        if date_parsing is None:
+            return False
+
+        status = date_parsing.get("status")
+        return status in {
+            DateParseStatus.INVALID.value,
+            DateParseStatus.AMBIGUOUS.value,
+            DateParseStatus.UNSUPPORTED.value,
+        }
+
+    def _extract_iso_date(self, message: str) -> date | None:
         match = _ISO_DATE_PATTERN.search(message)
 
         if match is None:
@@ -1585,6 +1718,9 @@ class ChatReceptionistService:
             return date.fromisoformat(match.group(1))
         except ValueError:
             return None
+
+    def _extract_date(self, message: str) -> date | None:
+        return self._extract_iso_date(message)
 
     def _has_invalid_date_pattern(self, message: str) -> bool:
         match = _ISO_DATE_PATTERN.search(message)

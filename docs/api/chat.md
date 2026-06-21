@@ -146,12 +146,18 @@ Supported examples:
 
     "Dr. Emily Carter availability"
     "Dr. Emily Carter on 2026-07-02"
+    "Dr. Emily Carter tomorrow"
     "Dermatology on 2026-07-02"
+    "Dermatology next Monday"
     "What times are available?"
 
-Dates must currently use:
+Dates may use ISO format:
 
     YYYY-MM-DD
+
+Or simple natural-language expressions such as `today`, `tomorrow`, `this Monday`, `next Monday`, and `in 3 days`.
+
+Unsupported date phrases such as `next week` return a clarification reply asking for a specific date rather than silently choosing one.
 
 The API may return these intents:
 
@@ -166,7 +172,7 @@ This phase is read-only for availability lookup.
 
 It does not:
 
-- parse natural-language dates such as "tomorrow" or "next Monday"
+- create appointments from date parsing alone
 - call an LLM
 
 ## Appointment Holds
@@ -284,7 +290,6 @@ This implementation does not yet include:
 - LLM-driven reply or intent selection in the public API response
 - Appointment cancellation from chat
 - Appointment rescheduling from chat
-- Natural-language date parsing
 - Conversation state machine
 - Escalation assignment workflow
 - Retell webhook ingestion
