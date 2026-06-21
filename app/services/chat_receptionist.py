@@ -1808,10 +1808,29 @@ class ChatReceptionistService:
                 },
             )
 
+        stripped_message = self._strip_time_preference_markers(message)
+        if stripped_message != message:
+            retry_result = self.date_parser.parse(stripped_message)
+            if (
+                retry_result.status == DateParseStatus.PARSED
+                and retry_result.normalized_date is not None
+            ):
+                return _RequestedDateExtraction(
+                    normalized_date=retry_result.normalized_date,
+                    date_parsing=retry_result.to_metadata(),
+                )
+
         return _RequestedDateExtraction(
             date_parsing=metadata,
             requires_clarification=True,
         )
+
+    def _strip_time_preference_markers(self, message: str) -> str:
+        stripped = message
+        for label in ("morning", "afternoon", "evening"):
+            stripped = re.sub(rf"\b{label}\b", " ", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\bor\b", " ", stripped, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", stripped).strip()
 
     def _extract_time_preference(self, message: str) -> _TimePreferenceExtraction:
         if self.time_preference_parser is None:
