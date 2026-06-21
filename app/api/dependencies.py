@@ -137,6 +137,10 @@ def get_chat_receptionist_service(
         LLMChatSlotFillingService,
         Depends(get_llm_chat_slot_filling_service),
     ],
+    conversation_health: Annotated[
+        ConversationHealthService,
+        Depends(get_conversation_health_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -145,6 +149,7 @@ def get_chat_receptionist_service(
         appointment_booking=booking_service,
         llm_analysis=llm_analysis,
         slot_filling=slot_filling,
+        conversation_health=conversation_health,
     )
 
 

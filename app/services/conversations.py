@@ -117,6 +117,17 @@ class ConversationService:
             ),
         )
 
+    def update_conversation_status(
+        self,
+        *,
+        conversation_id: UUID,
+        status: ConversationStatus,
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        conversation.status = status
+        conversation.updated_at = datetime.now(UTC)
+        return self.repository.update(conversation)
+
     def close_conversation(
         self,
         *,
