@@ -6,6 +6,8 @@ Appointment booking creates a durable pending email job.
 
 The scheduling API, Retell booking tool, and chat booking confirmation flow can all enqueue appointment confirmation email jobs after a booking is committed.
 
+Immediate human escalations from chat can enqueue durable `human_escalation_notification` email jobs after escalation creation.
+
 The email job worker processes those jobs asynchronously.
 
 This keeps the booking request fast and avoids coupling user-facing latency to email provider availability.
@@ -27,6 +29,19 @@ The current implementation includes:
 - Email Job Debug API with cursor pagination
 - Manual retry and dead-letter replay controls
 - Email job operational metrics endpoint
+
+## Supported Job Types
+
+The worker currently handles these `job_type` values:
+
+- `appointment_confirmation` — sends the stored confirmation subject/body through the delivery provider
+- `human_escalation_notification` — renders a safe demo staff notification from operational payload fields, then sends through the fake/local delivery provider
+
+Unknown job types fail with the existing retry and dead-letter behavior.
+
+Human escalation notification rendering includes escalation id, conversation id, reason, priority, source, summary, and selected handoff context such as active hold presence and selected doctor/date/time.
+
+It does not include raw user messages, patient identity, raw LLM output, or raw prompts.
 
 ## Worker Flow
 
