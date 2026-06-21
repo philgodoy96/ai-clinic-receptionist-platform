@@ -34,9 +34,11 @@ Before a field is applied to `conversation_metadata.chat_context`:
 
 - specialty must exist in `SchedulingService`
 - doctor must exist in `SchedulingService`
-- date must be valid `YYYY-MM-DD`
+- date must be normalized to valid `YYYY-MM-DD` by `NaturalLanguageDateParser`
 - time must be valid `HH:MM`
 - patient identity fields must pass deterministic validation
+
+Natural-language date candidates suggested by the LLM (for example `tomorrow` or `next Monday`) are normalized by the deterministic parser before they are applied to `chat_context`. Unsupported or ambiguous date phrases are rejected and recorded in metadata.
 
 Unknown or conflicting values are rejected and recorded in metadata.
 
@@ -75,6 +77,7 @@ Assistant message metadata may include:
 - slot filling applied fields
 - slot filling rejected fields
 - rejection reasons
+- date parsing results when a date candidate was processed
 - conversation health signals derived from recent message history
 
 Rejected fields are not applied to `chat_context`, but their count can contribute to current or future conversation health signals such as repeated slot-filling rejection thresholds.
@@ -93,7 +96,8 @@ The deterministic chat flow continues.
 
 Future implementation phases may add:
 
-- natural-language date parsing
 - human escalation records
 - real provider adapters
 - model evaluation fixtures
+
+See also: [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md).
