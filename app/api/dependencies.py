@@ -162,6 +162,10 @@ def get_chat_receptionist_service(
         HumanEscalationService,
         Depends(get_human_escalation_service),
     ],
+    human_handoff_notifications: Annotated[
+        HumanHandoffNotificationService,
+        Depends(get_human_handoff_notification_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -172,6 +176,7 @@ def get_chat_receptionist_service(
         slot_filling=slot_filling,
         conversation_health=conversation_health,
         human_escalations=human_escalations,
+        human_handoff_notifications=human_handoff_notifications,
     )
 
 
