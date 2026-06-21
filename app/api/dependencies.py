@@ -30,6 +30,7 @@ from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
@@ -95,6 +96,10 @@ def get_conversation_service(
     return ConversationService(
         repository=SQLAlchemyConversationRepository(db),
     )
+
+
+def get_conversation_health_service() -> ConversationHealthService:
+    return ConversationHealthService()
 
 
 def get_llm_receptionist_analysis_service() -> LLMReceptionistAnalysisService:
