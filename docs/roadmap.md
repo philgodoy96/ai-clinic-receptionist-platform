@@ -114,14 +114,15 @@ Implemented:
 - Fake LLM provider foundation with structured output parsing and shadow analysis metadata
 - Structured-output-assisted slot filling with validated merge into `chat_context`
 - Conversation health and escalation signals with deterministic health metadata and soft handoff behavior
+- Human escalation foundation with durable `HumanEscalation` records, handoff context, and internal listing/acknowledge/resolve API
 
 Upcoming:
 
-- Human escalation foundation
-- Escalation listing API
 - Human handoff notification job
+- Escalation assignment/resolution workflow
 - Natural-language date parsing
 - Real provider adapter
+- Voice provider transfer integration
 - LLM reliability/fallbacks
 - Cost tracking aggregation
 - Hold expiration handling in chat
