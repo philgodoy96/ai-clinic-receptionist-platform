@@ -94,7 +94,7 @@ def test_enqueue_human_escalation_notification_creates_pending_email_job() -> No
     assert email_job.recipient_email is None
     assert email_job.attempts == 0
     assert email_job.max_attempts == 3
-    assert email_job.payload["escalation_id"] == str(escalation_id)
+    assert email_job.payload["human_escalation_id"] == str(escalation_id)
     assert email_job.payload["conversation_id"] == str(conversation_id)
     assert email_job.payload["source"] == "chat"
     assert "Patient asked to speak with a human." in email_job.body
@@ -345,6 +345,9 @@ class FakeEmailJobRepository:
         self.email_jobs: list[EmailJob] = []
 
     def add(self, email_job: EmailJob) -> EmailJob:
+        if email_job.id is None:
+            email_job.id = uuid4()
+
         self.email_jobs.append(email_job)
 
         return email_job
@@ -352,6 +355,22 @@ class FakeEmailJobRepository:
     def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
         return next(
             (email_job for email_job in self.email_jobs if email_job.id == email_job_id),
+            None,
+        )
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return next(
+            (
+                email_job
+                for email_job in self.email_jobs
+                if email_job.job_type == job_type
+                and email_job.payload.get("idempotency_key") == idempotency_key
+            ),
             None,
         )
 

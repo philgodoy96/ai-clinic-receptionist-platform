@@ -12,6 +12,7 @@ from app.ai.fake_llm_provider import FakeLLMProvider
 from app.api.dependencies import get_chat_receptionist_service
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationStatus
+from app.domain.jobs.enums import EmailJobType
 from app.main import create_app
 from app.models.conversations import Conversation
 from app.models.scheduling import Patient
@@ -23,7 +24,9 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
+from app.services.email_jobs import EmailJobService
 from app.services.human_escalations import HumanEscalationService
+from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from tests.test_chat_receptionist_service import (
@@ -34,6 +37,7 @@ from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
+from tests.test_email_jobs import FakeEmailJobRepository
 from tests.test_human_escalations import FakeHumanEscalationRepository
 from tests.test_scheduling_services import (
     create_demo_scheduling_service,
@@ -63,12 +67,18 @@ def health_enabled_human_escalation_service() -> tuple[
     FakeHumanEscalationRepository,
     TrackingAppointmentBookingService,
     FakeAppointmentHoldService,
+    FakeEmailJobRepository,
 ]:
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     hold_service = _create_hold_service()
     escalation_repository = FakeHumanEscalationRepository()
     human_escalations = HumanEscalationService(repository=escalation_repository)
+    email_job_repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=email_job_repository)
+    human_handoff_notifications = HumanHandoffNotificationService(
+        email_jobs=email_jobs,
+    )
     scheduling = create_demo_scheduling_service_with_emily_july_availability(
         patients=[create_jane_doe_patient()],
     )
@@ -84,8 +94,15 @@ def health_enabled_human_escalation_service() -> tuple[
         appointment_booking=cast(AppointmentBookingService, tracking_booking),
         conversation_health=ConversationHealthService(),
         human_escalations=human_escalations,
+        human_handoff_notifications=human_handoff_notifications,
     )
-    return service, escalation_repository, tracking_booking, hold_service
+    return (
+        service,
+        escalation_repository,
+        tracking_booking,
+        hold_service,
+        email_job_repository,
+    )
 
 
 @pytest.fixture()
@@ -278,9 +295,10 @@ def test_can_i_speak_to_a_real_person_creates_human_escalation_with_handoff_meta
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, tracking_booking, hold_service = (
+    service, escalation_repository, tracking_booking, hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -463,9 +481,10 @@ def test_explicit_human_request_creates_human_escalation_once(
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, tracking_booking, hold_service = (
+    service, escalation_repository, tracking_booking, hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -492,9 +511,10 @@ def test_repeated_human_request_reuses_active_human_escalation(
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, _tracking_booking, _hold_service = (
+    service, escalation_repository, _tracking_booking, _hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -520,9 +540,10 @@ def test_human_request_with_active_hold_records_handoff_context_without_releasin
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, tracking_booking, hold_service = (
+    service, escalation_repository, tracking_booking, hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
     conversation = _conversation_with_active_hold(service)
@@ -561,9 +582,10 @@ def test_emergency_creates_urgent_human_escalation(
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, _tracking_booking, _hold_service = (
+    service, escalation_repository, _tracking_booking, _hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -589,9 +611,10 @@ def test_suggested_escalation_only_does_not_create_human_escalation(
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, _tracking_booking, _hold_service = (
+    service, escalation_repository, _tracking_booking, _hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -613,9 +636,10 @@ def test_booking_confirmation_flow_still_passes_with_human_escalation_service(
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, tracking_booking, _hold_service = (
+    service, escalation_repository, tracking_booking, _hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
     conversation = _conversation_with_active_hold(service)
@@ -640,9 +664,10 @@ def test_booking_flow_does_not_create_human_escalation(
         FakeHumanEscalationRepository,
         TrackingAppointmentBookingService,
         FakeAppointmentHoldService,
+        FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, tracking_booking, _hold_service = (
+    service, escalation_repository, tracking_booking, _hold_service, _email_job_repository = (
         health_enabled_human_escalation_service
     )
     conversation = _conversation_with_active_hold(service)
@@ -658,3 +683,124 @@ def test_booking_flow_does_not_create_human_escalation(
     assert len(tracking_booking.book_calls) == 1
     assert escalation_repository.escalations == []
     assert "human_escalation" not in result.assistant_message.message_metadata
+
+
+def test_immediate_human_request_enqueues_one_notification_job(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        FakeEmailJobRepository,
+    ],
+) -> None:
+    service, escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
+        health_enabled_human_escalation_service
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Please connect me to a human receptionist"),
+    )
+
+    assert len(escalation_repository.escalations) == 1
+    assert len(email_job_repository.email_jobs) == 1
+    email_job = email_job_repository.email_jobs[0]
+    assert email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION
+    assert result.human_handoff_notification_email_job_id == email_job.id
+
+    notification_metadata = result.assistant_message.message_metadata[
+        "human_handoff_notification"
+    ]
+    assert notification_metadata["created"] is True
+    assert notification_metadata["email_job_id"] == str(email_job.id)
+    assert email_job.payload["priority"] == "high"
+
+
+def test_repeated_human_request_reuses_existing_notification_job(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        FakeEmailJobRepository,
+    ],
+) -> None:
+    service, _escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
+        health_enabled_human_escalation_service
+    )
+
+    first = service.handle_message(
+        ChatMessageInput(message="Please connect me to a human receptionist"),
+    )
+    second = service.handle_message(
+        ChatMessageInput(
+            message="I still need to speak to a human receptionist",
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    assert len(email_job_repository.email_jobs) == 1
+    email_job = email_job_repository.email_jobs[0]
+    assert first.human_handoff_notification_email_job_id == email_job.id
+    assert second.human_handoff_notification_email_job_id == email_job.id
+
+    first_notification = first.assistant_message.message_metadata[
+        "human_handoff_notification"
+    ]
+    second_notification = second.assistant_message.message_metadata[
+        "human_handoff_notification"
+    ]
+    assert first_notification["created"] is True
+    assert second_notification["created"] is False
+    assert second_notification["email_job_id"] == first_notification["email_job_id"]
+
+
+def test_emergency_enqueues_urgent_notification_job(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        FakeEmailJobRepository,
+    ],
+) -> None:
+    service, _escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
+        health_enabled_human_escalation_service
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="This is an emergency, I have chest pain"),
+    )
+
+    assert len(email_job_repository.email_jobs) == 1
+    email_job = email_job_repository.email_jobs[0]
+    assert email_job.payload["priority"] == "urgent"
+    assert email_job.payload["reason"] == "medical_emergency"
+    assert result.human_handoff_notification_email_job_id == email_job.id
+
+
+def test_suggested_escalation_only_does_not_enqueue_notification_job(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        FakeEmailJobRepository,
+    ],
+) -> None:
+    service, escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
+        health_enabled_human_escalation_service
+    )
+
+    conversation_id = None
+    for message in ("xyzzy one", "xyzzy two", "xyzzy three", "xyzzy four"):
+        result = service.handle_message(
+            ChatMessageInput(message=message, conversation_id=conversation_id),
+        )
+        conversation_id = result.conversation.id
+
+    assert result.intent == ChatReceptionistIntent.ESCALATION_SUGGESTED
+    assert escalation_repository.escalations == []
+    assert email_job_repository.email_jobs == []
+    assert result.human_handoff_notification_email_job_id is None
+    assert "human_handoff_notification" not in result.assistant_message.message_metadata
