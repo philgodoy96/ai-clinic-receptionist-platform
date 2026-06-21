@@ -8,6 +8,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from app.ai.receptionist_output import ReceptionistLLMIntent
+from app.ai.reliability import LLMFailureReason
 from app.domain.conversations.enums import (
     ConversationChannel,
     ConversationMessageRole,
@@ -38,6 +40,7 @@ from app.services.conversations import (
 from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     ReceptionistAnalysisRequest,
+    ReceptionistAnalysisResult,
 )
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
@@ -45,6 +48,11 @@ from app.services.scheduling import (
     InsufficientPatientIdentityError,
     PatientLookupCriteria,
     SchedulingService,
+)
+from app.services.slot_filling import (
+    LLMChatSlotFillingService,
+    SlotFillingRejectedField,
+    SlotFillingResult,
 )
 
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
@@ -119,6 +127,7 @@ _PATIENT_IDENTITY_FIELD_LABELS = {
     "phone": "phone",
     "email": "email",
 }
+_SLOT_FILLING_MIN_CONFIDENCE = 0.65
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -351,6 +360,7 @@ class ChatReceptionistService:
         appointment_booking: AppointmentBookingService,
         responder: DeterministicChatResponder | None = None,
         llm_analysis: LLMReceptionistAnalysisService | None = None,
+        slot_filling: LLMChatSlotFillingService | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -358,6 +368,7 @@ class ChatReceptionistService:
         self.appointment_booking = appointment_booking
         self.responder = responder or DeterministicChatResponder()
         self.llm_analysis = llm_analysis
+        self.slot_filling = slot_filling
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -372,6 +383,7 @@ class ChatReceptionistService:
             ),
         )
         llm_analysis_result = None
+        slot_filling_result: SlotFillingResult | None = None
         if self.llm_analysis is not None:
             chat_context = conversation.conversation_metadata.get("chat_context", {})
             llm_analysis_result = self.llm_analysis.analyze_message(
@@ -380,6 +392,18 @@ class ChatReceptionistService:
                     conversation_context=chat_context,
                 ),
             )
+            if self.slot_filling is not None:
+                if self._is_slot_filling_eligible(llm_analysis_result):
+                    slot_filling_result = self.slot_filling.apply_analysis(
+                        analysis=llm_analysis_result.analysis,
+                        chat_context=chat_context,
+                    )
+                    conversation = self.conversations.merge_chat_context(
+                        conversation_id=conversation.id,
+                        chat_context=slot_filling_result.updated_chat_context,
+                    )
+                else:
+                    slot_filling_result = self._skipped_slot_filling_result()
         reply = self._generate_reply(
             payload.message,
             conversation,
@@ -440,6 +464,8 @@ class ChatReceptionistService:
                 "latency_ms": llm_analysis_result.latency_ms,
                 "attempt_count": llm_analysis_result.attempt_count,
             }
+        if slot_filling_result is not None:
+            assistant_metadata["slot_filling"] = slot_filling_result.to_metadata()
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -467,6 +493,37 @@ class ChatReceptionistService:
             booked_patient_id=reply.booked_patient_id,
             booked_appointment_start_time=reply.booked_appointment_start_time,
             pending_hold_release=reply.pending_hold_release,
+        )
+
+    def _is_slot_filling_eligible(
+        self,
+        result: ReceptionistAnalysisResult,
+    ) -> bool:
+        if result.used_fallback:
+            return False
+
+        if result.failure_reason != LLMFailureReason.NONE:
+            return False
+
+        if result.analysis.confidence < _SLOT_FILLING_MIN_CONFIDENCE:
+            return False
+
+        if result.analysis.intent == ReceptionistLLMIntent.EMERGENCY:
+            return False
+
+        return not result.analysis.safety_flags
+
+    def _skipped_slot_filling_result(self) -> SlotFillingResult:
+        return SlotFillingResult(
+            updated_chat_context={},
+            used_llm_analysis=False,
+            rejected_fields=[
+                SlotFillingRejectedField(
+                    field="analysis",
+                    value=None,
+                    reason="analysis_not_eligible",
+                ),
+            ],
         )
 
     def _generate_reply(

@@ -34,6 +34,7 @@ from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
+from app.services.slot_filling import LLMChatSlotFillingService
 
 
 def get_scheduling_service(
@@ -100,6 +101,12 @@ def get_llm_receptionist_analysis_service() -> LLMReceptionistAnalysisService:
     return LLMReceptionistAnalysisService(provider=FakeLLMProvider())
 
 
+def get_llm_chat_slot_filling_service(
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+) -> LLMChatSlotFillingService:
+    return LLMChatSlotFillingService(scheduling=scheduling_service)
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -121,6 +128,10 @@ def get_chat_receptionist_service(
         LLMReceptionistAnalysisService,
         Depends(get_llm_receptionist_analysis_service),
     ],
+    slot_filling: Annotated[
+        LLMChatSlotFillingService,
+        Depends(get_llm_chat_slot_filling_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -128,6 +139,7 @@ def get_chat_receptionist_service(
         appointment_holds=hold_service,
         appointment_booking=booking_service,
         llm_analysis=llm_analysis,
+        slot_filling=slot_filling,
     )
 
 
