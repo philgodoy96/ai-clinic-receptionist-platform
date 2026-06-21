@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.ai.receptionist_output import ReceptionistLLMIntent, ReceptionistUrgency
 
 
+def get_receptionist_analysis_prompt_version() -> str:
+    return get_current_receptionist_analysis_prompt_metadata().version
+
+
 def build_receptionist_system_prompt() -> str:
+    prompt_version = get_receptionist_analysis_prompt_version()
     intents = ", ".join(intent.value for intent in ReceptionistLLMIntent)
     urgencies = ", ".join(urgency.value for urgency in ReceptionistUrgency)
 
     return (
         "You are a clinic receptionist analysis service.\n"
+        f"Prompt version: {prompt_version}\n"
         "Return valid JSON only. Do not include markdown, code fences, or prose.\n"
         "Follow the ReceptionistLLMAnalysis schema with these fields:\n"
         f"- intent: one of {intents}\n"
