@@ -4,9 +4,16 @@ import json
 from pathlib import Path
 
 from _pytest.capture import CaptureFixture
+from pytest import MonkeyPatch
 
+from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.llm_provider import LLMProvider
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from scripts.evaluate_receptionist_analysis import main
+from tests.llm_provider_test_helpers import (
+    StaticContentLLMProvider,
+    build_receptionist_analysis_payload,
+)
 
 
 def _default_prompt_version() -> str:
@@ -228,7 +235,7 @@ def test_script_mode_recorded_works(
     assert "All cases passed." in captured.out
 
 
-def test_script_mode_provider_fails_clearly(
+def test_script_mode_provider_fails_without_allow_provider_calls(
     tmp_path: Path,
     capsys: CaptureFixture[str],
 ) -> None:
@@ -239,5 +246,103 @@ def test_script_mode_provider_fails_clearly(
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert captured.err == "Error: provider mode is not implemented yet\n"
+    assert captured.err == "Error: provider mode requires --allow-provider-calls\n"
     assert captured.out == ""
+
+
+def test_script_mode_provider_runs_with_fake_provider(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_path = tmp_path / "passing.jsonl"
+    _write_passing_dataset(dataset_path)
+    monkeypatch.setattr(
+        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
+        lambda: FakeLLMProvider(),
+    )
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset_path),
+            "--mode",
+            "provider",
+            "--allow-provider-calls",
+        ],
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Mode: provider" in captured.out
+    assert "All cases passed." in captured.out
+
+
+def test_script_output_writes_report_file(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_path = tmp_path / "passing.jsonl"
+    report_path = tmp_path / "reports" / "evaluation.json"
+    _write_passing_dataset(dataset_path)
+    monkeypatch.setattr(
+        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
+        lambda: FakeLLMProvider(),
+    )
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset_path),
+            "--mode",
+            "provider",
+            "--allow-provider-calls",
+            "--output",
+            str(report_path),
+        ],
+    )
+
+    assert exit_code == 0
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["mode"] == "provider"
+    assert report["cases"][0]["case_id"] == "passing_case"
+    assert report["cases"][0]["input_message"] == "Hello"
+    assert report["cases"][0]["provider"]["provider"] == "FakeLLMProvider"
+    assert "retell_api_key" not in json.dumps(report).lower()
+    assert "openai_api_key" not in json.dumps(report).lower()
+
+
+def test_script_provider_mode_fail_on_errors_with_failing_stub(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    dataset_path = tmp_path / "passing.jsonl"
+    _write_passing_dataset(dataset_path)
+
+    def failing_provider() -> LLMProvider:
+        return StaticContentLLMProvider(
+            build_receptionist_analysis_payload(intent="fallback"),
+        )
+
+    monkeypatch.setattr(
+        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
+        failing_provider,
+    )
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset_path),
+            "--mode",
+            "provider",
+            "--allow-provider-calls",
+            "--fail-on-errors",
+        ],
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Failed cases:" in captured.out
+    assert "[passing_case]" in captured.out

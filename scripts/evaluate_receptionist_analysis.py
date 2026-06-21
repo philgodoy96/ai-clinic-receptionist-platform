@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from app.ai.llm_provider import LLMProvider
+from app.evals.provider_receptionist_analysis import (
+    ProviderEvaluationCaseOutput,
+    ProviderReceptionistAnalysisEvaluator,
+    build_evaluation_report,
+)
 from app.evals.receptionist_analysis import (
     EvaluationCaseResult,
     EvaluationError,
     EvaluationMode,
     EvaluationSummary,
+    ReceptionistAnalysisEvalCase,
     evaluate_receptionist_analysis_cases,
     load_receptionist_analysis_eval_cases,
 )
@@ -19,11 +27,13 @@ DEFAULT_DATASET_PATH = Path("evals/receptionist_analysis.jsonl")
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     dataset_path = Path(args.dataset)
-
     mode = EvaluationMode(args.mode)
 
-    if mode == EvaluationMode.PROVIDER:
-        print("Error: provider mode is not implemented yet", file=sys.stderr)
+    if mode == EvaluationMode.PROVIDER and not args.allow_provider_calls:
+        print(
+            "Error: provider mode requires --allow-provider-calls",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -32,9 +42,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    summary = evaluate_receptionist_analysis_cases(cases, mode=mode)
+    provider_case_outputs: tuple[ProviderEvaluationCaseOutput, ...] | None = None
+    if mode == EvaluationMode.RECORDED:
+        summary = evaluate_receptionist_analysis_cases(cases, mode=mode)
+    else:
+        summary, provider_case_outputs = _run_provider_evaluation(cases)
+
     _print_summary(summary, dataset_path)
     _print_failed_cases(summary)
+
+    if args.output is not None:
+        _write_report(
+            output_path=Path(args.output),
+            summary=summary,
+            dataset_path=dataset_path,
+            cases=cases,
+            provider_case_outputs=provider_case_outputs,
+        )
 
     if args.fail_on_errors and summary.failed_cases > 0:
         return 1
@@ -42,9 +66,52 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _create_llm_provider_for_evaluation() -> LLMProvider:
+    from app.ai.provider_factory import build_llm_provider
+    from app.core.config import get_settings
+
+    return build_llm_provider(get_settings())
+
+
+def _run_provider_evaluation(
+    cases: list[ReceptionistAnalysisEvalCase],
+) -> tuple[EvaluationSummary, tuple[ProviderEvaluationCaseOutput, ...]]:
+    from app.services.llm_receptionist import LLMReceptionistAnalysisService
+
+    llm_analysis_service = LLMReceptionistAnalysisService(
+        provider=_create_llm_provider_for_evaluation(),
+    )
+    evaluator = ProviderReceptionistAnalysisEvaluator(
+        llm_analysis_service=llm_analysis_service,
+    )
+    summary = evaluator.evaluate(cases)
+    return summary, evaluator.last_case_outputs
+
+
+def _write_report(
+    *,
+    output_path: Path,
+    summary: EvaluationSummary,
+    dataset_path: Path,
+    cases: list[ReceptionistAnalysisEvalCase],
+    provider_case_outputs: tuple[ProviderEvaluationCaseOutput, ...] | None,
+) -> None:
+    report = build_evaluation_report(
+        summary=summary,
+        dataset_path=dataset_path,
+        cases=cases,
+        provider_case_outputs=provider_case_outputs,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate recorded receptionist analysis outputs offline.",
+        description="Evaluate receptionist analysis outputs offline or via LLM provider.",
     )
     parser.add_argument(
         "--dataset",
@@ -63,8 +130,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=EvaluationMode.RECORDED.value,
         help=(
             "Evaluation run mode: recorded compares dataset recorded_output; "
-            "provider will call the live LLM provider (not implemented yet)."
+            "provider calls the configured LLM provider."
         ),
+    )
+    parser.add_argument(
+        "--allow-provider-calls",
+        action="store_true",
+        help="Required for provider mode. Allows live LLM provider calls during evaluation.",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional path to write a JSON evaluation report.",
     )
     return parser.parse_args(argv)
 
