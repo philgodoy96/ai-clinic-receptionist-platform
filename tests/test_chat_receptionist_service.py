@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -27,6 +27,7 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
+from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
@@ -139,6 +140,7 @@ def create_chat_receptionist_service(
     conversation_health: ConversationHealthService | None = None,
     human_escalations: HumanEscalationService | None = None,
     human_handoff_notifications: HumanHandoffNotificationService | None = None,
+    date_parser: NaturalLanguageDateParser | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -156,6 +158,7 @@ def create_chat_receptionist_service(
         conversation_health=conversation_health,
         human_escalations=human_escalations,
         human_handoff_notifications=human_handoff_notifications,
+        date_parser=date_parser,
     )
 
 
@@ -195,10 +198,12 @@ def availability_guidance_service() -> tuple[
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service_with_emily_july_availability()
     hold_service = _create_hold_service()
+    date_parser = NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1)))
     service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
         hold_service=hold_service,
+        date_parser=date_parser,
     )
 
     return service, repository, hold_service
@@ -515,7 +520,167 @@ def test_invalid_date_does_not_query_availability(
         )
 
     assert result.intent == ChatReceptionistIntent.INVALID_DATE
+    assert "YYYY-MM-DD" in result.reply
+    assert "tomorrow" in result.reply
+    assert result.assistant_message.message_metadata["date_parsing"]["status"] == "invalid"
     check_availability_mock.assert_not_called()
+
+
+def test_dr_emily_carter_tomorrow_returns_availability_results(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="Dr. Emily Carter tomorrow"),
+        )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    check_availability_mock.assert_called_once()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["requested_date"] == "2026-07-02"
+    assert result.assistant_message.message_metadata["date_parsing"]["status"] == "parsed"
+    assert "09:00" in result.reply
+
+
+def test_dermatology_next_monday_sets_requested_date_and_queries_availability(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="Dermatology next Monday"),
+        )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["requested_date"] == "2026-07-06"
+    assert chat_context["selected_specialty_name"] == "Dermatology"
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+    check_availability_mock.assert_called_once()
+    assert result.assistant_message.message_metadata["date_parsing"]["status"] == "parsed"
+
+
+def test_unsupported_date_with_availability_request_returns_clarification(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="Dr. Emily Carter availability next week"),
+        )
+
+    assert result.intent == ChatReceptionistIntent.INVALID_DATE
+    assert result.reply == (
+        "Please provide a specific date in YYYY-MM-DD or say something like "
+        "tomorrow or next Monday."
+    )
+    assert result.assistant_message.message_metadata["date_parsing"]["status"] == "unsupported"
+    check_availability_mock.assert_not_called()
+
+
+def test_dr_emily_carter_next_week_asks_for_specific_date(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock, patch.object(
+        service.appointment_holds,
+        "create_hold",
+        wraps=service.appointment_holds.create_hold,
+    ) as create_hold_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="Dr. Emily Carter next week"),
+        )
+
+    assert result.intent == ChatReceptionistIntent.INVALID_DATE
+    assert result.reply == (
+        "Please provide a specific date in YYYY-MM-DD or say something like "
+        "tomorrow or next Monday."
+    )
+    assert "requested_date" not in result.conversation.conversation_metadata.get(
+        "chat_context",
+        {},
+    )
+    assert result.assistant_message.message_metadata["date_parsing"]["status"] == "unsupported"
+    check_availability_mock.assert_not_called()
+    create_hold_mock.assert_not_called()
+
+
+def test_emergency_with_tomorrow_does_not_set_requested_date(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock, patch.object(
+        service.appointment_holds,
+        "create_hold",
+        wraps=service.appointment_holds.create_hold,
+    ) as create_hold_mock, patch.object(
+        service.appointment_booking,
+        "book_appointment",
+        wraps=service.appointment_booking.book_appointment,
+    ) as book_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="This is an emergency tomorrow"),
+        )
+
+    assert result.intent == ChatReceptionistIntent.EMERGENCY
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "requested_date" not in chat_context
+    assert "hold_id" not in chat_context
+    assert "appointment_id" not in chat_context
+    assert "date_parsing" not in result.assistant_message.message_metadata
+    check_availability_mock.assert_not_called()
+    create_hold_mock.assert_not_called()
+    book_appointment_mock.assert_not_called()
 
 
 def test_date_with_no_slots_returns_availability_no_slots(

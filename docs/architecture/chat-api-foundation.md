@@ -178,6 +178,31 @@ Slot filling is skipped when analysis used fallback, failed reliability checks, 
 
 See also: [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
 
+## Natural-Language Date Boundary
+
+The deterministic chat flow and LLM slot filling may resolve simple date phrases through `NaturalLanguageDateParser`.
+
+The parser:
+
+- normalizes supported expressions such as `today`, `tomorrow`, `this Monday`, `next Monday`, `in 3 days`, and ISO dates to `YYYY-MM-DD`
+- rejects unsupported or ambiguous phrases with clarification instead of silently choosing a date
+- uses an injectable clock so tests remain deterministic
+
+Date parsing does not:
+
+- create Redis holds
+- create appointments
+- send emails
+- call an LLM
+- bypass emergency handling
+- bypass booking confirmation
+
+When LLM slot filling suggests a date phrase, the deterministic parser normalizes and validates it before it is applied to `chat_context`. The deterministic availability flow uses the same parser when extracting dates from user messages.
+
+Assistant message metadata may include `date_parsing` when a date expression was processed.
+
+See also: [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md).
+
 ## Conversation Health Boundary
 
 After the deterministic reply and `chat_context` updates are resolved, `ChatReceptionistService` may evaluate conversation health through `ConversationHealthService` before the assistant message is persisted.
@@ -239,7 +264,7 @@ Planned future implementation phases include:
 
 - Human handoff notification job
 - Escalation assignment/resolution workflow
-- Natural-language date parsing
+- Time-of-day preference parsing
 - Real provider adapter
 - Voice provider transfer integration
 - LLM reliability and fallbacks

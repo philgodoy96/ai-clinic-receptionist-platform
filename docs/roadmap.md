@@ -116,14 +116,15 @@ Implemented:
 - Conversation health and escalation signals with deterministic health metadata and soft handoff behavior
 - Human escalation foundation with durable `HumanEscalation` records, handoff context, and internal listing/acknowledge/resolve API
 - Human handoff notification job with durable `human_escalation_notification` email jobs, idempotent enqueue, chat integration, fake worker delivery, and post-commit RabbitMQ dispatch wake-up
+- Natural-language date parsing with deterministic `NaturalLanguageDateParser` for chat availability guidance and LLM slot filling
 
 Upcoming:
 
+- Time-of-day preference parsing
 - Escalation assignment workflow
-- Staff notification provider adapter
-- Natural-language date parsing
 - Real LLM provider adapter
 - Voice provider transfer integration
+- Staff notification provider adapter
 - LLM reliability/fallbacks
 - Cost tracking aggregation
 - Hold expiration handling in chat

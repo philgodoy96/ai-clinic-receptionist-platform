@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+from datetime import date
+
 from app.ai.receptionist_output import (
     ReceptionistExtractedFields,
     ReceptionistLLMAnalysis,
     ReceptionistLLMIntent,
     ReceptionistUrgency,
 )
-from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
+from app.services.slot_filling import LLMChatSlotFillingService, SlotFillingAppliedField
 from tests.test_scheduling_services import create_demo_scheduling_service
 
+REFERENCE_DATE = date(2026, 7, 1)
 
-def create_slot_filling_service() -> LLMChatSlotFillingService:
-    return LLMChatSlotFillingService(scheduling=create_demo_scheduling_service())
+
+def create_fixed_date_parser() -> NaturalLanguageDateParser:
+    return NaturalLanguageDateParser(clock=FixedClock(current_date=REFERENCE_DATE))
+
+
+def create_slot_filling_service(
+    *,
+    date_parser: NaturalLanguageDateParser | None = None,
+) -> LLMChatSlotFillingService:
+    return LLMChatSlotFillingService(
+        scheduling=create_demo_scheduling_service(),
+        date_parser=date_parser or create_fixed_date_parser(),
+    )
 
 
 def create_scheduling_analysis(
@@ -88,17 +103,6 @@ def test_unknown_doctor_is_rejected() -> None:
     assert result.rejected_fields[0].reason == "unknown_doctor"
 
 
-def test_date_validation_applies_requested_date() -> None:
-    service = create_slot_filling_service()
-    analysis = create_scheduling_analysis(date="2026-07-02")
-
-    result = service.apply_analysis(analysis=analysis, chat_context={})
-
-    assert result.updated_chat_context["requested_date"] == "2026-07-02"
-    assert any(field.field == "date" for field in result.applied_fields)
-    assert result.rejected_fields == []
-
-
 def test_invalid_date_is_rejected() -> None:
     service = create_slot_filling_service()
     analysis = create_scheduling_analysis(date="2026-99-99")
@@ -125,7 +129,10 @@ def test_time_validation_normalizes_to_hh_mm() -> None:
 
 def test_specialty_context_conflict_is_rejected() -> None:
     scheduling = create_demo_scheduling_service()
-    service = LLMChatSlotFillingService(scheduling=scheduling)
+    service = LLMChatSlotFillingService(
+        scheduling=scheduling,
+        date_parser=create_fixed_date_parser(),
+    )
     cardiology = next(
         specialty for specialty in scheduling.list_specialties() if specialty.name == "Cardiology"
     )
@@ -143,3 +150,72 @@ def test_specialty_context_conflict_is_rejected() -> None:
     assert len(result.rejected_fields) == 1
     assert result.rejected_fields[0].field == "specialty"
     assert result.rejected_fields[0].reason == "conflicts_with_existing_context"
+
+
+def test_natural_language_date_applies_normalized_requested_date() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(date="tomorrow")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert result.updated_chat_context["requested_date"] == "2026-07-02"
+    assert result.applied_fields == [
+        SlotFillingAppliedField(field="date", value="2026-07-02"),
+    ]
+    assert result.date_parsing == {
+        "status": "parsed",
+        "normalized_date": "2026-07-02",
+        "source_text": "tomorrow",
+        "reason": None,
+    }
+    assert result.to_metadata()["date_parsing"] == result.date_parsing
+
+
+def test_unsupported_date_expression_is_rejected() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(date="next week")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert "requested_date" not in result.updated_chat_context
+    assert result.rejected_fields[0].field == "date"
+    assert result.rejected_fields[0].reason == "unsupported_date_expression"
+    assert result.date_parsing is not None
+    assert result.date_parsing["status"] == "unsupported"
+
+
+def test_existing_requested_date_conflict_rejects_new_parsed_date() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(date="tomorrow")
+
+    result = service.apply_analysis(
+        analysis=analysis,
+        chat_context={"requested_date": "2026-07-03"},
+    )
+
+    assert result.updated_chat_context["requested_date"] == "2026-07-03"
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "date"
+    assert result.rejected_fields[0].reason == "conflicts_with_existing_context"
+    assert result.date_parsing is not None
+    assert result.date_parsing["status"] == "parsed"
+
+
+def test_iso_date_still_applies_requested_date() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(date="2026-07-02")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert result.updated_chat_context["requested_date"] == "2026-07-02"
+    assert result.applied_fields == [
+        SlotFillingAppliedField(field="date", value="2026-07-02"),
+    ]
+    assert result.rejected_fields == []
+    assert result.date_parsing == {
+        "status": "parsed",
+        "normalized_date": "2026-07-02",
+        "source_text": "2026-07-02",
+        "reason": None,
+    }
