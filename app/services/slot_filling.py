@@ -11,6 +11,11 @@ from uuid import UUID
 from app.ai.receptionist_output import ExtractedPatientIdentity, ReceptionistLLMAnalysis
 from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Doctor, Specialty
+from app.services.date_parsing import (
+    DateParseResult,
+    DateParseStatus,
+    NaturalLanguageDateParser,
+)
 from app.services.scheduling import SchedulingService
 
 _ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -37,9 +42,10 @@ class SlotFillingResult:
     applied_fields: list[SlotFillingAppliedField] = field(default_factory=list)
     rejected_fields: list[SlotFillingRejectedField] = field(default_factory=list)
     used_llm_analysis: bool = False
+    date_parsing: dict[str, object] | None = None
 
     def to_metadata(self) -> dict[str, object]:
-        return {
+        metadata: dict[str, object] = {
             "used_llm_analysis": self.used_llm_analysis,
             "applied_fields": [
                 {
@@ -57,14 +63,23 @@ class SlotFillingResult:
                 for field in self.rejected_fields
             ],
         }
+        if self.date_parsing is not None:
+            metadata["date_parsing"] = self.date_parsing
+        return metadata
 
 
 ApplyResult = Literal["applied", "unchanged", "conflict"]
 
 
 class LLMChatSlotFillingService:
-    def __init__(self, *, scheduling: SchedulingService) -> None:
+    def __init__(
+        self,
+        *,
+        scheduling: SchedulingService,
+        date_parser: NaturalLanguageDateParser,
+    ) -> None:
         self.scheduling = scheduling
+        self.date_parser = date_parser
 
     def apply_analysis(
         self,
@@ -75,6 +90,7 @@ class LLMChatSlotFillingService:
         updated_context = deepcopy(chat_context)
         applied_fields: list[SlotFillingAppliedField] = []
         rejected_fields: list[SlotFillingRejectedField] = []
+        date_parsing: dict[str, object] | None = None
         extracted = analysis.extracted
 
         if extracted.specialty and extracted.specialty.strip():
@@ -94,12 +110,13 @@ class LLMChatSlotFillingService:
             )
 
         if extracted.date and extracted.date.strip():
-            self._apply_date(
+            parse_result = self._apply_date(
                 updated_context,
                 raw_date=extracted.date.strip(),
                 applied_fields=applied_fields,
                 rejected_fields=rejected_fields,
             )
+            date_parsing = parse_result.to_metadata()
 
         if extracted.time and extracted.time.strip():
             self._apply_time(
@@ -121,6 +138,7 @@ class LLMChatSlotFillingService:
             applied_fields=applied_fields,
             rejected_fields=rejected_fields,
             used_llm_analysis=True,
+            date_parsing=date_parsing,
         )
 
     def _apply_specialty(
@@ -238,34 +256,56 @@ class LLMChatSlotFillingService:
         raw_date: str,
         applied_fields: list[SlotFillingAppliedField],
         rejected_fields: list[SlotFillingRejectedField],
-    ) -> None:
-        parsed_date = self._validate_iso_date(raw_date)
-        if parsed_date is None:
-            rejected_fields.append(
-                SlotFillingRejectedField(
-                    field="date",
-                    value=raw_date,
-                    reason="invalid_date",
-                ),
-            )
-            return
+    ) -> DateParseResult:
+        parse_result = self.date_parser.parse(raw_date)
 
-        iso_date = parsed_date.isoformat()
-        result = self._apply_if_empty_or_same(context, "requested_date", iso_date)
-        if result == "conflict":
-            rejected_fields.append(
-                SlotFillingRejectedField(
-                    field="date",
-                    value=raw_date,
-                    reason="conflicts_with_existing_context",
-                ),
-            )
-            return
+        if parse_result.status == DateParseStatus.PARSED:
+            normalized_date = parse_result.normalized_date
+            if normalized_date is None:
+                rejected_fields.append(
+                    SlotFillingRejectedField(
+                        field="date",
+                        value=raw_date,
+                        reason="invalid_date",
+                    ),
+                )
+                return parse_result
 
-        if result == "applied":
-            applied_fields.append(
-                SlotFillingAppliedField(field="date", value=raw_date),
+            result = self._apply_if_empty_or_same(
+                context,
+                "requested_date",
+                normalized_date,
             )
+            if result == "conflict":
+                rejected_fields.append(
+                    SlotFillingRejectedField(
+                        field="date",
+                        value=raw_date,
+                        reason="conflicts_with_existing_context",
+                    ),
+                )
+                return parse_result
+
+            if result == "applied":
+                applied_fields.append(
+                    SlotFillingAppliedField(field="date", value=normalized_date),
+                )
+            return parse_result
+
+        rejection_reason_by_status = {
+            DateParseStatus.INVALID: "invalid_date",
+            DateParseStatus.AMBIGUOUS: "ambiguous_date",
+            DateParseStatus.UNSUPPORTED: "unsupported_date_expression",
+            DateParseStatus.NOT_FOUND: "date_not_found",
+        }
+        rejected_fields.append(
+            SlotFillingRejectedField(
+                field="date",
+                value=raw_date,
+                reason=rejection_reason_by_status[parse_result.status],
+            ),
+        )
+        return parse_result
 
     def _apply_time(
         self,

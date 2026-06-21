@@ -33,6 +33,7 @@ from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
+from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.email_jobs import EmailJobService
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
@@ -123,10 +124,21 @@ def get_llm_receptionist_analysis_service() -> LLMReceptionistAnalysisService:
     return LLMReceptionistAnalysisService(provider=FakeLLMProvider())
 
 
+def get_natural_language_date_parser() -> NaturalLanguageDateParser:
+    return NaturalLanguageDateParser()
+
+
 def get_llm_chat_slot_filling_service(
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    date_parser: Annotated[
+        NaturalLanguageDateParser,
+        Depends(get_natural_language_date_parser),
+    ],
 ) -> LLMChatSlotFillingService:
-    return LLMChatSlotFillingService(scheduling=scheduling_service)
+    return LLMChatSlotFillingService(
+        scheduling=scheduling_service,
+        date_parser=date_parser,
+    )
 
 
 def get_chat_receptionist_service(
