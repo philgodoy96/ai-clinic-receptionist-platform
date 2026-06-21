@@ -388,7 +388,7 @@ def test_post_resolve_unknown_human_escalation_returns_standardized_not_found(
     assert body["error"]["message"] == "Human escalation was not found."
 
 
-def test_assign_open_escalation_transitions_to_acknowledged(
+def test_post_assign_returns_assigned_escalation(
     escalation_client: tuple[TestClient, UUID],
 ) -> None:
     client, escalation_id = escalation_client
@@ -407,6 +407,72 @@ def test_assign_open_escalation_transitions_to_acknowledged(
     assert body["assigned_at"] is not None
     assert body["due_at"] is not None
     assert body["is_overdue"] is False
+
+
+def test_post_unassign_returns_unassigned_escalation(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    assign_response = client.post(
+        f"/api/v1/human-escalations/{escalation_id}/assign",
+        json={"assigned_to": "demo_staff"},
+    )
+    assert assign_response.status_code == 200
+    due_at = assign_response.json()["due_at"]
+
+    response = client.post(f"/api/v1/human-escalations/{escalation_id}/unassign")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["assigned_to"] is None
+    assert body["assigned_at"] is None
+    assert body["due_at"] == due_at
+
+
+def test_post_assign_unknown_human_escalation_returns_standardized_not_found(
+    empty_escalation_client: TestClient,
+) -> None:
+    response = empty_escalation_client.post(
+        f"/api/v1/human-escalations/{uuid4()}/assign",
+        json={"assigned_to": "demo_staff"},
+    )
+
+    assert response.status_code == 404
+
+    body = response.json()
+
+    assert body["error"]["code"] == "human_escalation_not_found"
+    assert body["error"]["message"] == "Human escalation was not found."
+    assert body["error"]["request_id"] is not None
+
+
+def test_post_assign_resolved_human_escalation_returns_standardized_conflict(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    client.post(
+        f"/api/v1/human-escalations/{escalation_id}/resolve",
+        json={
+            "resolved_by": "demo_staff",
+            "resolution_notes": "Resolved.",
+        },
+    )
+
+    response = client.post(
+        f"/api/v1/human-escalations/{escalation_id}/assign",
+        json={"assigned_to": "demo_staff"},
+    )
+
+    assert response.status_code == 409
+
+    body = response.json()
+
+    assert body["error"]["code"] == "invalid_human_escalation_transition"
+    assert body["error"]["request_id"] is not None
 
 
 def test_assign_same_staff_twice_is_idempotent(
@@ -459,101 +525,39 @@ def test_assign_different_staff_reassigns(
     assert body["due_at"] is not None
 
 
-def test_unassign_clears_assigned_fields(
-    escalation_client: tuple[TestClient, UUID],
-) -> None:
-    client, escalation_id = escalation_client
-
-    assign_response = client.post(
-        f"/api/v1/human-escalations/{escalation_id}/assign",
-        json={"assigned_to": "demo_staff"},
-    )
-    assert assign_response.status_code == 200
-    due_at = assign_response.json()["due_at"]
-
-    response = client.post(f"/api/v1/human-escalations/{escalation_id}/unassign")
-
-    assert response.status_code == 200
-
-    body = response.json()
-
-    assert body["assigned_to"] is None
-    assert body["assigned_at"] is None
-    assert body["due_at"] == due_at
-
-
-def test_assign_resolved_escalation_returns_conflict(
-    escalation_client: tuple[TestClient, UUID],
-) -> None:
-    client, escalation_id = escalation_client
-
-    client.post(
-        f"/api/v1/human-escalations/{escalation_id}/resolve",
-        json={
-            "resolved_by": "demo_staff",
-            "resolution_notes": "Resolved.",
-        },
-    )
-
-    response = client.post(
-        f"/api/v1/human-escalations/{escalation_id}/assign",
-        json={"assigned_to": "demo_staff"},
-    )
-
-    assert response.status_code == 409
-
-    body = response.json()
-
-    assert body["error"]["code"] == "invalid_human_escalation_transition"
-
-
-def test_list_human_escalations_filters_by_assigned_to(
+def test_list_human_escalations_assignment_filters(
     assignment_filter_client: TestClient,
 ) -> None:
-    response = assignment_filter_client.get(
+    assigned_to_response = assignment_filter_client.get(
         "/api/v1/human-escalations",
         params={"assigned_to": "staff-1"},
     )
-
-    assert response.status_code == 200
-
-    body = response.json()
-
-    assert len(body["items"]) == 1
-    assert body["items"][0]["assigned_to"] == "staff-1"
-
-
-def test_list_human_escalations_filters_unassigned(
-    assignment_filter_client: TestClient,
-) -> None:
-    response = assignment_filter_client.get(
+    unassigned_response = assignment_filter_client.get(
         "/api/v1/human-escalations",
         params={"unassigned": True},
     )
-
-    assert response.status_code == 200
-
-    body = response.json()
-
-    assert len(body["items"]) == 2
-    assert all(item["assigned_to"] is None for item in body["items"])
-
-
-def test_list_human_escalations_filters_overdue(
-    assignment_filter_client: TestClient,
-) -> None:
-    response = assignment_filter_client.get(
+    overdue_response = assignment_filter_client.get(
         "/api/v1/human-escalations",
         params={"overdue": True},
     )
 
-    assert response.status_code == 200
+    assert assigned_to_response.status_code == 200
+    assert unassigned_response.status_code == 200
+    assert overdue_response.status_code == 200
 
-    body = response.json()
+    assigned_body = assigned_to_response.json()
+    unassigned_body = unassigned_response.json()
+    overdue_body = overdue_response.json()
 
-    assert len(body["items"]) == 1
-    assert body["items"][0]["reason"] == "medical_emergency"
-    assert body["items"][0]["is_overdue"] is True
+    assert len(assigned_body["items"]) == 1
+    assert assigned_body["items"][0]["assigned_to"] == "staff-1"
+
+    assert len(unassigned_body["items"]) == 2
+    assert all(item["assigned_to"] is None for item in unassigned_body["items"])
+
+    assert len(overdue_body["items"]) == 1
+    assert overdue_body["items"][0]["reason"] == "medical_emergency"
+    assert overdue_body["items"][0]["is_overdue"] is True
 
 
 class FakeDatabaseSession:
