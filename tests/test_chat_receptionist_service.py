@@ -27,6 +27,7 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
+from app.services.human_escalations import HumanEscalationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
@@ -135,6 +136,7 @@ def create_chat_receptionist_service(
     llm_analysis: LLMReceptionistAnalysisService | None = None,
     slot_filling: LLMChatSlotFillingService | None = None,
     conversation_health: ConversationHealthService | None = None,
+    human_escalations: HumanEscalationService | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -150,6 +152,7 @@ def create_chat_receptionist_service(
         llm_analysis=llm_analysis,
         slot_filling=slot_filling,
         conversation_health=conversation_health,
+        human_escalations=human_escalations,
     )
 
 

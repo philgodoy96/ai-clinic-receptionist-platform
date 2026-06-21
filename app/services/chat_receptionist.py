@@ -15,6 +15,10 @@ from app.domain.conversations.enums import (
     ConversationMessageRole,
     ConversationStatus,
 )
+from app.domain.human_escalations import (
+    HumanEscalationReason,
+    HumanEscalationSource,
+)
 from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.appointment_booking import (
@@ -43,6 +47,7 @@ from app.services.conversations import (
     ConversationMessageCreate,
     ConversationService,
 )
+from app.services.human_escalations import HumanEscalationService
 from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     ReceptionistAnalysisRequest,
@@ -136,8 +141,15 @@ _PATIENT_IDENTITY_FIELD_LABELS = {
 _SLOT_FILLING_MIN_CONFIDENCE = 0.65
 _RECENT_MESSAGES_LIMIT = 25
 _HUMAN_HANDOFF_MESSAGE = (
-    "I can transfer this to a human receptionist. "
-    "I'll mark this conversation for human follow-up."
+    "I'll mark this conversation for human follow-up. "
+    "A human receptionist can review it."
+)
+_HANDOFF_CONTEXT_KEYS = (
+    "hold_id",
+    "hold_expires_at",
+    "selected_doctor_name",
+    "requested_date",
+    "selected_start_time",
 )
 _ESCALATION_SUGGESTION_SUFFIX = (
     " If you prefer, I can transfer this to a human receptionist."
@@ -389,6 +401,7 @@ class ChatReceptionistService:
         llm_analysis: LLMReceptionistAnalysisService | None = None,
         slot_filling: LLMChatSlotFillingService | None = None,
         conversation_health: ConversationHealthService | None = None,
+        human_escalations: HumanEscalationService | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -398,6 +411,7 @@ class ChatReceptionistService:
         self.llm_analysis = llm_analysis
         self.slot_filling = slot_filling
         self.conversation_health = conversation_health
+        self.human_escalations = human_escalations
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -462,6 +476,14 @@ class ChatReceptionistService:
                 conversation=conversation,
             )
 
+        human_escalation_metadata: dict[str, Any] | None = None
+        if health_result is not None:
+            human_escalation_metadata = self._record_human_escalation_if_needed(
+                health_result=health_result,
+                conversation=conversation,
+                request_patient_id=payload.patient_id,
+            )
+
         assistant_metadata: dict[str, Any] = {
             "source": "chat_api",
             "intent": reply.intent.value,
@@ -515,6 +537,8 @@ class ChatReceptionistService:
             assistant_metadata["slot_filling"] = slot_filling_result.to_metadata()
         if health_result is not None:
             assistant_metadata["conversation_health"] = health_result.to_metadata()
+        if human_escalation_metadata is not None:
+            assistant_metadata["human_escalation"] = human_escalation_metadata
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -595,6 +619,84 @@ class ChatReceptionistService:
             )
 
         return reply, conversation
+
+    def _record_human_escalation_if_needed(
+        self,
+        *,
+        health_result: ConversationHealthResult,
+        conversation: Conversation,
+        request_patient_id: UUID | None,
+    ) -> dict[str, Any] | None:
+        if self.human_escalations is None or not health_result.should_escalate_immediately:
+            return None
+
+        if health_result.escalation_reason not in {
+            EscalationReason.USER_REQUESTED_HUMAN,
+            EscalationReason.MEDICAL_EMERGENCY,
+        }:
+            return None
+
+        existing = self.human_escalations.get_active_escalation_for_conversation(
+            conversation.id,
+        )
+        escalation = self.human_escalations.create_or_get_active_escalation(
+            conversation_id=conversation.id,
+            reason=self._map_human_escalation_reason(health_result.escalation_reason),
+            source=HumanEscalationSource.CHAT,
+            patient_id=conversation.patient_id or request_patient_id,
+            appointment_id=conversation.appointment_id,
+            summary=self._build_human_escalation_summary(health_result.escalation_reason),
+            created_by="chat_receptionist",
+            handoff_context=self._build_handoff_context(conversation),
+        )
+
+        return {
+            "created": existing is None,
+            "escalation_id": str(escalation.id),
+            "reason": escalation.reason.value,
+            "priority": escalation.priority.value,
+            "status": escalation.status.value,
+        }
+
+    def _map_human_escalation_reason(
+        self,
+        reason: EscalationReason,
+    ) -> HumanEscalationReason:
+        if reason == EscalationReason.USER_REQUESTED_HUMAN:
+            return HumanEscalationReason.USER_REQUESTED_HUMAN
+
+        if reason == EscalationReason.MEDICAL_EMERGENCY:
+            return HumanEscalationReason.MEDICAL_EMERGENCY
+
+        return HumanEscalationReason.UNKNOWN
+
+    def _build_human_escalation_summary(self, reason: EscalationReason) -> str:
+        if reason == EscalationReason.USER_REQUESTED_HUMAN:
+            return "User requested human receptionist handoff."
+
+        if reason == EscalationReason.MEDICAL_EMERGENCY:
+            return "Medical emergency signal detected in chat conversation."
+
+        return "Human escalation requested from chat conversation."
+
+    def _build_handoff_context(self, conversation: Conversation) -> dict[str, Any] | None:
+        chat_context = conversation.conversation_metadata.get("chat_context", {})
+        if not isinstance(chat_context, dict):
+            return None
+
+        handoff_context: dict[str, Any] = {}
+        hold_id = chat_context.get("hold_id")
+        active_hold_present = bool(hold_id) and not chat_context.get("appointment_id")
+
+        if active_hold_present:
+            handoff_context["active_hold_present"] = True
+
+        for key in _HANDOFF_CONTEXT_KEYS:
+            value = chat_context.get(key)
+            if value is not None and value != "":
+                handoff_context[key] = value
+
+        return handoff_context or None
 
     def _should_append_escalation_suggestion(
         self,

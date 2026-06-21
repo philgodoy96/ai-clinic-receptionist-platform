@@ -14,11 +14,35 @@ Escalation is an operational handoff signal, not another LLM pretending to be hu
 
 The current implementation computes deterministic conversation health signals and records them in assistant message metadata.
 
-It does not create a human escalation record yet.
+Immediate health signals now create durable `HumanEscalation` records through `HumanEscalationService`. The chat layer creates or reuses one active escalation per conversation when an immediate signal is detected.
 
-It does not notify a real staff member yet.
+Immediate escalation applies when:
 
-It does not add a human-agent dashboard yet.
+- the user explicitly requests a human, or
+- a medical emergency signal is detected
+
+Suggested escalation alone does not create a `HumanEscalation` record.
+
+The system does not notify a real staff member yet.
+
+The system does not add a human-agent dashboard yet.
+
+## HumanEscalation Handoff Context
+
+When chat creates an immediate escalation, it builds `handoff_context` from conversational `chat_context`.
+
+Safe operational fields may include:
+
+- `active_hold_present`
+- `hold_id`
+- `hold_expires_at`
+- `selected_doctor_name`
+- `requested_date`
+- `selected_start_time`
+
+This is operational memory for staff handoff. It is not patient identity storage.
+
+Escalation does not release Redis holds automatically. If a hold is active, the record only notes that fact so a human can decide next steps.
 
 ## Escalation Levels
 
@@ -26,17 +50,23 @@ It does not add a human-agent dashboard yet.
 
 If the user explicitly asks for a human, receptionist, representative, or real person, the system should respect that request.
 
+The chat assistant returns a handoff-style reply and marks the conversation as escalated when appropriate.
+
 ### Safety-required escalation signal
 
 Emergency and safety signals are recorded immediately.
 
 Emergency response remains deterministic and highest priority.
 
+An urgent `HumanEscalation` record may also be created, but the emergency reply still wins over scheduling or booking behavior.
+
 ### Suggested escalation
 
 The system may suggest human handoff when there are strong stuck-conversation signals, such as repeated fallback, repeated low confidence, repeated slot filling rejection, or repeated booking conflicts.
 
 Message count alone is not enough to trigger escalation.
+
+Suggested escalation does not create a `HumanEscalation` record in the current phase.
 
 ## Signals
 
@@ -55,6 +85,8 @@ Conversation health may consider:
 - booking confirmation state
 - explicit human request
 
+When an immediate signal is present, health evaluation triggers `HumanEscalationService.create_or_get_active_escalation`. Assistant message metadata includes a `human_escalation` summary when a record is created or reused.
+
 ## Boundaries
 
 Conversation health does not:
@@ -64,15 +96,13 @@ Conversation health does not:
 - send emails
 - call an LLM
 - pretend to be a human
-- create a human escalation record in this phase
+- release Redis holds automatically during escalation
 
 ## Future Work
 
 Future implementation phases may add:
 
-- HumanEscalation table
-- internal escalation listing API
 - staff notification job
 - call transfer integration for voice providers
 - admin dashboard
-- escalation resolution workflow
+- escalation resolution workflow beyond the current internal debug API
