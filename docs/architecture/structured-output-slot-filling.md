@@ -30,6 +30,8 @@ These values are treated as untrusted candidates.
 
 Real provider output is treated the same as fake provider output: untrusted candidates that must pass backend validation before merge into `chat_context`.
 
+The offline evaluation dataset tests raw structured analysis quality—intent, urgency, safety flags, and extracted fields—before deterministic slot validation runs in chat.
+
 ## Validation Boundary
 
 Before a field is applied to `conversation_metadata.chat_context`:
@@ -102,6 +104,5 @@ The deterministic chat flow continues.
 Future implementation phases may add:
 
 - human escalation records
-- model evaluation fixtures
 
-See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md).
+See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md).
