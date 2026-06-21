@@ -65,9 +65,14 @@ class HumanEscalationNotificationEmailJobCreate:
     patient_id: UUID | None = None
     appointment_id: UUID | None = None
     recipient_email: str | None = None
+    subject: str | None = None
+    body: str | None = None
     summary: str | None = None
     reason: str | None = None
     priority: str | None = None
+    source: str | None = None
+    handoff_context: dict[str, Any] | None = None
+    idempotency_key: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -105,8 +110,29 @@ class EmailJobService:
         self,
         payload: HumanEscalationNotificationEmailJobCreate,
     ) -> EmailJob:
-        subject = "Human escalation notification"
-        body = self._build_human_escalation_notification_body(payload)
+        subject = payload.subject or "Human escalation notification"
+        body = payload.body or self._build_human_escalation_notification_body(payload)
+        job_payload: dict[str, Any] = {
+            "idempotency_key": payload.idempotency_key,
+            "human_escalation_id": str(payload.escalation_id),
+            "conversation_id": str(payload.conversation_id),
+            "reason": payload.reason,
+            "priority": payload.priority,
+            "source": payload.source,
+            "summary": payload.summary,
+            "handoff_context": payload.handoff_context,
+            **payload.payload,
+        }
+
+        if payload.patient_id is not None:
+            job_payload["patient_id"] = str(payload.patient_id)
+
+        if payload.appointment_id is not None:
+            job_payload["appointment_id"] = str(payload.appointment_id)
+
+        normalized_payload = {
+            key: value for key, value in job_payload.items() if value is not None
+        }
         email_job = EmailJob(
             job_type=EmailJobType.HUMAN_ESCALATION_NOTIFICATION,
             status=EmailJobStatus.PENDING,
@@ -117,17 +143,21 @@ class EmailJobService:
             body=body,
             attempts=0,
             max_attempts=3,
-            payload={
-                "escalation_id": str(payload.escalation_id),
-                "conversation_id": str(payload.conversation_id),
-                "summary": payload.summary,
-                "reason": payload.reason,
-                "priority": payload.priority,
-                **payload.payload,
-            },
+            payload=normalized_payload,
         )
 
         return self.repository.add(email_job)
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return self.repository.get_by_idempotency_key(
+            job_type=job_type,
+            idempotency_key=idempotency_key,
+        )
 
     def get_email_job(self, email_job_id: UUID) -> EmailJob:
         email_job = self.repository.get_by_id(email_job_id)

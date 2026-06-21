@@ -35,6 +35,7 @@ from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
 from app.services.human_escalations import HumanEscalationService
+from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
@@ -90,6 +91,12 @@ def get_email_job_service(
     return EmailJobService(
         repository=SQLAlchemyEmailJobRepository(db),
     )
+
+
+def get_human_handoff_notification_service(
+    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+) -> HumanHandoffNotificationService:
+    return HumanHandoffNotificationService(email_jobs=email_jobs)
 
 
 def get_conversation_service(
