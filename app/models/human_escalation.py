@@ -107,6 +107,12 @@ class HumanEscalation(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
     resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assigned_to: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    assigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -125,6 +131,9 @@ class HumanEscalation(Base):
         Index("ix_human_escalations_patient_id", "patient_id"),
         Index("ix_human_escalations_appointment_id", "appointment_id"),
         Index("ix_human_escalations_reason_created_at", "reason", "created_at"),
+        Index("ix_human_escalations_assigned_to", "assigned_to"),
+        Index("ix_human_escalations_due_at", "due_at"),
+        Index("ix_human_escalations_status_due_at", "status", "due_at"),
         Index(
             "uq_human_escalations_active_conversation_id",
             "conversation_id",

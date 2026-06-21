@@ -27,6 +27,9 @@ class HumanEscalationResponse(BaseModel):
     resolved_at: datetime | None
     resolved_by: str | None
     resolution_notes: str | None
+    assigned_to: str | None
+    assigned_at: datetime | None
+    due_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
