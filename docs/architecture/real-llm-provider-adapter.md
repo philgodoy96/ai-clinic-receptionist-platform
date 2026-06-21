@@ -24,6 +24,7 @@ The implementation supports:
 - structured output prompting
 - provider timeout/retry configuration
 - validation and fallback through the existing reliability layer
+- offline evaluation dataset with recorded-output comparison for structured analysis quality
 
 ## Safety Boundary
 
@@ -71,6 +72,8 @@ Provider calls are mocked/stubbed.
 
 FakeLLMProvider remains the default for tests and local demos.
 
+Offline evaluation of structured analysis quality runs against a synthetic JSONL dataset and recorded outputs. It does not call real providers. See [LLM Evaluation Dataset](llm-evaluation-dataset.md).
+
 ## Failure Handling
 
 Provider failures should fall back safely.
@@ -85,8 +88,7 @@ Future implementation phases may add:
 - circuit breaker
 - rate limit handling
 - prompt versioning
-- model evaluation dataset
 - tenant-level cost tracking
 - streaming support for voice
 
-See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
+See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md).
