@@ -23,6 +23,7 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
+from app.services.human_escalations import HumanEscalationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from tests.test_chat_receptionist_service import (
@@ -33,6 +34,7 @@ from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
+from tests.test_human_escalations import FakeHumanEscalationRepository
 from tests.test_scheduling_services import (
     create_demo_scheduling_service,
     create_demo_scheduling_service_with_emily_july_availability,
@@ -41,7 +43,7 @@ from tests.test_scheduling_services import (
 FULL_IDENTITY_WITH_CONFIRM = (
     "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. Please confirm."
 )
-_HUMAN_HANDOFF_PHRASE = "transfer this to a human receptionist"
+_HUMAN_HANDOFF_PHRASE = "human follow-up"
 _ESCALATION_SUGGESTION_PHRASE = "if you prefer, i can transfer this to a human receptionist"
 
 
@@ -53,6 +55,37 @@ def create_jane_doe_patient() -> Patient:
         phone_number="+1 555-123-4567",
         email="jane.doe@example.com",
     )
+
+
+@pytest.fixture()
+def health_enabled_human_escalation_service() -> tuple[
+    ChatReceptionistService,
+    FakeHumanEscalationRepository,
+    TrackingAppointmentBookingService,
+    FakeAppointmentHoldService,
+]:
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    hold_service = _create_hold_service()
+    escalation_repository = FakeHumanEscalationRepository()
+    human_escalations = HumanEscalationService(repository=escalation_repository)
+    scheduling = create_demo_scheduling_service_with_emily_july_availability(
+        patients=[create_jane_doe_patient()],
+    )
+    inner_booking = create_appointment_booking_service_for_scheduling(
+        scheduling,
+        hold_service,
+    )
+    tracking_booking = TrackingAppointmentBookingService(inner_booking)
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=hold_service,
+        appointment_booking=cast(AppointmentBookingService, tracking_booking),
+        conversation_health=ConversationHealthService(),
+        human_escalations=human_escalations,
+    )
+    return service, escalation_repository, tracking_booking, hold_service
 
 
 @pytest.fixture()
@@ -390,3 +423,179 @@ def test_chat_api_includes_conversation_health_metadata(
     assistant_metadata = assistant_message.message_metadata
     assert "conversation_health" in assistant_metadata
     assert assistant_metadata["conversation_health"]["escalation_reason"] == "none"
+
+
+def test_explicit_human_request_creates_human_escalation_once(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, tracking_booking, hold_service = (
+        health_enabled_human_escalation_service
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Please connect me to a human receptionist"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED
+    assert len(escalation_repository.escalations) == 1
+    assert tracking_booking.book_calls == []
+    assert hold_service.create_hold_calls == []
+
+    metadata = result.assistant_message.message_metadata["human_escalation"]
+    assert metadata["created"] is True
+    assert metadata["reason"] == "user_requested_human"
+    assert metadata["priority"] == "high"
+    assert metadata["status"] == "open"
+    assert metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
+
+
+def test_repeated_human_request_reuses_active_human_escalation(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, _tracking_booking, _hold_service = (
+        health_enabled_human_escalation_service
+    )
+
+    first = service.handle_message(
+        ChatMessageInput(message="Please connect me to a human receptionist"),
+    )
+    second = service.handle_message(
+        ChatMessageInput(
+            message="I still need to speak to a human receptionist",
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    assert len(escalation_repository.escalations) == 1
+    second_metadata = second.assistant_message.message_metadata["human_escalation"]
+    assert second_metadata["created"] is False
+    assert second_metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
+
+
+def test_human_request_with_active_hold_records_handoff_context_without_releasing_hold(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, tracking_booking, hold_service = (
+        health_enabled_human_escalation_service
+    )
+    conversation = _conversation_with_active_hold(service)
+    chat_context = conversation.conversation_metadata["chat_context"]
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Please connect me to a human receptionist",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED
+    assert len(escalation_repository.escalations) == 1
+    assert len(hold_service.create_hold_calls) == 1
+    assert tracking_booking.book_calls == []
+    assert result.pending_hold_release is None
+    assert result.hold_id_to_release is None
+
+    escalation = escalation_repository.escalations[0]
+    handoff_context = escalation.handoff_context
+    assert handoff_context is not None
+    assert handoff_context["active_hold_present"] is True
+    assert handoff_context["hold_id"] == chat_context["hold_id"]
+    assert handoff_context["hold_expires_at"] == chat_context["hold_expires_at"]
+    assert handoff_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert handoff_context["requested_date"] == "2026-07-02"
+    assert handoff_context["selected_start_time"] == chat_context["selected_start_time"]
+    assert "patient_identity" not in handoff_context
+    assert conversation.conversation_metadata["chat_context"]["hold_id"] == chat_context["hold_id"]
+
+
+def test_emergency_creates_urgent_human_escalation(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, _tracking_booking, _hold_service = (
+        health_enabled_human_escalation_service
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="This is an emergency, I have chest pain"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.EMERGENCY
+    assert len(escalation_repository.escalations) == 1
+    escalation = escalation_repository.escalations[0]
+    assert escalation.reason.value == "medical_emergency"
+    assert escalation.priority.value == "urgent"
+
+    metadata = result.assistant_message.message_metadata["human_escalation"]
+    assert metadata["created"] is True
+    assert metadata["reason"] == "medical_emergency"
+    assert metadata["priority"] == "urgent"
+
+
+def test_suggested_escalation_only_does_not_create_human_escalation(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, _tracking_booking, _hold_service = (
+        health_enabled_human_escalation_service
+    )
+
+    conversation_id = None
+    for message in ("xyzzy one", "xyzzy two", "xyzzy three", "xyzzy four"):
+        result = service.handle_message(
+            ChatMessageInput(message=message, conversation_id=conversation_id),
+        )
+        conversation_id = result.conversation.id
+
+    assert result.intent == ChatReceptionistIntent.ESCALATION_SUGGESTED
+    assert escalation_repository.escalations == []
+    assert "human_escalation" not in result.assistant_message.message_metadata
+
+
+def test_booking_flow_does_not_create_human_escalation(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, tracking_booking, _hold_service = (
+        health_enabled_human_escalation_service
+    )
+    conversation = _conversation_with_active_hold(service)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=FULL_IDENTITY_WITH_CONFIRM,
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
+    assert len(tracking_booking.book_calls) == 1
+    assert escalation_repository.escalations == []
+    assert "human_escalation" not in result.assistant_message.message_metadata

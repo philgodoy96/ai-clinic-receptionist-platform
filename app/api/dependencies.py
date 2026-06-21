@@ -151,6 +151,10 @@ def get_chat_receptionist_service(
         ConversationHealthService,
         Depends(get_conversation_health_service),
     ],
+    human_escalations: Annotated[
+        HumanEscalationService,
+        Depends(get_human_escalation_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -160,6 +164,7 @@ def get_chat_receptionist_service(
         llm_analysis=llm_analysis,
         slot_filling=slot_filling,
         conversation_health=conversation_health,
+        human_escalations=human_escalations,
     )
 
 
