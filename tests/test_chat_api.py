@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from typing import cast
 from uuid import UUID, uuid4
@@ -8,6 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
+from app.ai.receptionist_prompt import build_receptionist_system_prompt
 from app.api.dependencies import (
     get_appointment_hold_service,
     get_chat_receptionist_service,
@@ -710,6 +713,10 @@ def test_chat_api_with_default_fake_llm_dependency_returns_greeting(
     assert "llm_shadow_analysis" in assistant_message.message_metadata
     shadow = assistant_message.message_metadata["llm_shadow_analysis"]
     assert shadow["used_fallback"] is False
+    assert shadow["prompt_version"] == get_current_receptionist_analysis_prompt_metadata().version
+    assert build_receptionist_system_prompt() not in json.dumps(
+        assistant_message.message_metadata,
+    )
     assert "raw_provider_output" not in shadow
 
 
