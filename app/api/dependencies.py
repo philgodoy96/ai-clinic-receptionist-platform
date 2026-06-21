@@ -127,6 +127,10 @@ def get_conversation_health_service() -> ConversationHealthService:
 def get_llm_provider(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> LLMProvider:
+    return create_llm_provider_from_settings(settings)
+
+
+def create_llm_provider_from_settings(settings: Settings) -> LLMProvider:
     return build_llm_provider(settings)
 
 
@@ -136,7 +140,9 @@ def get_llm_receptionist_analysis_service(
     if not settings.llm_enabled:
         return None
 
-    return LLMReceptionistAnalysisService(provider=build_llm_provider(settings))
+    return LLMReceptionistAnalysisService(
+        provider=create_llm_provider_from_settings(settings),
+    )
 
 
 def get_natural_language_date_parser() -> NaturalLanguageDateParser:

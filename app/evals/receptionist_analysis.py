@@ -30,6 +30,11 @@ class EvaluationUrgency(StrEnum):
     EMERGENCY = "emergency"
 
 
+class EvaluationMode(StrEnum):
+    RECORDED = "recorded"
+    PROVIDER = "provider"
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationInput:
     message: str
@@ -196,6 +201,7 @@ class PromptVersionEvaluationMetrics:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationSummary:
+    mode: EvaluationMode
     total_cases: int
     passed_cases: int
     failed_cases: int
@@ -212,12 +218,61 @@ class EvaluationSummary:
 
 def evaluate_receptionist_analysis_cases(
     cases: list[ReceptionistAnalysisEvalCase],
+    *,
+    mode: EvaluationMode = EvaluationMode.RECORDED,
 ) -> EvaluationSummary:
-    case_results = [_evaluate_case(case) for case in cases]
-    return _build_summary(case_results)
+    if mode == EvaluationMode.PROVIDER:
+        raise EvaluationError("provider mode is not implemented yet")
+
+    case_results = [_evaluate_recorded_case(case) for case in cases]
+    return build_evaluation_summary(case_results, mode=mode)
 
 
-def _evaluate_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
+def evaluate_receptionist_analysis_case_against_actual(
+    case: ReceptionistAnalysisEvalCase,
+    actual: dict[str, Any],
+    *,
+    prompt_version: str | None = None,
+) -> EvaluationCaseResult:
+    resolved_prompt_version = prompt_version or case.prompt_version
+    field_results = (
+        _compare_scalar_field(
+            field="intent",
+            expected=case.expected.intent,
+            recorded=actual,
+            key="intent",
+        ),
+        _compare_scalar_field(
+            field="urgency",
+            expected=case.expected.urgency,
+            recorded=actual,
+            key="urgency",
+        ),
+        _compare_scalar_field(
+            field="requires_human",
+            expected=case.expected.requires_human,
+            recorded=actual,
+            key="requires_human",
+        ),
+        _compare_safety_flags(
+            expected=case.expected.safety_flags,
+            recorded=actual,
+        ),
+        *_compare_extracted_fields(
+            expected=case.expected.extracted,
+            recorded=actual,
+        ),
+    )
+    passed = all(result.passed for result in field_results)
+    return EvaluationCaseResult(
+        case_id=case.id,
+        prompt_version=resolved_prompt_version,
+        passed=passed,
+        field_results=field_results,
+    )
+
+
+def _evaluate_recorded_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
     if case.recorded_output is None:
         return EvaluationCaseResult(
             case_id=case.id,
@@ -227,40 +282,9 @@ def _evaluate_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
             failure_reason="missing_recorded_output",
         )
 
-    field_results = (
-        _compare_scalar_field(
-            field="intent",
-            expected=case.expected.intent,
-            recorded=case.recorded_output,
-            key="intent",
-        ),
-        _compare_scalar_field(
-            field="urgency",
-            expected=case.expected.urgency,
-            recorded=case.recorded_output,
-            key="urgency",
-        ),
-        _compare_scalar_field(
-            field="requires_human",
-            expected=case.expected.requires_human,
-            recorded=case.recorded_output,
-            key="requires_human",
-        ),
-        _compare_safety_flags(
-            expected=case.expected.safety_flags,
-            recorded=case.recorded_output,
-        ),
-        *_compare_extracted_fields(
-            expected=case.expected.extracted,
-            recorded=case.recorded_output,
-        ),
-    )
-    passed = all(result.passed for result in field_results)
-    return EvaluationCaseResult(
-        case_id=case.id,
-        prompt_version=case.prompt_version,
-        passed=passed,
-        field_results=field_results,
+    return evaluate_receptionist_analysis_case_against_actual(
+        case,
+        case.recorded_output,
     )
 
 
@@ -333,7 +357,11 @@ def _normalize_scalar(value: Any) -> Any:
     return value
 
 
-def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummary:
+def build_evaluation_summary(
+    case_results: list[EvaluationCaseResult],
+    *,
+    mode: EvaluationMode,
+) -> EvaluationSummary:
     total_cases = len(case_results)
     passed_cases = sum(1 for result in case_results if result.passed)
     failed_cases = total_cases - passed_cases
@@ -350,6 +378,7 @@ def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummar
     }
 
     return EvaluationSummary(
+        mode=mode,
         total_cases=total_cases,
         passed_cases=passed_cases,
         failed_cases=failed_cases,

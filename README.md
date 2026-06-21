@@ -140,7 +140,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, and an offline LLM evaluation dataset for structured receptionist analysis quality.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, an offline LLM evaluation dataset for structured receptionist analysis quality, and optional provider-run evaluation mode for manual local checks.
 
 Configuration reference:
 
@@ -152,3 +152,4 @@ Architecture docs:
 - `docs/architecture/real-llm-provider-adapter.md`
 - `docs/architecture/llm-provider-foundation.md`
 - `docs/architecture/llm-evaluation-dataset.md`
+- `docs/architecture/provider-run-evaluation-mode.md`
