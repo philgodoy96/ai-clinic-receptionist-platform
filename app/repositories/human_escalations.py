@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -35,6 +36,10 @@ class HumanEscalationRepository(Protocol):
         conversation_id: UUID | None = None,
         patient_id: UUID | None = None,
         appointment_id: UUID | None = None,
+        assigned_to: str | None = None,
+        unassigned: bool | None = None,
+        overdue: bool | None = None,
+        now: datetime | None = None,
     ) -> Sequence[HumanEscalation]:
         raise NotImplementedError
 
