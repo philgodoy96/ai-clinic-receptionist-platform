@@ -10,6 +10,7 @@ from app.evals.receptionist_analysis import (
     EvaluationError,
     EvaluationExpected,
     EvaluationInput,
+    EvaluationMode,
     ReceptionistAnalysisEvalCase,
     evaluate_receptionist_analysis_cases,
     load_receptionist_analysis_eval_cases,
@@ -209,6 +210,7 @@ def test_perfect_recorded_output_gives_full_accuracy() -> None:
 
     summary = evaluate_receptionist_analysis_cases([case])
 
+    assert summary.mode == EvaluationMode.RECORDED
     assert summary.total_cases == 1
     assert summary.passed_cases == 1
     assert summary.failed_cases == 0
@@ -378,6 +380,39 @@ def test_missing_recorded_output_fails_case() -> None:
     assert summary.case_results[0].passed is False
     assert summary.case_results[0].failure_reason == "missing_recorded_output"
     assert summary.case_results[0].field_results == ()
+
+
+def test_evaluate_receptionist_analysis_cases_default_mode_is_recorded() -> None:
+    case = _build_case(
+        case_id="default_mode",
+        recorded_output=_matching_recorded_output(),
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case])
+
+    assert summary.mode == EvaluationMode.RECORDED
+
+
+def test_evaluate_receptionist_analysis_cases_recorded_mode_works() -> None:
+    case = _build_case(
+        case_id="recorded_mode",
+        recorded_output=_matching_recorded_output(),
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case], mode=EvaluationMode.RECORDED)
+
+    assert summary.mode == EvaluationMode.RECORDED
+    assert summary.passed_cases == 1
+
+
+def test_evaluate_receptionist_analysis_cases_provider_mode_not_implemented() -> None:
+    case = _build_case(
+        case_id="provider_mode",
+        recorded_output=_matching_recorded_output(),
+    )
+
+    with pytest.raises(EvaluationError, match="provider mode is not implemented yet"):
+        evaluate_receptionist_analysis_cases([case], mode=EvaluationMode.PROVIDER)
 
 
 def test_multiple_prompt_versions_produce_grouped_metrics() -> None:

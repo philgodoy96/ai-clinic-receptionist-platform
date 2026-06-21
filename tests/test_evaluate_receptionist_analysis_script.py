@@ -197,3 +197,47 @@ def test_script_exits_non_zero_with_fail_on_errors_when_failures_exist(
     assert exit_code == 1
     assert "Failed cases:" in captured.out
     assert "[failing_case]" in captured.out
+
+
+def test_script_default_mode_is_recorded(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    dataset_path = tmp_path / "passing.jsonl"
+    _write_passing_dataset(dataset_path)
+
+    exit_code = main(["--dataset", str(dataset_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Mode: recorded" in captured.out
+
+
+def test_script_mode_recorded_works(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    dataset_path = tmp_path / "passing.jsonl"
+    _write_passing_dataset(dataset_path)
+
+    exit_code = main(["--dataset", str(dataset_path), "--mode", "recorded"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Mode: recorded" in captured.out
+    assert "All cases passed." in captured.out
+
+
+def test_script_mode_provider_fails_clearly(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    dataset_path = tmp_path / "passing.jsonl"
+    _write_passing_dataset(dataset_path)
+
+    exit_code = main(["--dataset", str(dataset_path), "--mode", "provider"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == "Error: provider mode is not implemented yet\n"
+    assert captured.out == ""
