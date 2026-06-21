@@ -25,6 +25,7 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
     DeterministicChatResponder,
 )
+from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
@@ -133,6 +134,7 @@ def create_chat_receptionist_service(
     responder: DeterministicChatResponder | None = None,
     llm_analysis: LLMReceptionistAnalysisService | None = None,
     slot_filling: LLMChatSlotFillingService | None = None,
+    conversation_health: ConversationHealthService | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -147,6 +149,7 @@ def create_chat_receptionist_service(
         responder=responder,
         llm_analysis=llm_analysis,
         slot_filling=slot_filling,
+        conversation_health=conversation_health,
     )
 
 
