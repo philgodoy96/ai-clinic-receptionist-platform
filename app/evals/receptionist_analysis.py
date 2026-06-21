@@ -47,6 +47,7 @@ class EvaluationExpected:
 @dataclass(frozen=True, slots=True)
 class ReceptionistAnalysisEvalCase:
     id: str
+    prompt_version: str
     input: EvaluationInput
     expected: EvaluationExpected
     recorded_output: dict[str, Any] | None = None
@@ -78,6 +79,7 @@ def load_receptionist_analysis_eval_cases(path: Path) -> list[ReceptionistAnalys
 
 def _parse_case(*, payload: dict[str, Any], line_number: int) -> ReceptionistAnalysisEvalCase:
     case_id = _required_str(payload, "id", line_number)
+    prompt_version = _required_str(payload, "prompt_version", line_number)
     input_payload = _required_dict(payload, "input", line_number)
     expected_payload = _required_dict(payload, "expected", line_number)
 
@@ -110,6 +112,7 @@ def _parse_case(*, payload: dict[str, Any], line_number: int) -> ReceptionistAna
 
     return ReceptionistAnalysisEvalCase(
         id=case_id,
+        prompt_version=prompt_version,
         input=EvaluationInput(message=message),
         expected=EvaluationExpected(
             intent=intent,
@@ -176,9 +179,19 @@ class EvaluationFieldResult:
 @dataclass(frozen=True, slots=True)
 class EvaluationCaseResult:
     case_id: str
+    prompt_version: str
     passed: bool
     field_results: tuple[EvaluationFieldResult, ...]
     failure_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PromptVersionEvaluationMetrics:
+    prompt_version: str
+    total_cases: int
+    passed_cases: int
+    failed_cases: int
+    accuracy: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +205,8 @@ class EvaluationSummary:
     requires_human_accuracy: float
     safety_flag_accuracy: float
     extracted_field_accuracy: float
+    prompt_versions: tuple[str, ...]
+    metrics_by_prompt_version: dict[str, PromptVersionEvaluationMetrics]
     case_results: tuple[EvaluationCaseResult, ...]
 
 
@@ -206,6 +221,7 @@ def _evaluate_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
     if case.recorded_output is None:
         return EvaluationCaseResult(
             case_id=case.id,
+            prompt_version=case.prompt_version,
             passed=False,
             field_results=(),
             failure_reason="missing_recorded_output",
@@ -242,6 +258,7 @@ def _evaluate_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
     passed = all(result.passed for result in field_results)
     return EvaluationCaseResult(
         case_id=case.id,
+        prompt_version=case.prompt_version,
         passed=passed,
         field_results=field_results,
     )
@@ -326,6 +343,11 @@ def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummar
     requires_human_results = _collect_field_results(case_results, "requires_human")
     safety_flag_results = _collect_field_results(case_results, "safety_flags")
     extracted_results = _collect_field_results(case_results, prefix="extracted.")
+    prompt_versions = tuple(sorted({result.prompt_version for result in case_results}))
+    metrics_by_prompt_version = {
+        prompt_version: _build_prompt_version_metrics(prompt_version, case_results)
+        for prompt_version in prompt_versions
+    }
 
     return EvaluationSummary(
         total_cases=total_cases,
@@ -352,7 +374,29 @@ def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummar
             sum(1 for item in extracted_results if item.passed),
             len(extracted_results),
         ),
+        prompt_versions=prompt_versions,
+        metrics_by_prompt_version=metrics_by_prompt_version,
         case_results=tuple(case_results),
+    )
+
+
+def _build_prompt_version_metrics(
+    prompt_version: str,
+    case_results: list[EvaluationCaseResult],
+) -> PromptVersionEvaluationMetrics:
+    version_results = [
+        result for result in case_results if result.prompt_version == prompt_version
+    ]
+    total_cases = len(version_results)
+    passed_cases = sum(1 for result in version_results if result.passed)
+    failed_cases = total_cases - passed_cases
+
+    return PromptVersionEvaluationMetrics(
+        prompt_version=prompt_version,
+        total_cases=total_cases,
+        passed_cases=passed_cases,
+        failed_cases=failed_cases,
+        accuracy=_ratio(passed_cases, total_cases),
     )
 
 
