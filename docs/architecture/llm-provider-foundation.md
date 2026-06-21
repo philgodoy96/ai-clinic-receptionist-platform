@@ -19,7 +19,9 @@ The current implementation includes:
 - local JSON object extraction repair
 - LLM reliability failure reasons
 - `LLMReceptionistAnalysisService`
+- `LLMChatSlotFillingService`
 - optional chat shadow analysis metadata
+- validated LLM-assisted slot filling into `chat_context`
 
 No real LLM provider is called in this implementation phase.
 
@@ -89,6 +91,25 @@ The LLM does not:
 
 LLM output is advice, not business truth.
 
+## Slot Filling Assistance
+
+When analysis is eligible, `LLMChatSlotFillingService` may apply validated extracted fields into `conversation_metadata.chat_context`.
+
+Eligibility requires a non-fallback analysis, `failure_reason == none`, confidence at or above the slot-filling threshold, non-emergency intent, and no safety flags.
+
+Each candidate field is validated before merge:
+
+- specialty and doctor against `SchedulingService` read methods
+- date as strict `YYYY-MM-DD`
+- time as normalized `HH:MM`
+- patient identity through the same completeness and format rules used by the deterministic parser
+
+Unknown, invalid, or conflicting values are rejected and recorded in internal slot-filling metadata. The LLM never writes raw extracted output directly into chat context.
+
+Slot filling updates conversational memory only. Holds, bookings, identity completeness, and explicit confirmation remain owned by the deterministic flow and business services.
+
+See also: [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
+
 ## Business Boundary
 
 Durable business operations remain owned by deterministic services:
@@ -114,10 +135,10 @@ Future escalation work should create auditable escalation records and optional n
 
 Future implementation phases may add:
 
-- structured-output-assisted slot filling
 - conversation health and escalation signals
 - human escalation foundation
-- AWS Bedrock provider
+- natural-language date parsing
+- real provider adapter (for example AWS Bedrock)
 - provider timeouts
 - fallback models
 - cost tracking aggregation

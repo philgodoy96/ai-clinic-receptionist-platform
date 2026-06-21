@@ -151,11 +151,35 @@ Shadow metadata intentionally excludes:
 
 This enables observability and comparison between deterministic behavior and LLM classification without changing successful API response semantics.
 
+## LLM-Assisted Slot Filling Boundary
+
+When LLM analysis is eligible, `ChatReceptionistService` may call `LLMChatSlotFillingService` after analysis and before the deterministic reply is generated.
+
+The slot-filling layer:
+
+- validates extracted specialty, doctor, date, time, and patient identity fields
+- merges only accepted values into `conversation_metadata.chat_context`
+- records applied and rejected fields as internal assistant message metadata (`slot_filling`)
+
+The slot-filling layer does not:
+
+- create Redis holds
+- create appointments
+- resolve patients from the database
+- bypass patient identity completeness
+- bypass explicit confirmation
+- change public API response fields such as `intent`, `reply`, `appointment_id`, or `booking_confirmed`
+
+Deterministic intent selection, reply text, hold creation, and booking confirmation remain unchanged. Validated slot filling may pre-fill conversational context so the deterministic flow can continue with fewer missing fields.
+
+Slot filling is skipped when analysis used fallback, failed reliability checks, confidence is below threshold, intent is emergency, or safety flags are present.
+
+See also: [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
+
 ## Future Work
 
 Planned future implementation phases include:
 
-- Structured-output-assisted slot filling
 - Conversation health and escalation signals
 - Human escalation foundation
 - Real provider adapter
