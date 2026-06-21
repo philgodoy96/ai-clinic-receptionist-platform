@@ -12,6 +12,7 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
 )
 from app.services.conversations import ConversationService
+from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from tests.test_chat_booking_confirmation_flow import (
@@ -58,7 +59,10 @@ def shadow_chat_service() -> tuple[ChatReceptionistService, FakeConversationRepo
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service()
     llm_analysis = LLMReceptionistAnalysisService(provider=FakeLLMProvider())
-    slot_filling = LLMChatSlotFillingService(scheduling=scheduling)
+    slot_filling = LLMChatSlotFillingService(
+        scheduling=scheduling,
+        date_parser=NaturalLanguageDateParser(),
+    )
     service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,

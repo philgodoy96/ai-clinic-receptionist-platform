@@ -24,6 +24,7 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
+from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.email_jobs import EmailJobService
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
@@ -151,7 +152,10 @@ def health_llm_chat_service() -> ChatReceptionistService:
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service()
     llm_analysis = LLMReceptionistAnalysisService(provider=FakeLLMProvider())
-    slot_filling = LLMChatSlotFillingService(scheduling=scheduling)
+    slot_filling = LLMChatSlotFillingService(
+        scheduling=scheduling,
+        date_parser=NaturalLanguageDateParser(),
+    )
     return create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
