@@ -21,10 +21,12 @@ It must run offline and deterministically in CI.
 The evaluation foundation includes:
 
 - synthetic JSONL dataset
+- required `prompt_version` on each evaluation case
 - expected structured analysis outputs
 - recorded output comparison
 - offline evaluation runner
 - simple accuracy metrics
+- metrics grouped by prompt version
 
 ## Dataset Boundary
 
@@ -44,6 +46,8 @@ The evaluator checks:
 
 It does not create holds, create appointments, send emails, notify staff, or call a real LLM provider.
 
+Historical prompt versions are accepted in the dataset so recorded outputs from earlier prompts can still be evaluated. Metrics are grouped by the `prompt_version` on each case.
+
 ## Running Evaluation
 
 ```powershell
@@ -61,11 +65,10 @@ Real provider evaluation can be added later as an optional local/manual mode.
 Future implementation phases may add:
 
 - provider-run evaluation mode
-- prompt versioning
 - per-intent thresholds
 - confusion matrix
 - golden outputs per model
-- model regression reports
+- prompt regression reports
 - tenant-level quality dashboards
 
-See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
+See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).

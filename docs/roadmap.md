@@ -120,7 +120,8 @@ Implemented:
 - Escalation assignment workflow with assign/unassign service methods, priority-based due dates, assignment list filters, and internal/debug API endpoints
 - Natural-language date parsing with deterministic `NaturalLanguageDateParser` for chat availability guidance and LLM slot filling
 - Time-of-day preference parsing with deterministic `TimePreferenceParser` for chat availability filtering and LLM slot filling
-- LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, and offline evaluation runner
+- LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, offline evaluation runner, and metrics grouped by prompt version
+- Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
 
 Upcoming:
 
@@ -128,7 +129,7 @@ Upcoming:
 - Assignment notification job
 - Provider fallback chain
 - Provider-run evaluation mode
-- Prompt versioning
+- Prompt regression reports
 - Voice provider transfer integration
 - Clinic timezone settings
 - Staff notification provider adapter
