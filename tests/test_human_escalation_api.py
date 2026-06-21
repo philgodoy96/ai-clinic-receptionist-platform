@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+from collections.abc import Generator
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api.dependencies import get_human_escalation_service
+from app.db.session import get_db
+from app.domain.human_escalations import HumanEscalationReason
+from app.main import create_app
+from app.services.human_escalations import HumanEscalationService
+from tests.test_human_escalations import FakeHumanEscalationRepository
+
+
+@pytest.fixture()
+def empty_escalation_client() -> Generator[TestClient, None, None]:
+    app = create_app()
+    service = HumanEscalationService(repository=FakeHumanEscalationRepository())
+
+    def override_human_escalation_service() -> HumanEscalationService:
+        return service
+
+    app.dependency_overrides[get_human_escalation_service] = override_human_escalation_service
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def escalation_client() -> Generator[tuple[TestClient, UUID], None, None]:
+    app = create_app()
+    fake_db = FakeDatabaseSession()
+    repository = FakeHumanEscalationRepository()
+    service = HumanEscalationService(repository=repository)
+    conversation_id = uuid4()
+    escalation = service.create_or_get_active_escalation(
+        conversation_id=conversation_id,
+        reason=HumanEscalationReason.USER_REQUESTED_HUMAN,
+        summary="User asked for a human.",
+    )
+
+    def override_human_escalation_service() -> HumanEscalationService:
+        return service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield fake_db
+
+    app.dependency_overrides[get_human_escalation_service] = override_human_escalation_service
+    app.dependency_overrides[get_db] = override_db
+
+    with TestClient(app) as test_client:
+        yield test_client, escalation.id
+
+    app.dependency_overrides.clear()
+
+
+def test_list_human_escalations_returns_empty_items(
+    empty_escalation_client: TestClient,
+) -> None:
+    response = empty_escalation_client.get("/api/v1/human-escalations")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["items"] == []
+    assert body["next_cursor"] is None
+
+
+def test_list_human_escalations_returns_created_escalation(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    response = client.get("/api/v1/human-escalations")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["id"] == str(escalation_id)
+    assert body["items"][0]["status"] == "open"
+    assert body["items"][0]["reason"] == "user_requested_human"
+    assert body["items"][0]["priority"] == "high"
+    assert body["next_cursor"] is None
+
+
+def test_get_human_escalation_returns_escalation_by_id(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    response = client.get(f"/api/v1/human-escalations/{escalation_id}")
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["id"] == str(escalation_id)
+    assert body["summary"] == "User asked for a human."
+    assert body["created_at"]
+    assert body["updated_at"]
+
+
+def test_acknowledge_human_escalation_transitions_open_to_acknowledged(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    response = client.post(
+        f"/api/v1/human-escalations/{escalation_id}/acknowledge",
+        json={"acknowledged_by": "demo_staff"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["status"] == "acknowledged"
+    assert body["acknowledged_by"] == "demo_staff"
+    assert body["acknowledged_at"] is not None
+
+
+def test_resolve_human_escalation_transitions_acknowledged_to_resolved(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    acknowledge_response = client.post(
+        f"/api/v1/human-escalations/{escalation_id}/acknowledge",
+        json={"acknowledged_by": "demo_staff"},
+    )
+    assert acknowledge_response.status_code == 200
+
+    response = client.post(
+        f"/api/v1/human-escalations/{escalation_id}/resolve",
+        json={
+            "resolved_by": "demo_staff",
+            "resolution_notes": "Called patient and resolved scheduling issue.",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["status"] == "resolved"
+    assert body["resolved_by"] == "demo_staff"
+    assert body["resolution_notes"] == "Called patient and resolved scheduling issue."
+    assert body["resolved_at"] is not None
+
+
+def test_get_human_escalation_returns_standardized_not_found(
+    empty_escalation_client: TestClient,
+) -> None:
+    response = empty_escalation_client.get(f"/api/v1/human-escalations/{uuid4()}")
+
+    assert response.status_code == 404
+
+    body = response.json()
+
+    assert body["error"]["code"] == "human_escalation_not_found"
+    assert body["error"]["message"] == "Human escalation was not found."
+    assert body["error"]["request_id"] is not None
+
+
+def test_acknowledge_resolved_human_escalation_returns_standardized_conflict(
+    escalation_client: tuple[TestClient, UUID],
+) -> None:
+    client, escalation_id = escalation_client
+
+    client.post(
+        f"/api/v1/human-escalations/{escalation_id}/resolve",
+        json={
+            "resolved_by": "demo_staff",
+            "resolution_notes": "Resolved.",
+        },
+    )
+
+    response = client.post(
+        f"/api/v1/human-escalations/{escalation_id}/acknowledge",
+        json={"acknowledged_by": "demo_staff"},
+    )
+
+    assert response.status_code == 409
+
+    body = response.json()
+
+    assert body["error"]["code"] == "invalid_human_escalation_transition"
+    assert body["error"]["message"] == "Only open escalations can be acknowledged."
+
+
+class FakeDatabaseSession:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+    def refresh(self, instance: object) -> None:
+        return None
