@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from app.ai.receptionist_output import ReceptionistLLMAnalysis
 from app.ai.reliability import LLMFailureReason
 from app.evals.receptionist_analysis import (
     EvaluationCaseResult,
+    EvaluationFieldResult,
     EvaluationMode,
     EvaluationSummary,
+    PromptVersionEvaluationMetrics,
     ReceptionistAnalysisEvalCase,
     build_evaluation_summary,
     evaluate_receptionist_analysis_case_against_actual,
@@ -132,3 +136,98 @@ def _provider_failure_reason(failure_reason: LLMFailureReason) -> str | None:
     if failure_reason == LLMFailureReason.NONE:
         return None
     return failure_reason.value
+
+
+def build_evaluation_report(
+    *,
+    summary: EvaluationSummary,
+    dataset_path: Path,
+    cases: list[ReceptionistAnalysisEvalCase],
+    provider_case_outputs: tuple[ProviderEvaluationCaseOutput, ...] | None = None,
+) -> dict[str, object]:
+    cases_by_id = {case.id: case for case in cases}
+    provider_outputs_by_id = {
+        case_output.case_id: case_output
+        for case_output in provider_case_outputs or ()
+    }
+
+    case_reports: list[dict[str, object]] = []
+    for case_result in summary.case_results:
+        eval_case = cases_by_id[case_result.case_id]
+        case_report: dict[str, object] = {
+            "case_id": case_result.case_id,
+            "input_message": eval_case.input.message,
+            "prompt_version": case_result.prompt_version,
+            "passed": case_result.passed,
+            "failure_reason": case_result.failure_reason,
+            "field_results": [
+                _field_result_to_dict(field_result)
+                for field_result in case_result.field_results
+            ],
+        }
+        provider_output = provider_outputs_by_id.get(case_result.case_id)
+        if provider_output is not None:
+            case_report["provider"] = _provider_output_to_dict(provider_output)
+        case_reports.append(case_report)
+
+    return {
+        "mode": summary.mode.value,
+        "dataset": str(dataset_path),
+        "summary": _summary_metrics_to_dict(summary),
+        "prompt_versions": list(summary.prompt_versions),
+        "metrics_by_prompt_version": {
+            prompt_version: _prompt_version_metrics_to_dict(metrics)
+            for prompt_version, metrics in summary.metrics_by_prompt_version.items()
+        },
+        "cases": case_reports,
+    }
+
+
+def _summary_metrics_to_dict(summary: EvaluationSummary) -> dict[str, object]:
+    return {
+        "total_cases": summary.total_cases,
+        "passed_cases": summary.passed_cases,
+        "failed_cases": summary.failed_cases,
+        "accuracy": summary.accuracy,
+        "intent_accuracy": summary.intent_accuracy,
+        "urgency_accuracy": summary.urgency_accuracy,
+        "requires_human_accuracy": summary.requires_human_accuracy,
+        "safety_flag_accuracy": summary.safety_flag_accuracy,
+        "extracted_field_accuracy": summary.extracted_field_accuracy,
+    }
+
+
+def _prompt_version_metrics_to_dict(
+    metrics: PromptVersionEvaluationMetrics,
+) -> dict[str, object]:
+    return {
+        "prompt_version": metrics.prompt_version,
+        "total_cases": metrics.total_cases,
+        "passed_cases": metrics.passed_cases,
+        "failed_cases": metrics.failed_cases,
+        "accuracy": metrics.accuracy,
+    }
+
+
+def _field_result_to_dict(field_result: EvaluationFieldResult) -> dict[str, Any]:
+    return {
+        "field": field_result.field,
+        "passed": field_result.passed,
+        "expected": field_result.expected,
+        "actual": field_result.actual,
+    }
+
+
+def _provider_output_to_dict(
+    provider_output: ProviderEvaluationCaseOutput,
+) -> dict[str, object]:
+    return {
+        "provider": provider_output.provider,
+        "model": provider_output.model,
+        "prompt_version": provider_output.prompt_version,
+        "actual": provider_output.actual,
+        "failure_reason": provider_output.failure_reason,
+        "latency_ms": provider_output.latency_ms,
+        "input_tokens": provider_output.input_tokens,
+        "output_tokens": provider_output.output_tokens,
+    }
