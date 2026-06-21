@@ -88,6 +88,12 @@ class HumanEscalationService:
 
         return self.repository.add(escalation)
 
+    def get_active_escalation_for_conversation(
+        self,
+        conversation_id: UUID,
+    ) -> HumanEscalation | None:
+        return self.repository.get_active_by_conversation_id(conversation_id)
+
     def get_escalation(self, escalation_id: UUID) -> HumanEscalation:
         escalation = self.repository.get_by_id(escalation_id)
 
