@@ -33,6 +33,7 @@ class LLMRequest:
     response_format: str = "json"
     temperature: float = 0.0
     max_tokens: int = 800
+    # Optional observability fields such as component and prompt_version (service-owned).
     metadata: dict[str, str] = field(default_factory=dict)
 
 
