@@ -1,0 +1,81 @@
+# Provider-Run Evaluation Mode
+
+## Context
+
+The platform includes an offline evaluation dataset for structured receptionist analysis.
+
+Recorded-output evaluation is deterministic and CI-safe.
+
+This implementation phase adds an optional manual provider-run mode.
+
+## Design Principle
+
+Provider-run evaluation is manual and explicit.
+
+CI remains offline, deterministic, and free.
+
+## Modes
+
+### Recorded Mode
+
+Recorded mode compares dataset `recorded_output` fields against expected outputs.
+
+It is the default and should be used in CI.
+
+```powershell
+python -m scripts.evaluate_receptionist_analysis --mode recorded --fail-on-errors
+```
+
+### Provider Mode
+
+Provider mode runs the dataset against the configured LLM provider.
+
+It requires explicit confirmation:
+
+```powershell
+python -m scripts.evaluate_receptionist_analysis --mode provider --allow-provider-calls
+```
+
+Provider mode may cost money when a real provider is configured.
+
+## Report Output
+
+A local JSON report can be written:
+
+```powershell
+python -m scripts.evaluate_receptionist_analysis --mode provider --allow-provider-calls --output reports/evals/provider-run.json
+```
+
+Reports must not include credentials or secrets.
+
+## Safety Boundary
+
+Provider-run evaluation does not:
+
+- create holds
+- create appointments
+- send emails
+- notify staff
+- call business tools
+- require database
+- require Redis
+- require RabbitMQ
+
+## Testing Boundary
+
+Automated tests do not call real Bedrock.
+
+Tests use fake or stub providers.
+
+## Future Work
+
+Future implementation phases may add:
+
+- prompt comparison reports
+- provider/model comparison
+- per-intent thresholds
+- confusion matrix
+- cost estimates
+- regression report artifacts
+
+See also: [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
