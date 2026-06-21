@@ -272,6 +272,38 @@ def test_assistant_message_metadata_includes_conversation_health(
     assert "escalation_reason" in health
 
 
+def test_can_i_speak_to_a_real_person_creates_human_escalation_with_handoff_metadata(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, tracking_booking, hold_service = (
+        health_enabled_human_escalation_service
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Can I speak to a real person?"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED
+    assert _HUMAN_HANDOFF_PHRASE in result.reply.lower()
+    assert len(escalation_repository.escalations) == 1
+    assert tracking_booking.book_calls == []
+    assert hold_service.create_hold_calls == []
+    assert result.appointment_id is None
+    assert "hold_created" not in result.assistant_message.message_metadata
+
+    metadata = result.assistant_message.message_metadata["human_escalation"]
+    assert metadata["created"] is True
+    assert metadata["reason"] == "user_requested_human"
+    assert metadata["priority"] == "high"
+    assert metadata["status"] == "open"
+    assert metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
+
+
 def test_human_request_returns_handoff_without_booking_or_hold(
     health_enabled_booking_service: tuple[
         ChatReceptionistService,
@@ -571,6 +603,33 @@ def test_suggested_escalation_only_does_not_create_human_escalation(
         conversation_id = result.conversation.id
 
     assert result.intent == ChatReceptionistIntent.ESCALATION_SUGGESTED
+    assert escalation_repository.escalations == []
+    assert "human_escalation" not in result.assistant_message.message_metadata
+
+
+def test_booking_confirmation_flow_still_passes_with_human_escalation_service(
+    health_enabled_human_escalation_service: tuple[
+        ChatReceptionistService,
+        FakeHumanEscalationRepository,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, escalation_repository, tracking_booking, _hold_service = (
+        health_enabled_human_escalation_service
+    )
+    conversation = _conversation_with_active_hold(service)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=FULL_IDENTITY_WITH_CONFIRM,
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
+    assert result.booking_confirmed is True
+    assert len(tracking_booking.book_calls) == 1
     assert escalation_repository.escalations == []
     assert "human_escalation" not in result.assistant_message.message_metadata
 
