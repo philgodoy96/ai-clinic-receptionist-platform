@@ -67,6 +67,16 @@ def _print_summary(summary: EvaluationSummary, dataset_path: Path) -> None:
     print(f"Requires human accuracy: {_format_percent(summary.requires_human_accuracy)}")
     print(f"Safety flag accuracy: {_format_percent(summary.safety_flag_accuracy)}")
     print(f"Extracted field accuracy: {_format_percent(summary.extracted_field_accuracy)}")
+    print()
+    print(f"Prompt versions seen: {', '.join(summary.prompt_versions) or 'none'}")
+    print("Per prompt version:")
+    for prompt_version in summary.prompt_versions:
+        metrics = summary.metrics_by_prompt_version[prompt_version]
+        print(
+            f"  {metrics.prompt_version}: "
+            f"{metrics.passed_cases}/{metrics.total_cases} passed "
+            f"({_format_percent(metrics.accuracy)})",
+        )
 
 
 def _print_failed_cases(summary: EvaluationSummary) -> None:
