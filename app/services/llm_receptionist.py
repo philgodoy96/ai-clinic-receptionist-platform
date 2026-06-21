@@ -11,6 +11,7 @@ from app.ai.receptionist_output import (
     ReceptionistUrgency,
     fallback_receptionist_analysis,
 )
+from app.ai.receptionist_prompt import build_receptionist_system_prompt
 from app.ai.reliability import (
     MIN_ACCEPTED_CONFIDENCE,
     LLMFailureReason,
@@ -60,12 +61,7 @@ class LLMReceptionistAnalysisService:
             messages=[
                 LLMMessage(
                     role="system",
-                    content=(
-                        "You are a clinic receptionist analysis service. "
-                        "Return only valid JSON matching the expected schema. "
-                        "Do not create bookings, do not make clinical diagnoses, "
-                        "and do not claim that an appointment has been confirmed."
-                    ),
+                    content=build_receptionist_system_prompt(),
                 ),
                 LLMMessage(
                     role="user",
