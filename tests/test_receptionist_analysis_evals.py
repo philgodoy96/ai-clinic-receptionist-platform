@@ -447,3 +447,29 @@ def test_multiple_prompt_versions_produce_grouped_metrics() -> None:
     assert summary.metrics_by_prompt_version[legacy_version].total_cases == 1
     assert summary.metrics_by_prompt_version[legacy_version].passed_cases == 1
     assert summary.metrics_by_prompt_version[legacy_version].accuracy == 1.0
+
+
+def test_recorded_evaluation_uses_recorded_output_not_input_message() -> None:
+    case = ReceptionistAnalysisEvalCase(
+        id="recorded_output_wins",
+        prompt_version=_default_prompt_version(),
+        input=EvaluationInput(message="this message would be fallback if live"),
+        expected=EvaluationExpected(
+            intent="greeting",
+            urgency="normal",
+            requires_human=False,
+            safety_flags=[],
+            extracted={
+                "specialty": None,
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        ),
+        recorded_output=_matching_recorded_output(),
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case], mode=EvaluationMode.RECORDED)
+
+    assert summary.passed_cases == 1
+    assert summary.mode == EvaluationMode.RECORDED
