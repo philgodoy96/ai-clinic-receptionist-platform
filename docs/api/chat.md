@@ -59,6 +59,16 @@ The public API response does not expose LLM analysis. Response fields such as `i
 
 LLM analysis is stored only as internal assistant message metadata (`llm_shadow_analysis`). Clients calling `POST /api/v1/chat/messages` do not receive LLM analysis fields in the response body.
 
+## LLM-Assisted Slot Filling (Internal)
+
+When eligible LLM analysis is available, the backend may validate extracted scheduling and patient-identity fields and merge accepted values into internal `chat_context`.
+
+The public API response remains deterministic. Response fields such as `intent`, `reply`, `appointment_id`, and `booking_confirmed` are not driven by raw LLM output.
+
+Slot-filling results are stored only as internal assistant message metadata (`slot_filling`), including applied fields, rejected fields, and rejection reasons. This metadata is for observability and debugging; clients do not receive it in the response body.
+
+Slot filling does not create holds, create bookings, or bypass identity or confirmation requirements.
+
 ## Supported Intents
 
 The deterministic responder currently supports:
@@ -263,7 +273,6 @@ This implementation does not yet include:
 - Appointment cancellation from chat
 - Appointment rescheduling from chat
 - Natural-language date parsing
-- Structured-output-assisted slot filling
 - Conversation state machine
 - Human escalation
 - Retell webhook ingestion
