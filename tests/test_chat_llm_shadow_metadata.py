@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from typing import cast
 
 import pytest
 
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
+from app.ai.receptionist_prompt import build_receptionist_system_prompt
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.chat_receptionist import (
     ChatMessageInput,
@@ -37,6 +40,7 @@ from tests.test_scheduling_services import (
 SHADOW_METADATA_FIELDS = (
     "confidence",
     "failure_reason",
+    "prompt_version",
     "latency_ms",
     "input_tokens",
     "output_tokens",
@@ -49,9 +53,14 @@ FORBIDDEN_SHADOW_METADATA_KEYS = (
     "raw_provider_output",
     "prompt",
     "provider_output",
+    "system_prompt",
     "extracted",
     "patient_identity",
 )
+
+
+def expected_prompt_version() -> str:
+    return get_current_receptionist_analysis_prompt_metadata().version
 
 
 @pytest.fixture()
@@ -100,6 +109,36 @@ def test_llm_shadow_metadata_includes_required_fields(
 
     for field in SHADOW_METADATA_FIELDS:
         assert field in shadow
+
+
+def test_llm_shadow_metadata_includes_prompt_version(
+    shadow_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = shadow_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need an appointment"),
+    )
+    shadow = result.assistant_message.message_metadata["llm_shadow_analysis"]
+
+    assert shadow["prompt_version"] == expected_prompt_version()
+
+
+def test_llm_shadow_metadata_excludes_raw_prompt_text(
+    shadow_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = shadow_chat_service
+    system_prompt = build_receptionist_system_prompt()
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need an appointment"),
+    )
+    metadata = result.assistant_message.message_metadata
+    serialized_metadata = json.dumps(metadata)
+
+    assert system_prompt not in serialized_metadata
+    for forbidden_key in FORBIDDEN_SHADOW_METADATA_KEYS:
+        assert forbidden_key not in metadata["llm_shadow_analysis"]
 
 
 def test_llm_shadow_metadata_excludes_sensitive_fields(
