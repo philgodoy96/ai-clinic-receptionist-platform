@@ -7,12 +7,16 @@ from app.ai.receptionist_output import (
     ReceptionistLLMIntent,
     ReceptionistUrgency,
 )
+from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.slot_filling import LLMChatSlotFillingService
 from tests.test_scheduling_services import create_service
 
 
 def create_slot_filling_service() -> LLMChatSlotFillingService:
-    return LLMChatSlotFillingService(scheduling=create_service())
+    return LLMChatSlotFillingService(
+        scheduling=create_service(),
+        date_parser=NaturalLanguageDateParser(),
+    )
 
 
 def create_identity_analysis(

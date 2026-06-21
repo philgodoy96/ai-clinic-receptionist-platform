@@ -13,6 +13,7 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
 )
 from app.services.conversations import ConversationService
+from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
@@ -39,7 +40,10 @@ def create_structured_slot_filling_chat_service(
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     scheduling_service = scheduling or create_demo_scheduling_service()
-    slot_filling = LLMChatSlotFillingService(scheduling=scheduling_service)
+    slot_filling = LLMChatSlotFillingService(
+        scheduling=scheduling_service,
+        date_parser=NaturalLanguageDateParser(),
+    )
     llm_analysis = LLMReceptionistAnalysisService(provider=llm_provider)
 
     return create_chat_receptionist_service(
