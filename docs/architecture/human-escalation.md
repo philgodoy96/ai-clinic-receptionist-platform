@@ -24,6 +24,7 @@ The current implementation includes:
 - internal/debug listing API
 - acknowledge endpoint
 - resolve endpoint
+- escalation assignment workflow (assign, unassign, assignment list filters, priority-based due dates)
 - chat integration for immediate escalation signals
 - chat-triggered notification job enqueue and post-commit RabbitMQ dispatch wake-up
 
@@ -56,6 +57,11 @@ Human escalation does not:
 - call an LLM
 - send real staff email in this phase
 - implement a human chat dashboard
+- provide live human chat when an escalation is assigned
+
+Assignment records operational ownership only. It does not connect the patient to a staff member in real time.
+
+See also: [Escalation Assignment Workflow](./escalation-assignment-workflow.md)
 
 ## Operational States
 
@@ -77,8 +83,8 @@ In production, these endpoints must require staff authentication and role-based 
 Future implementation phases may add:
 
 - escalation listing dashboard
-- escalation assignment workflow
 - staff notification provider adapter
 - voice provider call transfer
 - audit trail expansion
 - staff user identity integration
+- assignment notification job
