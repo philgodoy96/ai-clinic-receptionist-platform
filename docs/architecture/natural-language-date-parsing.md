@@ -35,8 +35,8 @@ The parser intentionally does not support ambiguous expressions such as:
 - `sometime soon`
 - `later`
 - `next month`
-- `morning`
-- `afternoon`
+
+Time-of-day words such as `morning` and `afternoon` are not date expressions. They are handled by `TimePreferenceParser` in a separate boundary.
 
 Unsupported expressions should trigger clarification rather than silently choosing a date.
 
@@ -63,12 +63,13 @@ LLM structured output may suggest a date phrase.
 
 The deterministic parser must normalize and validate it before it is applied to chat context.
 
+See also: [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md).
+
 ## Future Work
 
 Future implementation phases may add:
 
 - clinic timezone settings
 - date range parsing
-- time-of-day preferences
 - real provider-assisted date extraction
 - clarification flows for ambiguous date ranges

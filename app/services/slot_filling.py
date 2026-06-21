@@ -17,6 +17,13 @@ from app.services.date_parsing import (
     NaturalLanguageDateParser,
 )
 from app.services.scheduling import SchedulingService
+from app.services.time_preferences import (
+    TimePreferenceParser,
+    TimePreferenceResult,
+    TimePreferenceStatus,
+    TimeWindow,
+    is_time_in_window,
+)
 
 _ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_PATTERN = re.compile(r"^(\d{1,2}):(\d{2})$")
@@ -43,6 +50,7 @@ class SlotFillingResult:
     rejected_fields: list[SlotFillingRejectedField] = field(default_factory=list)
     used_llm_analysis: bool = False
     date_parsing: dict[str, object] | None = None
+    time_preference_parsing: dict[str, object] | None = None
 
     def to_metadata(self) -> dict[str, object]:
         metadata: dict[str, object] = {
@@ -65,6 +73,8 @@ class SlotFillingResult:
         }
         if self.date_parsing is not None:
             metadata["date_parsing"] = self.date_parsing
+        if self.time_preference_parsing is not None:
+            metadata["time_preference_parsing"] = self.time_preference_parsing
         return metadata
 
 
@@ -77,9 +87,11 @@ class LLMChatSlotFillingService:
         *,
         scheduling: SchedulingService,
         date_parser: NaturalLanguageDateParser,
+        time_preference_parser: TimePreferenceParser,
     ) -> None:
         self.scheduling = scheduling
         self.date_parser = date_parser
+        self.time_preference_parser = time_preference_parser
 
     def apply_analysis(
         self,
@@ -91,6 +103,7 @@ class LLMChatSlotFillingService:
         applied_fields: list[SlotFillingAppliedField] = []
         rejected_fields: list[SlotFillingRejectedField] = []
         date_parsing: dict[str, object] | None = None
+        time_preference_parsing: dict[str, object] | None = None
         extracted = analysis.extracted
 
         if extracted.specialty and extracted.specialty.strip():
@@ -119,12 +132,14 @@ class LLMChatSlotFillingService:
             date_parsing = parse_result.to_metadata()
 
         if extracted.time and extracted.time.strip():
-            self._apply_time(
+            preference_parse_result = self._apply_time(
                 updated_context,
                 raw_time=extracted.time.strip(),
                 applied_fields=applied_fields,
                 rejected_fields=rejected_fields,
             )
+            if preference_parse_result is not None:
+                time_preference_parsing = preference_parse_result.to_metadata()
 
         self._apply_patient_identity(
             updated_context,
@@ -139,6 +154,7 @@ class LLMChatSlotFillingService:
             rejected_fields=rejected_fields,
             used_llm_analysis=True,
             date_parsing=date_parsing,
+            time_preference_parsing=time_preference_parsing,
         )
 
     def _apply_specialty(
@@ -314,9 +330,71 @@ class LLMChatSlotFillingService:
         raw_time: str,
         applied_fields: list[SlotFillingAppliedField],
         rejected_fields: list[SlotFillingRejectedField],
-    ) -> None:
+    ) -> TimePreferenceResult | None:
         normalized_time = self._validate_time(raw_time)
-        if normalized_time is None:
+        if normalized_time is not None:
+            existing_window = context.get("requested_time_window")
+            if isinstance(existing_window, dict) and not self._time_consistent_with_window(
+                normalized_time,
+                existing_window,
+            ):
+                rejected_fields.append(
+                    SlotFillingRejectedField(
+                        field="time",
+                        value=raw_time,
+                        reason="conflicts_with_existing_context",
+                    ),
+                )
+                return None
+
+            result = self._apply_if_empty_or_same(
+                context,
+                "requested_time",
+                normalized_time,
+            )
+            if result == "conflict":
+                rejected_fields.append(
+                    SlotFillingRejectedField(
+                        field="time",
+                        value=raw_time,
+                        reason="conflicts_with_existing_context",
+                    ),
+                )
+                return None
+
+            if result == "applied":
+                applied_fields.append(
+                    SlotFillingAppliedField(field="time", value=raw_time),
+                )
+            return None
+
+        parse_result = self.time_preference_parser.parse(raw_time)
+
+        if parse_result.status == TimePreferenceStatus.PARSED:
+            self._apply_time_preference(
+                context,
+                raw_time=raw_time,
+                parse_result=parse_result,
+                applied_fields=applied_fields,
+                rejected_fields=rejected_fields,
+            )
+        elif parse_result.status == TimePreferenceStatus.UNSUPPORTED:
+            rejected_fields.append(
+                SlotFillingRejectedField(
+                    field="time_preference",
+                    value=raw_time,
+                    reason="unsupported_time_preference",
+                ),
+            )
+        elif parse_result.status == TimePreferenceStatus.AMBIGUOUS:
+            rejected_fields.append(
+                SlotFillingRejectedField(
+                    field="time_preference",
+                    value=raw_time,
+                    reason="ambiguous_time_preference",
+                ),
+            )
+        elif parse_result.status == TimePreferenceStatus.NOT_FOUND:
             rejected_fields.append(
                 SlotFillingRejectedField(
                     field="time",
@@ -324,17 +402,43 @@ class LLMChatSlotFillingService:
                     reason="invalid_time",
                 ),
             )
+
+        return parse_result
+
+    def _apply_time_preference(
+        self,
+        context: dict[str, Any],
+        *,
+        raw_time: str,
+        parse_result: TimePreferenceResult,
+        applied_fields: list[SlotFillingAppliedField],
+        rejected_fields: list[SlotFillingRejectedField],
+    ) -> None:
+        window = parse_result.window
+        if window is None:
             return
 
-        result = self._apply_if_empty_or_same(
-            context,
-            "requested_time",
-            normalized_time,
-        )
+        existing_requested_time = context.get("requested_time")
+        if existing_requested_time is not None and existing_requested_time != "":
+            rejected_fields.append(
+                SlotFillingRejectedField(
+                    field="time_preference",
+                    value=raw_time,
+                    reason="conflicts_with_existing_context",
+                ),
+            )
+            return
+
+        window_dict = {
+            "label": window.label,
+            "start_time": window.start_time,
+            "end_time": window.end_time,
+        }
+        result = self._apply_time_window_if_empty_or_same(context, window_dict)
         if result == "conflict":
             rejected_fields.append(
                 SlotFillingRejectedField(
-                    field="time",
+                    field="time_preference",
                     value=raw_time,
                     reason="conflicts_with_existing_context",
                 ),
@@ -343,7 +447,7 @@ class LLMChatSlotFillingService:
 
         if result == "applied":
             applied_fields.append(
-                SlotFillingAppliedField(field="time", value=raw_time),
+                SlotFillingAppliedField(field="time_preference", value=window.label),
             )
 
     def _apply_patient_identity(
@@ -493,6 +597,51 @@ class LLMChatSlotFillingService:
 
     def _emails_equal(self, existing: str, value: str) -> bool:
         return existing.lower() == value.lower()
+
+    def _apply_time_window_if_empty_or_same(
+        self,
+        context: dict[str, Any],
+        window: dict[str, str],
+    ) -> ApplyResult:
+        existing = context.get("requested_time_window")
+        if existing is None or existing == "":
+            context["requested_time_window"] = window
+            return "applied"
+
+        if not isinstance(existing, dict):
+            return "conflict"
+
+        if self._time_windows_equal(existing, window):
+            return "unchanged"
+
+        return "conflict"
+
+    def _time_windows_equal(self, existing: dict[str, Any], window: dict[str, str]) -> bool:
+        return (
+            existing.get("label") == window["label"]
+            and existing.get("start_time") == window["start_time"]
+            and existing.get("end_time") == window["end_time"]
+        )
+
+    def _time_consistent_with_window(
+        self,
+        time_value: str,
+        window: dict[str, Any],
+    ) -> bool:
+        label = window.get("label")
+        start_time = window.get("start_time")
+        end_time = window.get("end_time")
+        if (
+            not isinstance(label, str)
+            or not isinstance(start_time, str)
+            or not isinstance(end_time, str)
+        ):
+            return False
+
+        return is_time_in_window(
+            time_value=time_value,
+            window=TimeWindow(label=label, start_time=start_time, end_time=end_time),
+        )
 
     def _apply_if_empty_or_same(
         self,
