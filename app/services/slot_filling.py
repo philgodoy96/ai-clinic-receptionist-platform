@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
 from uuid import UUID
 
-from app.ai.receptionist_output import ReceptionistLLMAnalysis
+from app.ai.receptionist_output import ExtractedPatientIdentity, ReceptionistLLMAnalysis
+from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Doctor, Specialty
 from app.services.scheduling import SchedulingService
 
 _ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_PATTERN = re.compile(r"^(\d{1,2}):(\d{2})$")
+_EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,13 @@ class LLMChatSlotFillingService:
                 applied_fields=applied_fields,
                 rejected_fields=rejected_fields,
             )
+
+        self._apply_patient_identity(
+            updated_context,
+            patient_identity=extracted.patient_identity,
+            applied_fields=applied_fields,
+            rejected_fields=rejected_fields,
+        )
 
         return SlotFillingResult(
             updated_chat_context=updated_context,
@@ -295,6 +305,154 @@ class LLMChatSlotFillingService:
             applied_fields.append(
                 SlotFillingAppliedField(field="time", value=raw_time),
             )
+
+    def _apply_patient_identity(
+        self,
+        context: dict[str, Any],
+        *,
+        patient_identity: ExtractedPatientIdentity,
+        applied_fields: list[SlotFillingAppliedField],
+        rejected_fields: list[SlotFillingRejectedField],
+    ) -> None:
+        if patient_identity.full_name and patient_identity.full_name.strip():
+            self._apply_patient_identity_field(
+                context,
+                field_name="full_name",
+                raw_value=patient_identity.full_name.strip(),
+                validated_value=self._validate_full_name(patient_identity.full_name),
+                invalid_reason="invalid_full_name",
+                values_equal=self._full_names_equal,
+                applied_fields=applied_fields,
+                rejected_fields=rejected_fields,
+            )
+
+        if patient_identity.date_of_birth and patient_identity.date_of_birth.strip():
+            raw_dob = patient_identity.date_of_birth.strip()
+            parsed_dob = self._validate_iso_date(raw_dob)
+            self._apply_patient_identity_field(
+                context,
+                field_name="date_of_birth",
+                raw_value=raw_dob,
+                validated_value=parsed_dob.isoformat() if parsed_dob is not None else None,
+                invalid_reason="invalid_date_of_birth",
+                values_equal=lambda existing, value: existing == value,
+                applied_fields=applied_fields,
+                rejected_fields=rejected_fields,
+            )
+
+        if patient_identity.phone and patient_identity.phone.strip():
+            raw_phone = patient_identity.phone.strip()
+            self._apply_patient_identity_field(
+                context,
+                field_name="phone",
+                raw_value=raw_phone,
+                validated_value=self._validate_phone(raw_phone),
+                invalid_reason="invalid_phone",
+                values_equal=self._phones_equal,
+                applied_fields=applied_fields,
+                rejected_fields=rejected_fields,
+            )
+
+        if patient_identity.email and patient_identity.email.strip():
+            raw_email = patient_identity.email.strip()
+            self._apply_patient_identity_field(
+                context,
+                field_name="email",
+                raw_value=raw_email,
+                validated_value=self._validate_email(raw_email),
+                invalid_reason="invalid_email",
+                values_equal=self._emails_equal,
+                applied_fields=applied_fields,
+                rejected_fields=rejected_fields,
+            )
+
+    def _apply_patient_identity_field(
+        self,
+        context: dict[str, Any],
+        *,
+        field_name: str,
+        raw_value: str,
+        validated_value: str | None,
+        invalid_reason: str,
+        values_equal: Callable[[str, str], bool],
+        applied_fields: list[SlotFillingAppliedField],
+        rejected_fields: list[SlotFillingRejectedField],
+    ) -> None:
+        applied_field_name = f"patient_identity.{field_name}"
+
+        if validated_value is None:
+            rejected_fields.append(
+                SlotFillingRejectedField(
+                    field=applied_field_name,
+                    value=raw_value,
+                    reason=invalid_reason,
+                ),
+            )
+            return
+
+        identity = context.get("patient_identity")
+        if not isinstance(identity, dict):
+            identity = {}
+            context["patient_identity"] = identity
+
+        existing = identity.get(field_name)
+        if existing is None or existing == "":
+            identity[field_name] = validated_value
+            applied_fields.append(
+                SlotFillingAppliedField(field=applied_field_name, value=raw_value),
+            )
+            return
+
+        if values_equal(str(existing), validated_value):
+            return
+
+        rejected_fields.append(
+            SlotFillingRejectedField(
+                field=applied_field_name,
+                value=raw_value,
+                reason="conflicts_with_existing_context",
+            ),
+        )
+
+    def _validate_full_name(self, value: str) -> str | None:
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        if len(stripped.split()) < 2:
+            return None
+
+        return stripped
+
+    def _validate_phone(self, value: str) -> str | None:
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        digits = normalize_phone_digits(stripped)
+        if not 7 <= len(digits) <= 15:
+            return None
+
+        return stripped
+
+    def _validate_email(self, value: str) -> str | None:
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        if not _EMAIL_PATTERN.fullmatch(stripped):
+            return None
+
+        return stripped
+
+    def _full_names_equal(self, existing: str, value: str) -> bool:
+        return self._normalize_text(existing) == self._normalize_text(value)
+
+    def _phones_equal(self, existing: str, value: str) -> bool:
+        return normalize_phone_digits(existing) == normalize_phone_digits(value)
+
+    def _emails_equal(self, existing: str, value: str) -> bool:
+        return existing.lower() == value.lower()
 
     def _apply_if_empty_or_same(
         self,
