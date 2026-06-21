@@ -24,6 +24,7 @@ The current implementation includes:
 - runtime `prompt_version` in LLM metadata
 - evaluation dataset `prompt_version`
 - evaluation metrics grouped by prompt version
+- provider-run evaluation reports include `prompt_version` per case and in summary metrics
 
 ## Storage and Registry Boundary
 
@@ -47,6 +48,8 @@ Each evaluation case includes a prompt version.
 
 This allows recorded outputs and metrics to be tied to the prompt that produced them.
 
+Provider-run evaluation reports include `prompt_version` from the live analysis result for each case, plus prompt-version grouped metrics in the JSON report when `--output` is used.
+
 ## Safety Boundary
 
 Prompt versioning does not allow the LLM to:
@@ -64,10 +67,9 @@ Prompt versioning does not allow the LLM to:
 Future implementation phases may add:
 
 - prompt changelog
-- provider-run evaluation mode
 - prompt regression reports
 - prompt A/B testing
 - prompt rollback strategy
 - prompt version telemetry dashboards
 
-See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).
+See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md).

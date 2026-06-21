@@ -25,6 +25,7 @@ The implementation supports:
 - provider timeout/retry configuration
 - validation and fallback through the existing reliability layer
 - offline evaluation dataset with recorded-output comparison for structured analysis quality
+- optional manual provider-run evaluation mode for local quality checks
 - prompt version registry with runtime `prompt_version` metadata on LLM analysis results
 
 ## Safety Boundary
@@ -75,7 +76,15 @@ Provider calls are mocked/stubbed.
 
 FakeLLMProvider remains the default for tests and local demos.
 
-Offline evaluation of structured analysis quality runs against a synthetic JSONL dataset and recorded outputs. It does not call real providers. See [LLM Evaluation Dataset](llm-evaluation-dataset.md) and [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+Offline evaluation of structured analysis quality runs against a synthetic JSONL dataset and recorded outputs. It does not call real providers in recorded mode.
+
+The configured provider adapter can be evaluated manually with provider-run mode:
+
+```powershell
+python -m scripts.evaluate_receptionist_analysis --mode provider --allow-provider-calls
+```
+
+See [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), and [Prompt Versioning and LLM Traceability](prompt-versioning.md).
 
 ## Failure Handling
 
@@ -93,4 +102,4 @@ Future implementation phases may add:
 - tenant-level cost tracking
 - streaming support for voice
 
-See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
