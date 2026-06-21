@@ -298,7 +298,7 @@ def test_can_i_speak_to_a_real_person_creates_human_escalation_with_handoff_meta
         FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, tracking_booking, hold_service, _email_job_repository = (
+    service, escalation_repository, tracking_booking, hold_service, email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -309,10 +309,16 @@ def test_can_i_speak_to_a_real_person_creates_human_escalation_with_handoff_meta
     assert result.intent == ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED
     assert _HUMAN_HANDOFF_PHRASE in result.reply.lower()
     assert len(escalation_repository.escalations) == 1
+    assert len(email_job_repository.email_jobs) == 1
     assert tracking_booking.book_calls == []
     assert hold_service.create_hold_calls == []
     assert result.appointment_id is None
+    assert result.booking_confirmed is False
     assert "hold_created" not in result.assistant_message.message_metadata
+
+    email_job = email_job_repository.email_jobs[0]
+    assert email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION
+    assert result.human_handoff_notification_email_job_id == email_job.id
 
     metadata = result.assistant_message.message_metadata["human_escalation"]
     assert metadata["created"] is True
@@ -320,6 +326,12 @@ def test_can_i_speak_to_a_real_person_creates_human_escalation_with_handoff_meta
     assert metadata["priority"] == "high"
     assert metadata["status"] == "open"
     assert metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
+
+    notification_metadata = result.assistant_message.message_metadata[
+        "human_handoff_notification"
+    ]
+    assert notification_metadata["created"] is True
+    assert notification_metadata["email_job_id"] == str(email_job.id)
 
 
 def test_human_request_returns_handoff_without_booking_or_hold(
@@ -514,7 +526,7 @@ def test_repeated_human_request_reuses_active_human_escalation(
         FakeEmailJobRepository,
     ],
 ) -> None:
-    service, escalation_repository, _tracking_booking, _hold_service, _email_job_repository = (
+    service, escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -529,9 +541,16 @@ def test_repeated_human_request_reuses_active_human_escalation(
     )
 
     assert len(escalation_repository.escalations) == 1
+    assert len(email_job_repository.email_jobs) == 1
     second_metadata = second.assistant_message.message_metadata["human_escalation"]
     assert second_metadata["created"] is False
     assert second_metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
+
+    second_notification = second.assistant_message.message_metadata[
+        "human_handoff_notification"
+    ]
+    assert second_notification["created"] is False
+    assert second_notification["email_job_id"] == str(email_job_repository.email_jobs[0].id)
 
 
 def test_human_request_with_active_hold_records_handoff_context_without_releasing_hold(
@@ -764,7 +783,7 @@ def test_emergency_enqueues_urgent_notification_job(
         FakeEmailJobRepository,
     ],
 ) -> None:
-    service, _escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
+    service, escalation_repository, _tracking_booking, _hold_service, email_job_repository = (
         health_enabled_human_escalation_service
     )
 
@@ -772,11 +791,17 @@ def test_emergency_enqueues_urgent_notification_job(
         ChatMessageInput(message="This is an emergency, I have chest pain"),
     )
 
+    assert result.intent == ChatReceptionistIntent.EMERGENCY
+    assert len(escalation_repository.escalations) == 1
+    escalation = escalation_repository.escalations[0]
+    assert escalation.reason.value == "medical_emergency"
+    assert escalation.priority.value == "urgent"
     assert len(email_job_repository.email_jobs) == 1
     email_job = email_job_repository.email_jobs[0]
     assert email_job.payload["priority"] == "urgent"
     assert email_job.payload["reason"] == "medical_emergency"
     assert result.human_handoff_notification_email_job_id == email_job.id
+    assert "emergency" in result.reply.lower()
 
 
 def test_suggested_escalation_only_does_not_enqueue_notification_job(
