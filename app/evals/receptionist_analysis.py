@@ -30,6 +30,11 @@ class EvaluationUrgency(StrEnum):
     EMERGENCY = "emergency"
 
 
+class EvaluationMode(StrEnum):
+    RECORDED = "recorded"
+    PROVIDER = "provider"
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationInput:
     message: str
@@ -196,6 +201,7 @@ class PromptVersionEvaluationMetrics:
 
 @dataclass(frozen=True, slots=True)
 class EvaluationSummary:
+    mode: EvaluationMode
     total_cases: int
     passed_cases: int
     failed_cases: int
@@ -212,9 +218,14 @@ class EvaluationSummary:
 
 def evaluate_receptionist_analysis_cases(
     cases: list[ReceptionistAnalysisEvalCase],
+    *,
+    mode: EvaluationMode = EvaluationMode.RECORDED,
 ) -> EvaluationSummary:
+    if mode == EvaluationMode.PROVIDER:
+        raise EvaluationError("provider mode is not implemented yet")
+
     case_results = [_evaluate_case(case) for case in cases]
-    return _build_summary(case_results)
+    return _build_summary(case_results, mode=mode)
 
 
 def _evaluate_case(case: ReceptionistAnalysisEvalCase) -> EvaluationCaseResult:
@@ -333,7 +344,11 @@ def _normalize_scalar(value: Any) -> Any:
     return value
 
 
-def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummary:
+def _build_summary(
+    case_results: list[EvaluationCaseResult],
+    *,
+    mode: EvaluationMode,
+) -> EvaluationSummary:
     total_cases = len(case_results)
     passed_cases = sum(1 for result in case_results if result.passed)
     failed_cases = total_cases - passed_cases
@@ -350,6 +365,7 @@ def _build_summary(case_results: list[EvaluationCaseResult]) -> EvaluationSummar
     }
 
     return EvaluationSummary(
+        mode=mode,
         total_cases=total_cases,
         passed_cases=passed_cases,
         failed_cases=failed_cases,

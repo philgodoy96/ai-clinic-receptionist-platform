@@ -7,6 +7,7 @@ from pathlib import Path
 from app.evals.receptionist_analysis import (
     EvaluationCaseResult,
     EvaluationError,
+    EvaluationMode,
     EvaluationSummary,
     evaluate_receptionist_analysis_cases,
     load_receptionist_analysis_eval_cases,
@@ -19,13 +20,19 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     dataset_path = Path(args.dataset)
 
+    mode = EvaluationMode(args.mode)
+
+    if mode == EvaluationMode.PROVIDER:
+        print("Error: provider mode is not implemented yet", file=sys.stderr)
+        return 1
+
     try:
         cases = load_receptionist_analysis_eval_cases(dataset_path)
     except EvaluationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    summary = evaluate_receptionist_analysis_cases(cases)
+    summary = evaluate_receptionist_analysis_cases(cases, mode=mode)
     _print_summary(summary, dataset_path)
     _print_failed_cases(summary)
 
@@ -50,12 +57,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Exit with status code 1 when one or more cases fail.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=[mode.value for mode in EvaluationMode],
+        default=EvaluationMode.RECORDED.value,
+        help=(
+            "Evaluation run mode: recorded compares dataset recorded_output; "
+            "provider will call the live LLM provider (not implemented yet)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def _print_summary(summary: EvaluationSummary, dataset_path: Path) -> None:
     print("Receptionist Analysis Evaluation")
     print("================================")
+    print(f"Mode: {summary.mode.value}")
     print(f"Dataset: {dataset_path}")
     print(f"Total cases: {summary.total_cases}")
     print(f"Passed: {summary.passed_cases}")
