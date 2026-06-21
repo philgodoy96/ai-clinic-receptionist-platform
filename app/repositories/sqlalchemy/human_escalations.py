@@ -1,0 +1,103 @@
+from collections.abc import Sequence
+from uuid import UUID
+
+from sqlalchemy import and_, desc, or_, select
+from sqlalchemy.orm import Session
+
+from app.domain.human_escalations import (
+    HumanEscalationPriority,
+    HumanEscalationReason,
+    HumanEscalationStatus,
+)
+from app.models.human_escalation import HumanEscalation
+from app.services.human_escalation_pagination import HumanEscalationCursor
+
+_ACTIVE_STATUSES = (
+    HumanEscalationStatus.OPEN,
+    HumanEscalationStatus.ACKNOWLEDGED,
+)
+
+
+class SQLAlchemyHumanEscalationRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def add(self, escalation: HumanEscalation) -> HumanEscalation:
+        self.session.add(escalation)
+        self.session.flush()
+
+        return escalation
+
+    def get_by_id(self, escalation_id: UUID) -> HumanEscalation | None:
+        return self.session.get(HumanEscalation, escalation_id)
+
+    def get_active_by_conversation_id(
+        self,
+        conversation_id: UUID,
+    ) -> HumanEscalation | None:
+        statement = select(HumanEscalation).where(
+            HumanEscalation.conversation_id == conversation_id,
+            HumanEscalation.status.in_(_ACTIVE_STATUSES),
+        )
+
+        return self.session.scalars(statement).first()
+
+    def list(
+        self,
+        *,
+        limit: int,
+        cursor: HumanEscalationCursor | None = None,
+        status: HumanEscalationStatus | None = None,
+        reason: HumanEscalationReason | None = None,
+        priority: HumanEscalationPriority | None = None,
+        conversation_id: UUID | None = None,
+        patient_id: UUID | None = None,
+        appointment_id: UUID | None = None,
+    ) -> Sequence[HumanEscalation]:
+        statement = select(HumanEscalation)
+
+        if cursor is not None:
+            statement = statement.where(
+                or_(
+                    HumanEscalation.created_at < cursor.created_at,
+                    and_(
+                        HumanEscalation.created_at == cursor.created_at,
+                        HumanEscalation.id < cursor.id,
+                    ),
+                ),
+            )
+
+        if status is not None:
+            statement = statement.where(HumanEscalation.status == status)
+
+        if reason is not None:
+            statement = statement.where(HumanEscalation.reason == reason)
+
+        if priority is not None:
+            statement = statement.where(HumanEscalation.priority == priority)
+
+        if conversation_id is not None:
+            statement = statement.where(
+                HumanEscalation.conversation_id == conversation_id,
+            )
+
+        if patient_id is not None:
+            statement = statement.where(HumanEscalation.patient_id == patient_id)
+
+        if appointment_id is not None:
+            statement = statement.where(
+                HumanEscalation.appointment_id == appointment_id,
+            )
+
+        statement = statement.order_by(
+            desc(HumanEscalation.created_at),
+            desc(HumanEscalation.id),
+        ).limit(limit)
+
+        return list(self.session.scalars(statement).all())
+
+    def update(self, escalation: HumanEscalation) -> HumanEscalation:
+        self.session.add(escalation)
+        self.session.flush()
+
+        return escalation
