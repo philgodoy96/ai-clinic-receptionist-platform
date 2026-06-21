@@ -17,6 +17,7 @@ from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_chat_receptionist_service import (
     TrackingAppointmentBookingService,
     _create_hold_service,
@@ -43,6 +44,7 @@ def create_structured_slot_filling_chat_service(
     slot_filling = LLMChatSlotFillingService(
         scheduling=scheduling_service,
         date_parser=NaturalLanguageDateParser(),
+        time_preference_parser=TimePreferenceParser(),
     )
     llm_analysis = LLMReceptionistAnalysisService(provider=llm_provider)
 

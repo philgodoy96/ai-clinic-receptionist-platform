@@ -30,6 +30,7 @@ from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     TrackingAppointmentBookingService,
@@ -155,6 +156,7 @@ def health_llm_chat_service() -> ChatReceptionistService:
     slot_filling = LLMChatSlotFillingService(
         scheduling=scheduling,
         date_parser=NaturalLanguageDateParser(),
+        time_preference_parser=TimePreferenceParser(),
     )
     return create_chat_receptionist_service(
         conversations=conversations,

@@ -15,6 +15,7 @@ from app.services.conversations import ConversationService
 from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_chat_booking_confirmation_flow import (
     FULL_IDENTITY_WITH_CONFIRM,
     create_jane_doe_patient,
@@ -62,6 +63,7 @@ def shadow_chat_service() -> tuple[ChatReceptionistService, FakeConversationRepo
     slot_filling = LLMChatSlotFillingService(
         scheduling=scheduling,
         date_parser=NaturalLanguageDateParser(),
+        time_preference_parser=TimePreferenceParser(),
     )
     service = create_chat_receptionist_service(
         conversations=conversations,
