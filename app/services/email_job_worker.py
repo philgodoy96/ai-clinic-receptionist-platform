@@ -6,8 +6,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.domain.jobs.enums import EmailJobStatus
-from app.providers.email import EmailDeliveryProvider, EmailMessage
+from app.providers.email import EmailDeliveryProvider
 from app.repositories.email_jobs import EmailJobWorkerRepository
+from app.services.email_job_delivery_content import (
+    UnsupportedEmailJobTypeError,
+    build_email_delivery_message,
+)
 
 logger = logging.getLogger("app.email_jobs")
 
@@ -72,13 +76,34 @@ class EmailJobWorkerService:
             )
 
         try:
-            self.delivery_provider.send(
-                EmailMessage(
-                    to=email_job.recipient_email,
-                    subject=email_job.subject,
-                    body=email_job.body,
-                ),
+            message = build_email_delivery_message(email_job)
+        except UnsupportedEmailJobTypeError as exc:
+            error = str(exc)
+            failed_job = self.repository.mark_failed(
+                email_job=email_job,
+                error=error,
+                now=current_time,
+                retry_delay=self.retry_delay,
             )
+            logger.info(
+                "email_job_failed",
+                extra={
+                    "event": "email_job_failed",
+                    "email_job_id": str(failed_job.id),
+                    "email_job_status": failed_job.status.value,
+                    "error": error,
+                },
+            )
+
+            return EmailJobWorkerResult(
+                processed=True,
+                job_id=failed_job.id,
+                status=failed_job.status,
+                error=error,
+            )
+
+        try:
+            self.delivery_provider.send(message)
         except Exception as exc:
             error = str(exc)
             failed_job = self.repository.mark_failed(

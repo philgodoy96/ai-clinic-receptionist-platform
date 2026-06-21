@@ -15,6 +15,7 @@ from app.api.dependencies import (
 )
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationChannel
+from app.domain.jobs.enums import EmailJobType
 from app.main import create_app
 from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisherError,
@@ -22,11 +23,14 @@ from app.messaging.email_job_dispatch import (
 )
 from app.models.email_jobs import EmailJob
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
 )
+from app.services.human_escalations import HumanEscalationService
+from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from tests.test_chat_booking_confirmation_flow import (
     FULL_IDENTITY_WITH_CONFIRM,
     create_jane_doe_patient,
@@ -36,6 +40,8 @@ from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
+from tests.test_email_jobs import FakeEmailJobRepository
+from tests.test_human_escalations import FakeHumanEscalationRepository
 from tests.test_scheduling_services import (
     create_demo_scheduling_service_with_emily_july_availability,
 )
@@ -198,6 +204,107 @@ def booking_chat_api_client_failing_dispatch() -> Generator[BookingChatApiContex
             email_jobs=email_jobs,
             dispatch_publisher=InMemoryEmailJobDispatchPublisher(),
             hold_service=hold_service,
+        )
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def human_escalation_chat_api_client() -> Generator[HumanEscalationChatApiContext, None, None]:
+    app = create_app()
+    repository = FakeConversationRepository()
+    conversation_service = ConversationService(repository=repository)
+    escalation_repository = FakeHumanEscalationRepository()
+    human_escalations = HumanEscalationService(repository=escalation_repository)
+    email_job_repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=email_job_repository)
+    human_handoff_notifications = HumanHandoffNotificationService(email_jobs=email_jobs)
+    chat_service = create_chat_receptionist_service(
+        conversations=conversation_service,
+        scheduling=create_demo_scheduling_service_with_emily_july_availability(),
+        hold_service=FakeAppointmentHoldService(),
+        conversation_health=ConversationHealthService(),
+        human_escalations=human_escalations,
+        human_handoff_notifications=human_handoff_notifications,
+    )
+    dispatch_publisher = InMemoryEmailJobDispatchPublisher()
+    db = FakeDatabaseSession()
+
+    def override_chat_service() -> ChatReceptionistService:
+        return chat_service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    def override_email_job_dispatch_publisher() -> InMemoryEmailJobDispatchPublisher:
+        return dispatch_publisher
+
+    app.dependency_overrides[get_chat_receptionist_service] = override_chat_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        override_email_job_dispatch_publisher
+    )
+
+    with TestClient(app) as test_client:
+        yield HumanEscalationChatApiContext(
+            client=test_client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+            email_job_repository=email_job_repository,
+            dispatch_publisher=dispatch_publisher,
+        )
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def human_escalation_chat_api_client_failing_dispatch() -> Generator[
+    HumanEscalationChatApiContext,
+    None,
+    None,
+]:
+    app = create_app()
+    repository = FakeConversationRepository()
+    conversation_service = ConversationService(repository=repository)
+    escalation_repository = FakeHumanEscalationRepository()
+    human_escalations = HumanEscalationService(repository=escalation_repository)
+    email_job_repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=email_job_repository)
+    human_handoff_notifications = HumanHandoffNotificationService(email_jobs=email_jobs)
+    chat_service = create_chat_receptionist_service(
+        conversations=conversation_service,
+        scheduling=create_demo_scheduling_service_with_emily_july_availability(),
+        hold_service=FakeAppointmentHoldService(),
+        conversation_health=ConversationHealthService(),
+        human_escalations=human_escalations,
+        human_handoff_notifications=human_handoff_notifications,
+    )
+    db = FakeDatabaseSession()
+
+    def override_chat_service() -> ChatReceptionistService:
+        return chat_service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    def override_email_job_dispatch_publisher() -> FailingEmailJobDispatchPublisher:
+        return FailingEmailJobDispatchPublisher()
+
+    app.dependency_overrides[get_chat_receptionist_service] = override_chat_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        override_email_job_dispatch_publisher
+    )
+
+    with TestClient(app) as test_client:
+        yield HumanEscalationChatApiContext(
+            client=test_client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+            email_job_repository=email_job_repository,
+            dispatch_publisher=InMemoryEmailJobDispatchPublisher(),
         )
 
     app.dependency_overrides.clear()
@@ -443,6 +550,46 @@ def test_post_chat_message_booking_success_returns_booking_confirmed(
     assert body["appointment_id"]
 
 
+def test_post_chat_message_human_escalation_publishes_handoff_notification_dispatch(
+    human_escalation_chat_api_client: HumanEscalationChatApiContext,
+) -> None:
+    response = human_escalation_chat_api_client.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Please connect me to a human receptionist"},
+    )
+
+    assert response.status_code == 200
+    assert human_escalation_chat_api_client.db.committed is True
+    assert len(human_escalation_chat_api_client.email_job_repository.email_jobs) == 1
+
+    email_job = human_escalation_chat_api_client.email_job_repository.email_jobs[0]
+    assert email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION
+    assert len(human_escalation_chat_api_client.dispatch_publisher.published_messages) == 1
+    assert (
+        human_escalation_chat_api_client.dispatch_publisher.published_messages[0].email_job_id
+        == email_job.id
+    )
+
+    body = response.json()
+    assert "email_job_id" not in body
+    assert body["intent"] == "human_escalation_requested"
+
+
+def test_post_chat_message_handoff_dispatch_failure_does_not_fail_response(
+    human_escalation_chat_api_client_failing_dispatch: HumanEscalationChatApiContext,
+) -> None:
+    response = human_escalation_chat_api_client_failing_dispatch.client.post(
+        "/api/v1/chat/messages",
+        json={"message": "Please connect me to a human receptionist"},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["intent"] == "human_escalation_requested"
+    assert "email_job_id" not in body
+
+
 def test_post_chat_message_dispatch_failure_does_not_fail_booking(
     booking_chat_api_client_failing_dispatch: BookingChatApiContext,
 ) -> None:
@@ -514,6 +661,27 @@ class BookingChatApiContext(ChatApiContext):
         self.email_jobs = email_jobs
         self.dispatch_publisher = dispatch_publisher
         self.hold_service = hold_service
+
+
+class HumanEscalationChatApiContext(ChatApiContext):
+    def __init__(
+        self,
+        *,
+        client: TestClient,
+        db: FakeDatabaseSession,
+        repository: FakeConversationRepository,
+        chat_service: ChatReceptionistService,
+        email_job_repository: FakeEmailJobRepository,
+        dispatch_publisher: InMemoryEmailJobDispatchPublisher,
+    ) -> None:
+        super().__init__(
+            client=client,
+            db=db,
+            repository=repository,
+            chat_service=chat_service,
+        )
+        self.email_job_repository = email_job_repository
+        self.dispatch_publisher = dispatch_publisher
 
 
 class FakeDatabaseSession:
