@@ -28,6 +28,7 @@ from app.services.chat_receptionist import (
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
+from app.services.slot_filling import LLMChatSlotFillingService
 from tests.test_appointment_holds import FakeAppointmentHoldRepository
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
@@ -131,6 +132,7 @@ def create_chat_receptionist_service(
     appointment_booking: AppointmentBookingService | None = None,
     responder: DeterministicChatResponder | None = None,
     llm_analysis: LLMReceptionistAnalysisService | None = None,
+    slot_filling: LLMChatSlotFillingService | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -144,6 +146,7 @@ def create_chat_receptionist_service(
         appointment_booking=booking,
         responder=responder,
         llm_analysis=llm_analysis,
+        slot_filling=slot_filling,
     )
 
 
