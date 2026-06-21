@@ -58,6 +58,35 @@ def escalation_client() -> Generator[tuple[TestClient, UUID], None, None]:
     app.dependency_overrides.clear()
 
 
+@pytest.fixture()
+def filtered_escalation_client() -> Generator[TestClient, None, None]:
+    app = create_app()
+    repository = FakeHumanEscalationRepository()
+    service = HumanEscalationService(repository=repository)
+    service.create_or_get_active_escalation(
+        conversation_id=uuid4(),
+        reason=HumanEscalationReason.USER_REQUESTED_HUMAN,
+    )
+    service.create_or_get_active_escalation(
+        conversation_id=uuid4(),
+        reason=HumanEscalationReason.MEDICAL_EMERGENCY,
+    )
+    service.create_or_get_active_escalation(
+        conversation_id=uuid4(),
+        reason=HumanEscalationReason.REPEATED_FALLBACK,
+    )
+
+    def override_human_escalation_service() -> HumanEscalationService:
+        return service
+
+    app.dependency_overrides[get_human_escalation_service] = override_human_escalation_service
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
 def test_list_human_escalations_returns_empty_items(
     empty_escalation_client: TestClient,
 ) -> None:
@@ -88,6 +117,57 @@ def test_list_human_escalations_returns_created_escalation(
     assert body["items"][0]["reason"] == "user_requested_human"
     assert body["items"][0]["priority"] == "high"
     assert body["next_cursor"] is None
+
+
+def test_list_human_escalations_filters_by_status_reason_and_priority(
+    filtered_escalation_client: TestClient,
+) -> None:
+    response = filtered_escalation_client.get(
+        "/api/v1/human-escalations",
+        params={
+            "status": "open",
+            "reason": "user_requested_human",
+            "priority": "high",
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert len(body["items"]) == 1
+    assert body["items"][0]["status"] == "open"
+    assert body["items"][0]["reason"] == "user_requested_human"
+    assert body["items"][0]["priority"] == "high"
+
+
+def test_list_human_escalations_supports_cursor_pagination(
+    filtered_escalation_client: TestClient,
+) -> None:
+    first_page = filtered_escalation_client.get(
+        "/api/v1/human-escalations",
+        params={"limit": 2},
+    )
+
+    assert first_page.status_code == 200
+
+    first_body = first_page.json()
+
+    assert len(first_body["items"]) == 2
+    assert first_body["next_cursor"] is not None
+
+    second_page = filtered_escalation_client.get(
+        "/api/v1/human-escalations",
+        params={"limit": 2, "cursor": first_body["next_cursor"]},
+    )
+
+    assert second_page.status_code == 200
+
+    second_body = second_page.json()
+
+    assert len(second_body["items"]) == 1
+    assert second_body["next_cursor"] is None
+    assert second_body["items"][0]["id"] != first_body["items"][0]["id"]
 
 
 def test_get_human_escalation_returns_escalation_by_id(
@@ -193,6 +273,41 @@ def test_acknowledge_resolved_human_escalation_returns_standardized_conflict(
 
     assert body["error"]["code"] == "invalid_human_escalation_transition"
     assert body["error"]["message"] == "Only open escalations can be acknowledged."
+
+
+def test_post_acknowledge_unknown_human_escalation_returns_standardized_not_found(
+    empty_escalation_client: TestClient,
+) -> None:
+    response = empty_escalation_client.post(
+        f"/api/v1/human-escalations/{uuid4()}/acknowledge",
+        json={"acknowledged_by": "demo_staff"},
+    )
+
+    assert response.status_code == 404
+
+    body = response.json()
+
+    assert body["error"]["code"] == "human_escalation_not_found"
+    assert body["error"]["message"] == "Human escalation was not found."
+
+
+def test_post_resolve_unknown_human_escalation_returns_standardized_not_found(
+    empty_escalation_client: TestClient,
+) -> None:
+    response = empty_escalation_client.post(
+        f"/api/v1/human-escalations/{uuid4()}/resolve",
+        json={
+            "resolved_by": "demo_staff",
+            "resolution_notes": "Resolved.",
+        },
+    )
+
+    assert response.status_code == 404
+
+    body = response.json()
+
+    assert body["error"]["code"] == "human_escalation_not_found"
+    assert body["error"]["message"] == "Human escalation was not found."
 
 
 class FakeDatabaseSession:

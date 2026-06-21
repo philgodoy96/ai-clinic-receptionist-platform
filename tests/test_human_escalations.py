@@ -57,6 +57,25 @@ def test_create_or_get_active_escalation_creates_open_escalation() -> None:
     assert len(repository.escalations) == 1
 
 
+def test_create_or_get_active_escalation_is_idempotent_for_same_conversation() -> None:
+    repository = FakeHumanEscalationRepository()
+    service = HumanEscalationService(repository=repository)
+    conversation_id = uuid4()
+
+    first = service.create_or_get_active_escalation(
+        conversation_id=conversation_id,
+        reason=HumanEscalationReason.USER_REQUESTED_HUMAN,
+    )
+    second = service.create_or_get_active_escalation(
+        conversation_id=conversation_id,
+        reason=HumanEscalationReason.USER_REQUESTED_HUMAN,
+    )
+
+    assert second.id == first.id
+    assert second.status == HumanEscalationStatus.OPEN
+    assert len(repository.escalations) == 1
+
+
 def test_create_or_get_active_escalation_returns_existing_without_overwriting_context() -> None:
     repository = FakeHumanEscalationRepository()
     service = HumanEscalationService(repository=repository)
@@ -76,6 +95,28 @@ def test_create_or_get_active_escalation_returns_existing_without_overwriting_co
     assert second.id == first.id
     assert second.handoff_context == {"active_hold_present": True}
     assert len(repository.escalations) == 1
+
+
+def test_medical_emergency_priority_is_urgent() -> None:
+    service = HumanEscalationService(repository=FakeHumanEscalationRepository())
+
+    escalation = service.create_or_get_active_escalation(
+        conversation_id=uuid4(),
+        reason=HumanEscalationReason.MEDICAL_EMERGENCY,
+    )
+
+    assert escalation.priority == HumanEscalationPriority.URGENT
+
+
+def test_user_requested_human_priority_is_high() -> None:
+    service = HumanEscalationService(repository=FakeHumanEscalationRepository())
+
+    escalation = service.create_or_get_active_escalation(
+        conversation_id=uuid4(),
+        reason=HumanEscalationReason.USER_REQUESTED_HUMAN,
+    )
+
+    assert escalation.priority == HumanEscalationPriority.HIGH
 
 
 def test_create_or_get_active_escalation_assigns_priority_by_reason() -> None:
@@ -213,6 +254,30 @@ def test_acknowledge_resolved_escalation_raises_conflict() -> None:
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "invalid_human_escalation_transition"
+
+
+def test_resolve_acknowledged_escalation_sets_resolution_fields() -> None:
+    repository = FakeHumanEscalationRepository()
+    service = HumanEscalationService(repository=repository)
+    escalation = service.create_or_get_active_escalation(
+        conversation_id=uuid4(),
+        reason=HumanEscalationReason.USER_REQUESTED_HUMAN,
+    )
+    service.acknowledge_escalation(
+        escalation.id,
+        acknowledged_by="staff-1",
+    )
+
+    resolved = service.resolve_escalation(
+        escalation.id,
+        resolved_by="staff-2",
+        resolution_notes="Called patient and resolved scheduling issue.",
+    )
+
+    assert resolved.status == HumanEscalationStatus.RESOLVED
+    assert resolved.resolved_by == "staff-2"
+    assert resolved.resolution_notes == "Called patient and resolved scheduling issue."
+    assert resolved.resolved_at is not None
 
 
 def test_resolve_escalation_transitions_active_to_resolved() -> None:
