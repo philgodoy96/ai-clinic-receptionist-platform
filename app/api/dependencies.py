@@ -40,6 +40,7 @@ from app.services.human_handoff_notifications import HumanHandoffNotificationSer
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.time_preferences import TimePreferenceParser
 
 
 def get_scheduling_service(
@@ -128,16 +129,25 @@ def get_natural_language_date_parser() -> NaturalLanguageDateParser:
     return NaturalLanguageDateParser()
 
 
+def get_time_preference_parser() -> TimePreferenceParser:
+    return TimePreferenceParser()
+
+
 def get_llm_chat_slot_filling_service(
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
     date_parser: Annotated[
         NaturalLanguageDateParser,
         Depends(get_natural_language_date_parser),
     ],
+    time_preference_parser: Annotated[
+        TimePreferenceParser,
+        Depends(get_time_preference_parser),
+    ],
 ) -> LLMChatSlotFillingService:
     return LLMChatSlotFillingService(
         scheduling=scheduling_service,
         date_parser=date_parser,
+        time_preference_parser=time_preference_parser,
     )
 
 
@@ -182,6 +192,10 @@ def get_chat_receptionist_service(
         NaturalLanguageDateParser,
         Depends(get_natural_language_date_parser),
     ],
+    time_preference_parser: Annotated[
+        TimePreferenceParser,
+        Depends(get_time_preference_parser),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -194,6 +208,7 @@ def get_chat_receptionist_service(
         human_escalations=human_escalations,
         human_handoff_notifications=human_handoff_notifications,
         date_parser=date_parser,
+        time_preference_parser=time_preference_parser,
     )
 
 

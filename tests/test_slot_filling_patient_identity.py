@@ -9,6 +9,7 @@ from app.ai.receptionist_output import (
 )
 from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.slot_filling import LLMChatSlotFillingService
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_scheduling_services import create_service
 
 
@@ -16,6 +17,7 @@ def create_slot_filling_service() -> LLMChatSlotFillingService:
     return LLMChatSlotFillingService(
         scheduling=create_service(),
         date_parser=NaturalLanguageDateParser(),
+        time_preference_parser=TimePreferenceParser(),
     )
 
 

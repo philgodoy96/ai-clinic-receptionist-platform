@@ -430,12 +430,10 @@ def create_demo_scheduling_service() -> SchedulingService:
 
 EMILY_JULY_SLOT_1_ID = UUID("11111111-1111-4111-8111-111111111101")
 EMILY_JULY_SLOT_2_ID = UUID("11111111-1111-4111-8111-111111111102")
+EMILY_JULY_SLOT_3_ID = UUID("11111111-1111-4111-8111-111111111103")
 
 
-def create_demo_scheduling_service_with_emily_july_availability(
-    *,
-    patients: Sequence[Patient] = (),
-) -> SchedulingService:
+def _create_emily_july_demo_doctors() -> tuple[list[Specialty], list[Doctor], Doctor]:
     dermatology = create_specialty(name="Dermatology")
     cardiology = create_specialty(name="Cardiology")
     primary_care = create_specialty(name="Primary Care")
@@ -466,6 +464,14 @@ def create_demo_scheduling_service_with_emily_july_availability(
             is_active=True,
         ),
     ]
+    return [dermatology, cardiology, primary_care], doctors, emily_carter
+
+
+def create_demo_scheduling_service_with_emily_july_availability(
+    *,
+    patients: Sequence[Patient] = (),
+) -> SchedulingService:
+    specialties, doctors, emily_carter = _create_emily_july_demo_doctors()
     availability_slots = [
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_1_ID,
@@ -482,7 +488,63 @@ def create_demo_scheduling_service_with_emily_july_availability(
     ]
 
     return create_service(
-        specialties=[dermatology, cardiology, primary_care],
+        specialties=specialties,
+        doctors=doctors,
+        patients=patients,
+        availability_slots=availability_slots,
+    )
+
+
+def create_demo_scheduling_service_with_emily_mixed_july_availability(
+    *,
+    patients: Sequence[Patient] = (),
+) -> SchedulingService:
+    specialties, doctors, emily_carter = _create_emily_july_demo_doctors()
+    availability_slots = [
+        create_availability_slot(
+            slot_id=EMILY_JULY_SLOT_1_ID,
+            doctor_id=emily_carter.id,
+            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            slot_id=EMILY_JULY_SLOT_2_ID,
+            doctor_id=emily_carter.id,
+            start_time=datetime(2026, 7, 2, 10, 30, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            slot_id=EMILY_JULY_SLOT_3_ID,
+            doctor_id=emily_carter.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+
+    return create_service(
+        specialties=specialties,
+        doctors=doctors,
+        patients=patients,
+        availability_slots=availability_slots,
+    )
+
+
+def create_demo_scheduling_service_with_emily_afternoon_july_availability(
+    *,
+    patients: Sequence[Patient] = (),
+) -> SchedulingService:
+    specialties, doctors, emily_carter = _create_emily_july_demo_doctors()
+    availability_slots = [
+        create_availability_slot(
+            slot_id=EMILY_JULY_SLOT_3_ID,
+            doctor_id=emily_carter.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+
+    return create_service(
+        specialties=specialties,
         doctors=doctors,
         patients=patients,
         availability_slots=availability_slots,

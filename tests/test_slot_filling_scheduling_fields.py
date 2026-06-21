@@ -10,6 +10,7 @@ from app.ai.receptionist_output import (
 )
 from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
 from app.services.slot_filling import LLMChatSlotFillingService, SlotFillingAppliedField
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_scheduling_services import create_demo_scheduling_service
 
 REFERENCE_DATE = date(2026, 7, 1)
@@ -26,6 +27,7 @@ def create_slot_filling_service(
     return LLMChatSlotFillingService(
         scheduling=create_demo_scheduling_service(),
         date_parser=date_parser or create_fixed_date_parser(),
+        time_preference_parser=TimePreferenceParser(),
     )
 
 
@@ -132,6 +134,7 @@ def test_specialty_context_conflict_is_rejected() -> None:
     service = LLMChatSlotFillingService(
         scheduling=scheduling,
         date_parser=create_fixed_date_parser(),
+        time_preference_parser=TimePreferenceParser(),
     )
     cardiology = next(
         specialty for specialty in scheduling.list_specialties() if specialty.name == "Cardiology"
@@ -219,3 +222,132 @@ def test_iso_date_still_applies_requested_date() -> None:
         "source_text": "2026-07-02",
         "reason": None,
     }
+
+
+def test_time_preference_applies_requested_time_window() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="morning")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert result.updated_chat_context["requested_time_window"] == {
+        "label": "morning",
+        "start_time": "08:00",
+        "end_time": "12:00",
+    }
+    assert result.applied_fields == [
+        SlotFillingAppliedField(field="time_preference", value="morning"),
+    ]
+    assert result.rejected_fields == []
+    assert result.time_preference_parsing == {
+        "status": "parsed",
+        "label": "morning",
+        "start_time": "08:00",
+        "end_time": "12:00",
+        "source_text": "morning",
+        "reason": None,
+    }
+    assert result.to_metadata()["time_preference_parsing"] == result.time_preference_parsing
+
+
+def test_after_lunch_time_preference_is_rejected() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="after lunch")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert "requested_time_window" not in result.updated_chat_context
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "time_preference"
+    assert result.rejected_fields[0].reason == "unsupported_time_preference"
+    assert result.time_preference_parsing is not None
+    assert result.time_preference_parsing["status"] == "unsupported"
+
+
+def test_unsupported_time_preference_is_rejected() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="early morning")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert "requested_time_window" not in result.updated_chat_context
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "time_preference"
+    assert result.rejected_fields[0].reason == "unsupported_time_preference"
+    assert result.time_preference_parsing is not None
+    assert result.time_preference_parsing["status"] == "unsupported"
+
+
+def test_ambiguous_time_preference_is_rejected() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="morning or afternoon")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert "requested_time_window" not in result.updated_chat_context
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "time_preference"
+    assert result.rejected_fields[0].reason == "ambiguous_time_preference"
+    assert result.time_preference_parsing is not None
+    assert result.time_preference_parsing["status"] == "ambiguous"
+
+
+def test_unrecognized_time_keeps_invalid_time_rejection() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="noon")
+
+    result = service.apply_analysis(analysis=analysis, chat_context={})
+
+    assert "requested_time_window" not in result.updated_chat_context
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "time"
+    assert result.rejected_fields[0].reason == "invalid_time"
+    assert result.time_preference_parsing is not None
+    assert result.time_preference_parsing["status"] == "not_found"
+
+
+def test_existing_requested_time_window_conflict_rejects_new_preference() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="morning")
+
+    result = service.apply_analysis(
+        analysis=analysis,
+        chat_context={
+            "requested_time_window": {
+                "label": "evening",
+                "start_time": "17:00",
+                "end_time": "20:00",
+            },
+        },
+    )
+
+    assert result.updated_chat_context["requested_time_window"] == {
+        "label": "evening",
+        "start_time": "17:00",
+        "end_time": "20:00",
+    }
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "time_preference"
+    assert result.rejected_fields[0].reason == "conflicts_with_existing_context"
+
+
+def test_existing_requested_time_blocks_time_preference_application() -> None:
+    service = create_slot_filling_service()
+    analysis = create_scheduling_analysis(time="morning")
+
+    result = service.apply_analysis(
+        analysis=analysis,
+        chat_context={"requested_time": "09:00"},
+    )
+
+    assert result.updated_chat_context["requested_time"] == "09:00"
+    assert "requested_time_window" not in result.updated_chat_context
+    assert result.applied_fields == []
+    assert len(result.rejected_fields) == 1
+    assert result.rejected_fields[0].field == "time_preference"
+    assert result.rejected_fields[0].reason == "conflicts_with_existing_context"
