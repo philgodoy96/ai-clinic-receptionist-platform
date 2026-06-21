@@ -69,6 +69,16 @@ Slot-filling results are stored only as internal assistant message metadata (`sl
 
 Slot filling does not create holds, create bookings, or bypass identity or confirmation requirements.
 
+## Human Handoff and Conversation Health
+
+The public chat API may softly suggest human handoff when the conversation appears stuck, such as after repeated fallback responses or similar low-progress signals.
+
+If the user explicitly asks to speak with a human, the assistant returns a handoff-style reply and the conversation may be marked `escalated` internally. This phase does not create a human escalation record, notify a real receptionist, or use an LLM to impersonate a human.
+
+Health and escalation signals are stored only as internal assistant message metadata (`conversation_health`). Clients calling `POST /api/v1/chat/messages` do not receive these fields in the response body.
+
+Emergency responses remain deterministic and take priority over other health-driven reply changes.
+
 ## Supported Intents
 
 The deterministic responder currently supports:
@@ -98,6 +108,8 @@ The deterministic responder currently supports:
 - booking_hold_missing
 - booking_hold_expired
 - booking_conflict
+- human_escalation_requested
+- escalation_suggested
 - fallback
 
 ## Scheduling-Aware Responses
@@ -274,7 +286,7 @@ This implementation does not yet include:
 - Appointment rescheduling from chat
 - Natural-language date parsing
 - Conversation state machine
-- Human escalation
+- Durable human escalation records and human queue notification
 - Retell webhook ingestion
 
 Those capabilities are planned for later implementation phases.
