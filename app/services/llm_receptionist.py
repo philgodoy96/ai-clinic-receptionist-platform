@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 from app.ai.llm_provider import LLMMessage, LLMProvider, LLMProviderError, LLMRequest
+from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.ai.receptionist_output import (
     ReceptionistLLMAnalysis,
     ReceptionistLLMIntent,
@@ -43,6 +44,7 @@ class ReceptionistAnalysisResult:
     attempt_count: int
     used_fallback: bool
     failure_reason: LLMFailureReason
+    prompt_version: str
     error: str | None = None
 
 
@@ -56,6 +58,7 @@ class LLMReceptionistAnalysisService:
     ) -> ReceptionistAnalysisResult:
         started_at = perf_counter()
         attempt_count = 1
+        prompt_version = get_current_receptionist_analysis_prompt_metadata().version
 
         llm_request = LLMRequest(
             messages=[
@@ -72,6 +75,7 @@ class LLMReceptionistAnalysisService:
             temperature=0.0,
             metadata={
                 "component": "chat_receptionist",
+                "prompt_version": prompt_version,
             },
         )
 
@@ -88,6 +92,7 @@ class LLMReceptionistAnalysisService:
                 started_at=started_at,
                 attempt_count=attempt_count,
                 failure_reason=LLMFailureReason.PROVIDER_ERROR,
+                prompt_version=prompt_version,
                 error=str(exc),
             )
         except StructuredOutputParseError as exc:
@@ -95,6 +100,7 @@ class LLMReceptionistAnalysisService:
                 started_at=started_at,
                 attempt_count=attempt_count,
                 failure_reason=LLMFailureReason.INVALID_JSON,
+                prompt_version=prompt_version,
                 error=str(exc),
             )
         except StructuredOutputValidationError as exc:
@@ -102,6 +108,7 @@ class LLMReceptionistAnalysisService:
                 started_at=started_at,
                 attempt_count=attempt_count,
                 failure_reason=LLMFailureReason.SCHEMA_VALIDATION_ERROR,
+                prompt_version=prompt_version,
                 error=str(exc),
             )
         except LLMOutputSafetyViolation as exc:
@@ -109,6 +116,7 @@ class LLMReceptionistAnalysisService:
                 started_at=started_at,
                 attempt_count=attempt_count,
                 failure_reason=LLMFailureReason.SAFETY_VIOLATION,
+                prompt_version=prompt_version,
                 error=str(exc),
             )
         except Exception as exc:
@@ -122,6 +130,7 @@ class LLMReceptionistAnalysisService:
                 started_at=started_at,
                 attempt_count=attempt_count,
                 failure_reason=LLMFailureReason.UNKNOWN_ERROR,
+                prompt_version=prompt_version,
                 error=str(exc),
             )
 
@@ -135,6 +144,7 @@ class LLMReceptionistAnalysisService:
             attempt_count=attempt_count,
             used_fallback=False,
             failure_reason=failure_reason,
+            prompt_version=prompt_version,
             error=None,
         )
 
@@ -162,6 +172,7 @@ class LLMReceptionistAnalysisService:
         started_at: float,
         attempt_count: int,
         failure_reason: LLMFailureReason,
+        prompt_version: str,
         error: str,
     ) -> ReceptionistAnalysisResult:
         logger.warning(
@@ -182,6 +193,7 @@ class LLMReceptionistAnalysisService:
             attempt_count=attempt_count,
             used_fallback=True,
             failure_reason=failure_reason,
+            prompt_version=prompt_version,
             error=error,
         )
 

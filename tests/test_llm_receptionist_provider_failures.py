@@ -6,6 +6,7 @@ import pytest
 
 from app.ai.fake_llm_provider import FakeLLMProvider
 from app.ai.llm_provider import LLMProvider, LLMProviderError
+from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.ai.receptionist_output import ReceptionistLLMIntent
 from app.ai.reliability import LLMFailureReason
 from app.services.appointment_booking import AppointmentBookingService
@@ -93,6 +94,7 @@ def test_bedrock_client_timeout_triggers_analysis_service_fallback() -> None:
 
     assert result.used_fallback is True
     assert result.failure_reason == LLMFailureReason.PROVIDER_ERROR
+    assert result.prompt_version == get_current_receptionist_analysis_prompt_metadata().version
     assert result.error is not None
     assert "Read timeout" in result.error
 
@@ -268,5 +270,6 @@ def test_chat_flow_with_fake_default_llm_still_passes() -> None:
     assert "llm_shadow_analysis" in result.assistant_message.message_metadata
     shadow = result.assistant_message.message_metadata["llm_shadow_analysis"]
     assert shadow["used_fallback"] is False
+    assert shadow["prompt_version"] == get_current_receptionist_analysis_prompt_metadata().version
     assert "raw_prompt" not in shadow
     assert "raw_provider_output" not in shadow

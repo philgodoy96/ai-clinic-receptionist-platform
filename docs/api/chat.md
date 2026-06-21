@@ -61,6 +61,8 @@ The public API response does not expose LLM analysis. Response fields such as `i
 
 LLM analysis is stored only as internal assistant message metadata (`llm_shadow_analysis`). Clients calling `POST /api/v1/chat/messages` do not receive LLM analysis fields in the response body.
 
+Internal metadata may include `prompt_version` so analysis can be traced to a registered prompt version. The full prompt text is not stored in conversation metadata.
+
 ## LLM-Assisted Slot Filling (Internal)
 
 When eligible LLM analysis is available, the backend may validate extracted scheduling and patient-identity fields and merge accepted values into internal `chat_context`.

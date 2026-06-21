@@ -25,6 +25,7 @@ The implementation supports:
 - provider timeout/retry configuration
 - validation and fallback through the existing reliability layer
 - offline evaluation dataset with recorded-output comparison for structured analysis quality
+- prompt version registry with runtime `prompt_version` metadata on LLM analysis results
 
 ## Safety Boundary
 
@@ -39,6 +40,8 @@ The LLM cannot:
 - bypass booking confirmation
 
 The LLM can only suggest structured candidates that backend services validate.
+
+LLM analysis metadata includes `prompt_version` so shadow analysis can be traced to a registered prompt version. The full prompt text is not stored in conversation metadata.
 
 ## Configuration
 
@@ -72,7 +75,7 @@ Provider calls are mocked/stubbed.
 
 FakeLLMProvider remains the default for tests and local demos.
 
-Offline evaluation of structured analysis quality runs against a synthetic JSONL dataset and recorded outputs. It does not call real providers. See [LLM Evaluation Dataset](llm-evaluation-dataset.md).
+Offline evaluation of structured analysis quality runs against a synthetic JSONL dataset and recorded outputs. It does not call real providers. See [LLM Evaluation Dataset](llm-evaluation-dataset.md) and [Prompt Versioning and LLM Traceability](prompt-versioning.md).
 
 ## Failure Handling
 
@@ -87,8 +90,7 @@ Future implementation phases may add:
 - provider fallback chain
 - circuit breaker
 - rate limit handling
-- prompt versioning
 - tenant-level cost tracking
 - streaming support for voice
 
-See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md).
+See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
