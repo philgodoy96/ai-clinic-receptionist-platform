@@ -30,6 +30,7 @@ from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
@@ -97,6 +98,10 @@ def get_conversation_service(
     )
 
 
+def get_conversation_health_service() -> ConversationHealthService:
+    return ConversationHealthService()
+
+
 def get_llm_receptionist_analysis_service() -> LLMReceptionistAnalysisService:
     return LLMReceptionistAnalysisService(provider=FakeLLMProvider())
 
@@ -132,6 +137,10 @@ def get_chat_receptionist_service(
         LLMChatSlotFillingService,
         Depends(get_llm_chat_slot_filling_service),
     ],
+    conversation_health: Annotated[
+        ConversationHealthService,
+        Depends(get_conversation_health_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -140,6 +149,7 @@ def get_chat_receptionist_service(
         appointment_booking=booking_service,
         llm_analysis=llm_analysis,
         slot_filling=slot_filling,
+        conversation_health=conversation_health,
     )
 
 
