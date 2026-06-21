@@ -48,6 +48,7 @@ from app.services.conversations import (
     ConversationService,
 )
 from app.services.human_escalations import HumanEscalationService
+from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     ReceptionistAnalysisRequest,
@@ -318,11 +319,19 @@ class ChatMessageResult:
     reply: str
     appointment_id: UUID | None = None
     confirmation_email_job_id: UUID | None = None
+    human_handoff_notification_email_job_id: UUID | None = None
     hold_id_to_release: str | None = None
     booking_confirmed: bool = False
     booked_patient_id: UUID | None = None
     booked_appointment_start_time: datetime | None = None
     pending_hold_release: PendingHoldRelease | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _HumanEscalationRecordingResult:
+    escalation_metadata: dict[str, Any]
+    notification_metadata: dict[str, Any] | None = None
+    notification_email_job_id: UUID | None = None
 
 
 class DeterministicChatResponder:
@@ -402,6 +411,7 @@ class ChatReceptionistService:
         slot_filling: LLMChatSlotFillingService | None = None,
         conversation_health: ConversationHealthService | None = None,
         human_escalations: HumanEscalationService | None = None,
+        human_handoff_notifications: HumanHandoffNotificationService | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -412,6 +422,7 @@ class ChatReceptionistService:
         self.slot_filling = slot_filling
         self.conversation_health = conversation_health
         self.human_escalations = human_escalations
+        self.human_handoff_notifications = human_handoff_notifications
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -477,12 +488,20 @@ class ChatReceptionistService:
             )
 
         human_escalation_metadata: dict[str, Any] | None = None
+        human_handoff_notification_metadata: dict[str, Any] | None = None
+        human_handoff_notification_email_job_id: UUID | None = None
         if health_result is not None:
-            human_escalation_metadata = self._record_human_escalation_if_needed(
+            escalation_recording = self._record_human_escalation_if_needed(
                 health_result=health_result,
                 conversation=conversation,
                 request_patient_id=payload.patient_id,
             )
+            if escalation_recording is not None:
+                human_escalation_metadata = escalation_recording.escalation_metadata
+                human_handoff_notification_metadata = escalation_recording.notification_metadata
+                human_handoff_notification_email_job_id = (
+                    escalation_recording.notification_email_job_id
+                )
 
         assistant_metadata: dict[str, Any] = {
             "source": "chat_api",
@@ -539,6 +558,10 @@ class ChatReceptionistService:
             assistant_metadata["conversation_health"] = health_result.to_metadata()
         if human_escalation_metadata is not None:
             assistant_metadata["human_escalation"] = human_escalation_metadata
+        if human_handoff_notification_metadata is not None:
+            assistant_metadata["human_handoff_notification"] = (
+                human_handoff_notification_metadata
+            )
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -566,6 +589,9 @@ class ChatReceptionistService:
             booked_patient_id=reply.booked_patient_id,
             booked_appointment_start_time=reply.booked_appointment_start_time,
             pending_hold_release=reply.pending_hold_release,
+            human_handoff_notification_email_job_id=(
+                human_handoff_notification_email_job_id
+            ),
         )
 
     def _apply_conversation_health(
@@ -626,7 +652,7 @@ class ChatReceptionistService:
         health_result: ConversationHealthResult,
         conversation: Conversation,
         request_patient_id: UUID | None,
-    ) -> dict[str, Any] | None:
+    ) -> _HumanEscalationRecordingResult | None:
         if self.human_escalations is None or not health_result.should_escalate_immediately:
             return None
 
@@ -650,13 +676,33 @@ class ChatReceptionistService:
             handoff_context=self._build_handoff_context(conversation),
         )
 
-        return {
+        escalation_metadata = {
             "created": existing is None,
             "escalation_id": str(escalation.id),
             "reason": escalation.reason.value,
             "priority": escalation.priority.value,
             "status": escalation.status.value,
         }
+        notification_metadata: dict[str, Any] | None = None
+        notification_email_job_id: UUID | None = None
+
+        if self.human_handoff_notifications is not None:
+            notification_result = (
+                self.human_handoff_notifications.create_or_get_notification_job(
+                    escalation=escalation,
+                )
+            )
+            notification_email_job_id = notification_result.email_job_id
+            notification_metadata = {
+                "email_job_id": str(notification_result.email_job_id),
+                "created": notification_result.created,
+            }
+
+        return _HumanEscalationRecordingResult(
+            escalation_metadata=escalation_metadata,
+            notification_metadata=notification_metadata,
+            notification_email_job_id=notification_email_job_id,
+        )
 
     def _map_human_escalation_reason(
         self,

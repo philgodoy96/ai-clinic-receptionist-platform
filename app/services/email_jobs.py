@@ -58,6 +58,24 @@ class AppointmentConfirmationEmailJobCreate:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class HumanEscalationNotificationEmailJobCreate:
+    escalation_id: UUID
+    conversation_id: UUID
+    patient_id: UUID | None = None
+    appointment_id: UUID | None = None
+    recipient_email: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    summary: str | None = None
+    reason: str | None = None
+    priority: str | None = None
+    source: str | None = None
+    handoff_context: dict[str, Any] | None = None
+    idempotency_key: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 class EmailJobService:
     def __init__(self, *, repository: EmailJobRepository) -> None:
         self.repository = repository
@@ -87,6 +105,59 @@ class EmailJobService:
         )
 
         return self.repository.add(email_job)
+
+    def enqueue_human_escalation_notification(
+        self,
+        payload: HumanEscalationNotificationEmailJobCreate,
+    ) -> EmailJob:
+        subject = payload.subject or "Human escalation notification"
+        body = payload.body or self._build_human_escalation_notification_body(payload)
+        job_payload: dict[str, Any] = {
+            "idempotency_key": payload.idempotency_key,
+            "human_escalation_id": str(payload.escalation_id),
+            "conversation_id": str(payload.conversation_id),
+            "reason": payload.reason,
+            "priority": payload.priority,
+            "source": payload.source,
+            "summary": payload.summary,
+            "handoff_context": payload.handoff_context,
+            **payload.payload,
+        }
+
+        if payload.patient_id is not None:
+            job_payload["patient_id"] = str(payload.patient_id)
+
+        if payload.appointment_id is not None:
+            job_payload["appointment_id"] = str(payload.appointment_id)
+
+        normalized_payload = {
+            key: value for key, value in job_payload.items() if value is not None
+        }
+        email_job = EmailJob(
+            job_type=EmailJobType.HUMAN_ESCALATION_NOTIFICATION,
+            status=EmailJobStatus.PENDING,
+            appointment_id=payload.appointment_id or payload.conversation_id,
+            patient_id=payload.patient_id or payload.conversation_id,
+            recipient_email=payload.recipient_email,
+            subject=subject,
+            body=body,
+            attempts=0,
+            max_attempts=3,
+            payload=normalized_payload,
+        )
+
+        return self.repository.add(email_job)
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return self.repository.get_by_idempotency_key(
+            job_type=job_type,
+            idempotency_key=idempotency_key,
+        )
 
     def get_email_job(self, email_job_id: UUID) -> EmailJob:
         email_job = self.repository.get_by_id(email_job_id)
@@ -193,4 +264,17 @@ class EmailJobService:
         return (
             f"Hello {patient_name}, your appointment with {doctor_name} "
             f"has been confirmed for {appointment_time}."
+        )
+
+    def _build_human_escalation_notification_body(
+        self,
+        payload: HumanEscalationNotificationEmailJobCreate,
+    ) -> str:
+        summary = payload.summary or "A conversation requires staff attention."
+        reason = payload.reason or "unknown"
+        priority = payload.priority or "normal"
+
+        return (
+            f"Human escalation {payload.escalation_id} requires staff attention. "
+            f"Reason: {reason}. Priority: {priority}. Summary: {summary}."
         )

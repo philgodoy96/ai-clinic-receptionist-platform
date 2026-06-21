@@ -13,6 +13,7 @@ from app.services.email_job_pagination import EmailJobCursor
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
+    HumanEscalationNotificationEmailJobCreate,
     InvalidEmailJobReplayStateError,
     InvalidEmailJobRetryStateError,
 )
@@ -62,6 +63,58 @@ def test_enqueue_appointment_confirmation_does_not_require_recipient_email_yet()
 
     assert email_job.recipient_email is None
     assert email_job.status == EmailJobStatus.PENDING
+
+
+def test_enqueue_human_escalation_notification_creates_pending_email_job() -> None:
+    repository = FakeEmailJobRepository()
+    service = EmailJobService(repository=repository)
+    escalation_id = uuid4()
+    conversation_id = uuid4()
+    patient_id = uuid4()
+    appointment_id = uuid4()
+
+    email_job = service.enqueue_human_escalation_notification(
+        HumanEscalationNotificationEmailJobCreate(
+            escalation_id=escalation_id,
+            conversation_id=conversation_id,
+            patient_id=patient_id,
+            appointment_id=appointment_id,
+            summary="Patient asked to speak with a human.",
+            reason="user_requested_human",
+            priority="high",
+            payload={"source": "chat"},
+        ),
+    )
+
+    assert email_job in repository.email_jobs
+    assert email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION
+    assert email_job.status == EmailJobStatus.PENDING
+    assert email_job.appointment_id == appointment_id
+    assert email_job.patient_id == patient_id
+    assert email_job.recipient_email is None
+    assert email_job.attempts == 0
+    assert email_job.max_attempts == 3
+    assert email_job.payload["human_escalation_id"] == str(escalation_id)
+    assert email_job.payload["conversation_id"] == str(conversation_id)
+    assert email_job.payload["source"] == "chat"
+    assert "Patient asked to speak with a human." in email_job.body
+
+
+def test_enqueue_human_escalation_notification_uses_conversation_id_for_missing_ids() -> None:
+    repository = FakeEmailJobRepository()
+    service = EmailJobService(repository=repository)
+    conversation_id = uuid4()
+
+    email_job = service.enqueue_human_escalation_notification(
+        HumanEscalationNotificationEmailJobCreate(
+            escalation_id=uuid4(),
+            conversation_id=conversation_id,
+        ),
+    )
+
+    assert email_job.appointment_id == conversation_id
+    assert email_job.patient_id == conversation_id
+    assert email_job.recipient_email is None
 
 
 def test_retry_failed_email_job_moves_failed_job_to_pending() -> None:
@@ -292,6 +345,9 @@ class FakeEmailJobRepository:
         self.email_jobs: list[EmailJob] = []
 
     def add(self, email_job: EmailJob) -> EmailJob:
+        if email_job.id is None:
+            email_job.id = uuid4()
+
         self.email_jobs.append(email_job)
 
         return email_job
@@ -299,6 +355,22 @@ class FakeEmailJobRepository:
     def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
         return next(
             (email_job for email_job in self.email_jobs if email_job.id == email_job_id),
+            None,
+        )
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return next(
+            (
+                email_job
+                for email_job in self.email_jobs
+                if email_job.job_type == job_type
+                and email_job.payload.get("idempotency_key") == idempotency_key
+            ),
             None,
         )
 
