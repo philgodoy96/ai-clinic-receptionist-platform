@@ -22,10 +22,12 @@ The current implementation includes:
 - `LLMChatSlotFillingService`
 - optional chat shadow analysis metadata
 - validated LLM-assisted slot filling into `chat_context`
+- configurable provider selection with `FakeLLMProvider` as default
+- `BedrockLLMProvider` adapter for optional real provider use
 
-No real LLM provider is called in this implementation phase.
+By default, no real LLM provider is called.
 
-No API key is required.
+No API key is required for local development or CI when `LLM_PROVIDER=fake`.
 
 ## Design Principle
 
@@ -49,6 +51,10 @@ The fake provider makes AI behavior:
 - independent from vendor-specific APIs
 
 ## Reliability Boundary
+
+Real provider adapters plug into the same validation and fallback layer as `FakeLLMProvider`.
+
+`LLMReceptionistAnalysisService` remains the trust boundary regardless of provider implementation.
 
 The LLM analysis flow is bounded:
 
@@ -138,10 +144,9 @@ Future implementation phases may add:
 - conversation health and escalation signals
 - human escalation foundation
 - natural-language date parsing
-- real provider adapter (for example AWS Bedrock)
-- provider timeouts
-- fallback models
-- cost tracking aggregation
+- provider fallback chain
 - prompt versioning
 - trace/span metadata
 - model evaluation fixtures
+
+See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md).

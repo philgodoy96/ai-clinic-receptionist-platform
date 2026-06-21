@@ -112,6 +112,7 @@ Implemented:
 - Chat appointment hold flow
 - Chat booking confirmation flow with patient identity parsing and confirmation email enqueue
 - Fake LLM provider foundation with structured output parsing and shadow analysis metadata
+- Real LLM provider adapter with configurable `FakeLLMProvider` default and optional Bedrock adapter
 - Structured-output-assisted slot filling with validated merge into `chat_context`
 - Conversation health and escalation signals with deterministic health metadata and soft handoff behavior
 - Human escalation foundation with durable `HumanEscalation` records, handoff context, and internal listing/acknowledge/resolve API
@@ -124,11 +125,12 @@ Upcoming:
 
 - StaffUser/RBAC
 - Assignment notification job
-- Real LLM provider adapter
+- Provider fallback chain
+- Prompt versioning
+- Model evaluation dataset
 - Voice provider transfer integration
 - Clinic timezone settings
 - Staff notification provider adapter
-- LLM reliability/fallbacks
 - Cost tracking aggregation
 - Hold expiration handling in chat
 
