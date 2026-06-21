@@ -31,6 +31,10 @@ class Settings(BaseSettings):
 
     email_provider: str = Field(default="fake", alias="EMAIL_PROVIDER")
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
+    human_escalation_notification_email: str = Field(
+        default="clinic-staff@example.test",
+        alias="HUMAN_ESCALATION_NOTIFICATION_EMAIL",
+    )
 
     llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")

@@ -25,6 +25,23 @@ class SQLAlchemyEmailJobRepository:
     def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
         return self.session.get(EmailJob, email_job_id)
 
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        statement = (
+            select(EmailJob)
+            .where(
+                EmailJob.job_type == job_type,
+                EmailJob.payload["idempotency_key"].as_string() == idempotency_key,
+            )
+            .limit(1)
+        )
+
+        return self.session.scalars(statement).first()
+
     def list_recent(
         self,
         *,

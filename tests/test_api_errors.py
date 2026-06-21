@@ -156,6 +156,9 @@ class FakeEmailJobRepository:
         self.email_jobs = list(email_jobs)
 
     def add(self, email_job: EmailJob) -> EmailJob:
+        if email_job.id is None:
+            email_job.id = uuid4()
+
         self.email_jobs.append(email_job)
 
         return email_job
@@ -163,6 +166,22 @@ class FakeEmailJobRepository:
     def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
         return next(
             (email_job for email_job in self.email_jobs if email_job.id == email_job_id),
+            None,
+        )
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return next(
+            (
+                email_job
+                for email_job in self.email_jobs
+                if email_job.job_type == job_type
+                and email_job.payload.get("idempotency_key") == idempotency_key
+            ),
             None,
         )
 

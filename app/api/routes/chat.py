@@ -51,6 +51,7 @@ def send_chat_message(
     db: Annotated[Session, Depends(get_db)],
 ) -> ChatMessageResponse:
     confirmation_email_job_id = None
+    handoff_notification_email_job_id = None
 
     try:
         result = service.handle_message(
@@ -81,6 +82,10 @@ def send_chat_message(
                 ),
             )
             confirmation_email_job_id = email_job.id
+
+        handoff_notification_email_job_id = (
+            result.human_handoff_notification_email_job_id
+        )
 
         db.commit()
 
@@ -123,6 +128,21 @@ def send_chat_message(
                             if result.appointment_id is not None
                             else None
                         ),
+                    },
+                )
+
+        if handoff_notification_email_job_id is not None:
+            try:
+                email_job_dispatch.publish_email_job_ready(
+                    email_job_id=handoff_notification_email_job_id,
+                )
+            except EmailJobDispatchPublisherError:
+                logger.warning(
+                    "human_handoff_notification_dispatch_publish_failed",
+                    extra={
+                        "event": "human_handoff_notification_dispatch_publish_failed",
+                        "email_job_id": str(handoff_notification_email_job_id),
+                        "conversation_id": str(result.conversation.id),
                     },
                 )
     except ConversationNotFoundError as exc:
