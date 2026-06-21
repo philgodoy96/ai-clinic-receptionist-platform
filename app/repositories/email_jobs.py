@@ -16,6 +16,14 @@ class EmailJobRepository(Protocol):
     def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
         raise NotImplementedError
 
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        raise NotImplementedError
+
     def list_recent(
         self,
         *,
