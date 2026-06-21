@@ -19,6 +19,7 @@ from app.repositories.redis.appointment_holds import RedisAppointmentHoldReposit
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
 from app.repositories.sqlalchemy.conversations import SQLAlchemyConversationRepository
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
+from app.repositories.sqlalchemy.human_escalations import SQLAlchemyHumanEscalationRepository
 from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyAppointmentRepository,
     SQLAlchemyAvailabilitySlotRepository,
@@ -33,6 +34,7 @@ from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
+from app.services.human_escalations import HumanEscalationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
@@ -98,6 +100,14 @@ def get_conversation_service(
     )
 
 
+def get_human_escalation_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> HumanEscalationService:
+    return HumanEscalationService(
+        repository=SQLAlchemyHumanEscalationRepository(db),
+    )
+
+
 def get_conversation_health_service() -> ConversationHealthService:
     return ConversationHealthService()
 
@@ -141,6 +151,10 @@ def get_chat_receptionist_service(
         ConversationHealthService,
         Depends(get_conversation_health_service),
     ],
+    human_escalations: Annotated[
+        HumanEscalationService,
+        Depends(get_human_escalation_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -150,6 +164,7 @@ def get_chat_receptionist_service(
         llm_analysis=llm_analysis,
         slot_filling=slot_filling,
         conversation_health=conversation_health,
+        human_escalations=human_escalations,
     )
 
 

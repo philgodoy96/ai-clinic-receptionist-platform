@@ -73,9 +73,9 @@ Slot filling does not create holds, create bookings, or bypass identity or confi
 
 The public chat API may softly suggest human handoff when the conversation appears stuck, such as after repeated fallback responses or similar low-progress signals.
 
-If the user explicitly asks to speak with a human, the assistant returns a handoff-style reply and the conversation may be marked `escalated` internally. This phase does not create a human escalation record, notify a real receptionist, or use an LLM to impersonate a human.
+If the user explicitly asks to speak with a human, the assistant returns a handoff-style reply and the conversation may be marked `escalated` internally. Explicit human requests and medical emergencies can also create an internal `HumanEscalation` record for staff handoff. This phase does not notify a real receptionist or use an LLM to impersonate a human.
 
-Health and escalation signals are stored only as internal assistant message metadata (`conversation_health`). Clients calling `POST /api/v1/chat/messages` do not receive these fields in the response body.
+Health and escalation signals are stored as internal assistant message metadata (`conversation_health`, and `human_escalation` when a record is created). Clients calling `POST /api/v1/chat/messages` do not receive these fields in the response body.
 
 Emergency responses remain deterministic and take priority over other health-driven reply changes.
 
@@ -286,7 +286,7 @@ This implementation does not yet include:
 - Appointment rescheduling from chat
 - Natural-language date parsing
 - Conversation state machine
-- Durable human escalation records and human queue notification
+- Human handoff notification and staff assignment workflow
 - Retell webhook ingestion
 
 Those capabilities are planned for later implementation phases.
