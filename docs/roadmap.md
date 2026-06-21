@@ -111,13 +111,17 @@ Implemented:
 - Chat availability guidance
 - Chat appointment hold flow
 - Chat booking confirmation flow with patient identity parsing and confirmation email enqueue
+- Fake LLM provider foundation with structured output parsing and shadow analysis metadata
 
 Upcoming:
 
-- Fake LLM provider
-- Structured output parser
+- Structured-output-assisted slot filling
+- Conversation health and escalation signals
+- Human escalation foundation
+- Real provider adapter
+- LLM reliability/fallbacks
+- Cost tracking aggregation
 - Natural-language date parsing
-- Human escalation
 - Hold expiration handling in chat
 
 ## Stage 7 — Retell Tool Integration

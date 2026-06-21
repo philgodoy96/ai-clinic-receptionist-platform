@@ -6,7 +6,7 @@ The Chat API provides a deterministic chat receptionist foundation.
 
 It records user messages and assistant replies in durable conversation storage.
 
-This implementation does not use an LLM yet.
+Deterministic rules drive the public response. Optional LLM shadow analysis runs internally for observability only.
 
 ## Endpoint
 
@@ -50,6 +50,14 @@ When booking is confirmed, the response may include:
       "appointment_id": "...",
       "booking_confirmed": true
     }
+
+## LLM Shadow Analysis (Internal)
+
+The backend may run optional LLM analysis in shadow mode while generating a reply.
+
+The public API response does not expose LLM analysis. Response fields such as `intent`, `reply`, `appointment_id`, and `booking_confirmed` remain driven by the deterministic flow.
+
+LLM analysis is stored only as internal assistant message metadata (`llm_shadow_analysis`). Clients calling `POST /api/v1/chat/messages` do not receive LLM analysis fields in the response body.
 
 ## Supported Intents
 
@@ -251,11 +259,11 @@ Examples:
 
 This implementation does not yet include:
 
-- LLM understanding
+- LLM-driven reply or intent selection in the public API response
 - Appointment cancellation from chat
 - Appointment rescheduling from chat
 - Natural-language date parsing
-- Slot filling
+- Structured-output-assisted slot filling
 - Conversation state machine
 - Human escalation
 - Retell webhook ingestion
