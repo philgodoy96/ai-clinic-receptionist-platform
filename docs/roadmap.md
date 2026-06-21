@@ -113,11 +113,13 @@ Implemented:
 - Chat booking confirmation flow with patient identity parsing and confirmation email enqueue
 - Fake LLM provider foundation with structured output parsing and shadow analysis metadata
 - Structured-output-assisted slot filling with validated merge into `chat_context`
+- Conversation health and escalation signals with deterministic health metadata and soft handoff behavior
 
 Upcoming:
 
-- Conversation health and escalation signals
 - Human escalation foundation
+- Escalation listing API
+- Human handoff notification job
 - Natural-language date parsing
 - Real provider adapter
 - LLM reliability/fallbacks

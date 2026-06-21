@@ -75,6 +75,9 @@ Assistant message metadata may include:
 - slot filling applied fields
 - slot filling rejected fields
 - rejection reasons
+- conversation health signals derived from recent message history
+
+Rejected fields are not applied to `chat_context`, but their count can contribute to current or future conversation health signals such as repeated slot-filling rejection thresholds.
 
 Raw prompts and raw provider outputs are not stored.
 
@@ -91,7 +94,6 @@ The deterministic chat flow continues.
 Future implementation phases may add:
 
 - natural-language date parsing
-- conversation health and escalation signals
 - human escalation records
 - real provider adapters
 - model evaluation fixtures
