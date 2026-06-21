@@ -9,6 +9,28 @@ from app.domain.human_escalations import (
     HumanEscalationSource,
     HumanEscalationStatus,
 )
+from app.models.human_escalation import HumanEscalation
+
+_ACTIVE_ESCALATION_STATUSES = frozenset(
+    {
+        HumanEscalationStatus.OPEN,
+        HumanEscalationStatus.ACKNOWLEDGED,
+    },
+)
+
+
+def compute_human_escalation_is_overdue(
+    escalation: HumanEscalation,
+    *,
+    now: datetime,
+) -> bool:
+    if escalation.due_at is None:
+        return False
+
+    if escalation.status not in _ACTIVE_ESCALATION_STATUSES:
+        return False
+
+    return escalation.due_at < now
 
 
 class HumanEscalationResponse(BaseModel):
@@ -30,10 +52,24 @@ class HumanEscalationResponse(BaseModel):
     assigned_to: str | None
     assigned_at: datetime | None
     due_at: datetime | None
+    is_overdue: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+def human_escalation_to_response(
+    escalation: HumanEscalation,
+    *,
+    now: datetime,
+) -> HumanEscalationResponse:
+    response = HumanEscalationResponse.model_validate(escalation)
+    return response.model_copy(
+        update={
+            "is_overdue": compute_human_escalation_is_overdue(escalation, now=now),
+        },
+    )
 
 
 class HumanEscalationListResponse(BaseModel):
@@ -48,3 +84,7 @@ class AcknowledgeHumanEscalationRequest(BaseModel):
 class ResolveHumanEscalationRequest(BaseModel):
     resolved_by: str = Field(min_length=1, max_length=160)
     resolution_notes: str | None = None
+
+
+class AssignHumanEscalationRequest(BaseModel):
+    assigned_to: str = Field(min_length=1, max_length=160)

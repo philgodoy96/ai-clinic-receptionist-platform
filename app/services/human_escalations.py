@@ -111,6 +111,9 @@ class HumanEscalationService:
 
         return self.repository.add(escalation)
 
+    def current_time(self) -> datetime:
+        return self._clock.now()
+
     def get_active_escalation_for_conversation(
         self,
         conversation_id: UUID,
