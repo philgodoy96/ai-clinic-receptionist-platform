@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -13,6 +13,7 @@ from app.ai.reliability import LLMFailureReason
 from app.domain.conversations.enums import (
     ConversationChannel,
     ConversationMessageRole,
+    ConversationStatus,
 )
 from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import AvailabilitySlot, Doctor, Patient, Specialty
@@ -31,6 +32,11 @@ from app.services.appointment_holds import (
     AppointmentHoldOwnershipError,
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
+)
+from app.services.conversation_health import (
+    ConversationHealthResult,
+    ConversationHealthService,
+    EscalationReason,
 )
 from app.services.conversations import (
     ConversationCreate,
@@ -128,6 +134,14 @@ _PATIENT_IDENTITY_FIELD_LABELS = {
     "email": "email",
 }
 _SLOT_FILLING_MIN_CONFIDENCE = 0.65
+_RECENT_MESSAGES_LIMIT = 25
+_HUMAN_HANDOFF_MESSAGE = (
+    "I can transfer this to a human receptionist. "
+    "I'll mark this conversation for human follow-up."
+)
+_ESCALATION_SUGGESTION_SUFFIX = (
+    " If you prefer, I can transfer this to a human receptionist."
+)
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -158,6 +172,8 @@ class ChatReceptionistIntent(StrEnum):
     BOOKING_HOLD_MISSING = "booking_hold_missing"
     BOOKING_HOLD_EXPIRED = "booking_hold_expired"
     BOOKING_CONFLICT = "booking_conflict"
+    HUMAN_ESCALATION_REQUESTED = "human_escalation_requested"
+    ESCALATION_SUGGESTED = "escalation_suggested"
     FALLBACK = "fallback"
 
 
@@ -190,6 +206,17 @@ _BOOKING_CONTEXT_INTENTS = frozenset(
         ChatReceptionistIntent.BOOKING_HOLD_MISSING,
         ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
         ChatReceptionistIntent.BOOKING_CONFLICT,
+    }
+)
+_SUCCESSFUL_FLOW_INTENTS = frozenset(
+    {
+        ChatReceptionistIntent.AVAILABILITY_RESULTS,
+        ChatReceptionistIntent.HOLD_CREATED,
+        ChatReceptionistIntent.BOOKING_CONFIRMED,
+        ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
+        ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+        ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
+        ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
     }
 )
 
@@ -361,6 +388,7 @@ class ChatReceptionistService:
         responder: DeterministicChatResponder | None = None,
         llm_analysis: LLMReceptionistAnalysisService | None = None,
         slot_filling: LLMChatSlotFillingService | None = None,
+        conversation_health: ConversationHealthService | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -369,6 +397,7 @@ class ChatReceptionistService:
         self.responder = responder or DeterministicChatResponder()
         self.llm_analysis = llm_analysis
         self.slot_filling = slot_filling
+        self.conversation_health = conversation_health
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -413,6 +442,24 @@ class ChatReceptionistService:
             conversation = self.conversations.merge_chat_context(
                 conversation_id=conversation.id,
                 chat_context=reply.chat_context_updates,
+            )
+
+        health_result: ConversationHealthResult | None = None
+        if self.conversation_health is not None:
+            chat_context = conversation.conversation_metadata.get("chat_context", {})
+            recent_messages = self.conversations.list_messages(
+                conversation_id=conversation.id,
+                limit=_RECENT_MESSAGES_LIMIT,
+            )
+            health_result = self.conversation_health.evaluate(
+                user_message=payload.message,
+                chat_context=chat_context,
+                recent_messages=recent_messages,
+            )
+            reply, conversation = self._apply_conversation_health(
+                reply=reply,
+                health_result=health_result,
+                conversation=conversation,
             )
 
         assistant_metadata: dict[str, Any] = {
@@ -466,6 +513,8 @@ class ChatReceptionistService:
             }
         if slot_filling_result is not None:
             assistant_metadata["slot_filling"] = slot_filling_result.to_metadata()
+        if health_result is not None:
+            assistant_metadata["conversation_health"] = health_result.to_metadata()
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(
@@ -493,6 +542,88 @@ class ChatReceptionistService:
             booked_patient_id=reply.booked_patient_id,
             booked_appointment_start_time=reply.booked_appointment_start_time,
             pending_hold_release=reply.pending_hold_release,
+        )
+
+    def _apply_conversation_health(
+        self,
+        *,
+        reply: ChatReceptionistReply,
+        health_result: ConversationHealthResult,
+        conversation: Conversation,
+    ) -> tuple[ChatReceptionistReply, Conversation]:
+        if health_result.should_escalate_immediately:
+            if health_result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN:
+                conversation = self.conversations.update_conversation_status(
+                    conversation_id=conversation.id,
+                    status=ConversationStatus.ESCALATED,
+                )
+                return (
+                    replace(
+                        reply,
+                        intent=ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED,
+                        content=_HUMAN_HANDOFF_MESSAGE,
+                        chat_context_updates={},
+                        availability_checked=False,
+                        offered_slot_count=None,
+                        hold_created=None,
+                        hold_id=None,
+                        appointment_id=None,
+                        booking_attempted=False,
+                        booking_confirmed=False,
+                        booked_patient_id=None,
+                        booked_appointment_start_time=None,
+                        pending_hold_release=None,
+                    ),
+                    conversation,
+                )
+
+            return reply, conversation
+
+        if self._should_append_escalation_suggestion(reply, health_result):
+            new_intent = (
+                ChatReceptionistIntent.ESCALATION_SUGGESTED
+                if reply.intent == ChatReceptionistIntent.FALLBACK
+                else reply.intent
+            )
+            return (
+                replace(
+                    reply,
+                    intent=new_intent,
+                    content=f"{reply.content}{_ESCALATION_SUGGESTION_SUFFIX}",
+                ),
+                conversation,
+            )
+
+        return reply, conversation
+
+    def _should_append_escalation_suggestion(
+        self,
+        reply: ChatReceptionistReply,
+        health_result: ConversationHealthResult,
+    ) -> bool:
+        if not health_result.should_suggest_escalation:
+            return False
+
+        if reply.booking_confirmed or reply.intent == ChatReceptionistIntent.BOOKING_CONFIRMED:
+            return False
+
+        if reply.intent in _SUCCESSFUL_FLOW_INTENTS:
+            return False
+
+        return self._is_low_quality_reply(reply, health_result)
+
+    def _is_low_quality_reply(
+        self,
+        reply: ChatReceptionistReply,
+        health_result: ConversationHealthResult,
+    ) -> bool:
+        if reply.intent == ChatReceptionistIntent.FALLBACK:
+            return True
+
+        signals = health_result.signals
+        return (
+            signals.last_intent == ChatReceptionistIntent.FALLBACK.value
+            and signals.repeated_intent_count >= 2
         )
 
     def _is_slot_filling_eligible(
