@@ -2,31 +2,12 @@ from __future__ import annotations
 
 import json
 
-from app.ai.llm_provider import LLMProviderError, LLMRequest, LLMResponse
 from app.ai.reliability import LLMFailureReason
 from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     ReceptionistAnalysisRequest,
 )
-
-
-class RaisingLLMProvider:
-    def complete(self, request: LLMRequest) -> LLMResponse:
-        raise LLMProviderError("simulated provider failure")
-
-
-class StaticContentLLMProvider:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-    def complete(self, request: LLMRequest) -> LLMResponse:
-        return LLMResponse(
-            content=self.content,
-            model="test-model",
-            input_tokens=12,
-            output_tokens=8,
-            estimated_cost_micros=42,
-        )
+from tests.llm_provider_test_helpers import RaisingLLMProvider, StaticContentLLMProvider
 
 
 def test_llm_receptionist_analysis_service_records_fallback_on_provider_error() -> None:

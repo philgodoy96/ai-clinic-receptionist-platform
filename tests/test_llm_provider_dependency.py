@@ -27,7 +27,7 @@ def load_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
     return Settings(_env_file=None)
 
 
-def test_get_llm_provider_defaults_to_fake(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_settings_use_fake_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = load_settings(monkeypatch)
 
     provider = get_llm_provider(settings=settings)
