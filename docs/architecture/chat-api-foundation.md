@@ -192,28 +192,56 @@ Results are persisted on the assistant message as internal `conversation_health`
 
 Conversation health does not:
 
-- create `HumanEscalation` records
 - notify a real human
 - use another LLM to impersonate a human
 - create holds or appointments
 - override emergency deterministic responses
 - append handoff suggestions to successful booking, availability, or hold outcomes
 
-When the user explicitly asks for a human, the deterministic reply becomes a handoff-style message and the conversation status may be updated to `escalated` when supported. No durable human queue exists in this phase.
+Suggested escalation alone does not create `HumanEscalation` records.
+
+When the user explicitly asks for a human, the deterministic reply becomes a handoff-style message and the conversation status may be updated to `escalated` when supported. Immediate signals may also create a durable `HumanEscalation` record; see Human Escalation Boundary. No durable human queue exists in this phase.
 
 When repeated fallback, slot-filling rejection, low-confidence shadow analysis, booking conflict, or no-progress signals are detected, the assistant may append a soft handoff suggestion only for fallback or otherwise stuck responses.
 
 Emergency language still wins over other health-driven reply changes.
 
+## Human Escalation Boundary
+
+When conversation health detects an immediate escalation signal, `ChatReceptionistService` creates or reuses a durable `HumanEscalation` record through `HumanEscalationService`.
+
+Immediate escalation applies when:
+
+- the user explicitly requests a human, or
+- a medical emergency signal is detected
+
+The chat layer:
+
+- returns a deterministic handoff-style reply (or emergency reply for medical emergencies)
+- records `human_escalation` metadata on the assistant message
+- builds `handoff_context` from safe operational fields in `chat_context`
+
+The chat layer does not:
+
+- notify a real receptionist or staff member
+- assign the escalation to a human agent
+- use an LLM to impersonate a human
+- release Redis holds automatically during escalation
+- create a `HumanEscalation` record for suggested escalation alone
+
+Durable escalation lifecycle management (acknowledge, resolve, cancel) is available through the internal human-escalations API. No human queue or dashboard exists in this phase.
+
+See also: [Conversation Health and Escalation Signals](conversation-health.md).
+
 ## Future Work
 
 Planned future implementation phases include:
 
-- Human escalation foundation
-- Escalation listing API
 - Human handoff notification job
+- Escalation assignment/resolution workflow
 - Natural-language date parsing
 - Real provider adapter
+- Voice provider transfer integration
 - LLM reliability and fallbacks
 - Cost tracking aggregation
 - Conversation state machine
