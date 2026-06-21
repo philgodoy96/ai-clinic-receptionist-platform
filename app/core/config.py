@@ -1,7 +1,9 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.ai.llm_provider import LLMProviderName
 
 
 class Settings(BaseSettings):
@@ -36,7 +38,17 @@ class Settings(BaseSettings):
         alias="HUMAN_ESCALATION_NOTIFICATION_EMAIL",
     )
 
-    llm_provider: str = Field(default="fake", alias="LLM_PROVIDER")
+    llm_provider: LLMProviderName = Field(default=LLMProviderName.FAKE, alias="LLM_PROVIDER")
+    llm_enabled: bool = Field(default=True, alias="LLM_ENABLED")
+    bedrock_model_id: str = Field(default="", alias="BEDROCK_MODEL_ID")
+    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    bedrock_request_timeout_seconds: int = Field(
+        default=10,
+        alias="BEDROCK_REQUEST_TIMEOUT_SECONDS",
+    )
+    bedrock_max_retries: int = Field(default=0, alias="BEDROCK_MAX_RETRIES")
+    bedrock_temperature: float = Field(default=0.0, alias="BEDROCK_TEMPERATURE")
+    bedrock_max_tokens: int = Field(default=800, alias="BEDROCK_MAX_TOKENS")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
 
@@ -45,6 +57,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_bedrock_settings(self) -> "Settings":
+        if self.llm_provider == LLMProviderName.BEDROCK and not self.bedrock_model_id.strip():
+            raise ValueError("BEDROCK_MODEL_ID is required when LLM_PROVIDER is bedrock")
+        return self
 
 
 @lru_cache
