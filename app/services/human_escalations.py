@@ -70,6 +70,7 @@ class HumanEscalationService:
         if existing is not None:
             return existing
 
+        now = datetime.now(UTC)
         escalation = HumanEscalation(
             conversation_id=conversation_id,
             patient_id=patient_id,
@@ -81,6 +82,8 @@ class HumanEscalationService:
             summary=summary,
             created_by=created_by,
             handoff_context=handoff_context,
+            created_at=now,
+            updated_at=now,
         )
 
         return self.repository.add(escalation)
