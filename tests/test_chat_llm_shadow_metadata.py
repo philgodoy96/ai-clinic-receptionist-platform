@@ -13,6 +13,7 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversations import ConversationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
+from app.services.slot_filling import LLMChatSlotFillingService
 from tests.test_chat_booking_confirmation_flow import (
     FULL_IDENTITY_WITH_CONFIRM,
     create_jane_doe_patient,
@@ -57,10 +58,12 @@ def shadow_chat_service() -> tuple[ChatReceptionistService, FakeConversationRepo
     conversations = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service()
     llm_analysis = LLMReceptionistAnalysisService(provider=FakeLLMProvider())
+    slot_filling = LLMChatSlotFillingService(scheduling=scheduling)
     service = create_chat_receptionist_service(
         conversations=conversations,
         scheduling=scheduling,
         llm_analysis=llm_analysis,
+        slot_filling=slot_filling,
     )
 
     return service, repository
@@ -133,6 +136,7 @@ def test_booking_with_llm_shadow_enabled_uses_deterministic_flow() -> None:
         hold_service=hold_service,
         appointment_booking=cast(AppointmentBookingService, tracking_booking),
         llm_analysis=llm_analysis,
+        slot_filling=None,
     )
     appointments = scheduling.appointments
     assert isinstance(appointments, FakeAppointmentRepository)
