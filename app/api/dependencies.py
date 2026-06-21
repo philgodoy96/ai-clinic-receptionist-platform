@@ -192,6 +192,10 @@ def get_chat_receptionist_service(
         NaturalLanguageDateParser,
         Depends(get_natural_language_date_parser),
     ],
+    time_preference_parser: Annotated[
+        TimePreferenceParser,
+        Depends(get_time_preference_parser),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -204,6 +208,7 @@ def get_chat_receptionist_service(
         human_escalations=human_escalations,
         human_handoff_notifications=human_handoff_notifications,
         date_parser=date_parser,
+        time_preference_parser=time_preference_parser,
     )
 
 
