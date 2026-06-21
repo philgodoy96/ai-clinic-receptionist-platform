@@ -49,7 +49,7 @@ def test_human_escalation_notification_job_is_processed_as_sent_by_fake_worker()
     assert "Selected doctor: Dr. Emily Carter" in sent_message.body
 
 
-def test_render_human_escalation_notification_excludes_patient_identity_from_body() -> None:
+def test_worker_rendering_excludes_patient_identity_from_delivery_body() -> None:
     email_job = create_human_escalation_email_job(
         now=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
         escalation_id=uuid4(),
@@ -58,6 +58,9 @@ def test_render_human_escalation_notification_excludes_patient_identity_from_bod
             "patient_name": "Jane Doe",
             "patient_email": "jane.doe@example.test",
             "raw_message": "Can I speak to a human?",
+            "raw_prompt": "system: you are a bot",
+            "raw_output": '{"intent":"human"}',
+            "patient_identity": "Jane Doe, jane.doe@example.test",
         },
         extra_handoff_context={
             "patient_identity": "Jane Doe, jane.doe@example.test",
@@ -70,6 +73,29 @@ def test_render_human_escalation_notification_excludes_patient_identity_from_bod
     assert "jane.doe@example.test" not in body
     assert "Can I speak to a human?" not in body
     assert "patient_identity" not in body
+    assert "raw_prompt" not in body
+    assert "raw_output" not in body
+
+
+def test_appointment_confirmation_worker_tests_remain_supported() -> None:
+    """Guardrail: human escalation worker support must not break confirmation jobs."""
+    from tests.test_email_job_worker import create_email_job
+
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    email_job = create_email_job(now=now)
+    repository = FakeEmailJobWorkerRepository([email_job])
+    provider = FakeEmailDeliveryProvider()
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=provider,
+        worker_id="worker-1",
+    )
+
+    result = worker.process_one(now=now)
+
+    assert result.status == EmailJobStatus.SENT
+    assert provider.sent_messages[0].subject == "Appointment confirmation"
+    assert provider.sent_messages[0].body == "Your appointment is confirmed."
 
 
 def test_unknown_email_job_type_fails_with_existing_retry_behavior() -> None:

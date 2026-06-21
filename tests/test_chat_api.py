@@ -15,7 +15,7 @@ from app.api.dependencies import (
 )
 from app.db.session import get_db
 from app.domain.conversations.enums import ConversationChannel
-from app.domain.jobs.enums import EmailJobType
+from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.main import create_app
 from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisherError,
@@ -578,12 +578,21 @@ def test_post_chat_message_human_escalation_publishes_handoff_notification_dispa
 def test_post_chat_message_handoff_dispatch_failure_does_not_fail_response(
     human_escalation_chat_api_client_failing_dispatch: HumanEscalationChatApiContext,
 ) -> None:
-    response = human_escalation_chat_api_client_failing_dispatch.client.post(
+    client = human_escalation_chat_api_client_failing_dispatch
+
+    response = client.client.post(
         "/api/v1/chat/messages",
         json={"message": "Please connect me to a human receptionist"},
     )
 
     assert response.status_code == 200
+    assert client.db.committed is True
+    assert len(client.email_job_repository.email_jobs) == 1
+
+    email_job = client.email_job_repository.email_jobs[0]
+    assert email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION
+    assert email_job.status == EmailJobStatus.PENDING
+    assert client.dispatch_publisher.published_messages == []
 
     body = response.json()
     assert body["intent"] == "human_escalation_requested"
