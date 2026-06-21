@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from app.ai import build_llm_provider
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.provider_factory import build_llm_provider
 from app.api.dependencies import get_llm_provider, get_llm_receptionist_analysis_service
 from app.core.config import Settings, get_settings
 from app.services.llm_receptionist import LLMReceptionistAnalysisService

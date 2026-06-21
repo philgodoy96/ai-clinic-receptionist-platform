@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from app.adapters.retell.appointment_booking_tools import RetellAppointmentBookingToolAdapter
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
-from app.ai import build_llm_provider
 from app.ai.llm_provider import LLMProvider
+from app.ai.provider_factory import build_llm_provider
 from app.cache.redis import get_redis_client
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
