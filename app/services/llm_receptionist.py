@@ -36,6 +36,7 @@ from app.ai.structured_output import (
     StructuredOutputValidationError,
     parse_structured_output_with_repair_flag,
 )
+from app.core.config import Settings
 
 logger = logging.getLogger("app.llm_receptionist")
 
@@ -408,3 +409,38 @@ class LLMReceptionistAnalysisService:
 
     def _elapsed_ms(self, started_at: float) -> int:
         return int((perf_counter() - started_at) * 1000)
+
+
+def build_llm_receptionist_analysis_service_from_settings(
+    settings: Settings,
+) -> LLMReceptionistAnalysisService | None:
+    from app.ai.provider_factory import create_llm_provider_from_settings
+
+    if not settings.llm_enabled:
+        return None
+
+    primary_provider = create_llm_provider_from_settings(
+        settings,
+        settings.resolved_llm_primary_provider,
+    )
+    fallback_provider = None
+    fallback_provider_name = None
+    max_fallback_attempts = 0
+
+    if settings.llm_fallback_enabled:
+        assert settings.llm_fallback_provider is not None
+        fallback_provider_name = settings.llm_fallback_provider
+        fallback_provider = create_llm_provider_from_settings(
+            settings,
+            settings.llm_fallback_provider,
+        )
+        max_fallback_attempts = settings.llm_max_fallback_attempts
+
+    return LLMReceptionistAnalysisService(
+        primary_provider=primary_provider,
+        fallback_provider=fallback_provider,
+        primary_provider_name=settings.resolved_llm_primary_provider,
+        fallback_provider_name=fallback_provider_name,
+        max_primary_attempts=settings.llm_max_primary_attempts,
+        max_fallback_attempts=max_fallback_attempts,
+    )
