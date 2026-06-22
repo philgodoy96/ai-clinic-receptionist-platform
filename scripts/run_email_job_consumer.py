@@ -10,10 +10,10 @@ from pika.spec import Basic, BasicProperties
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal
+from app.email.factory import create_email_provider_from_settings
 from app.messaging.email_job_dispatch import (
     decode_email_job_dispatch_message,
 )
-from app.providers.email import FakeEmailDeliveryProvider
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
 from app.services.email_job_worker import EmailJobWorkerService
 
@@ -48,7 +48,7 @@ def main() -> None:
 
             with SessionLocal() as session:
                 repository = SQLAlchemyEmailJobRepository(session)
-                provider = FakeEmailDeliveryProvider()
+                provider = create_email_provider_from_settings(settings)
                 worker = EmailJobWorkerService(
                     repository=repository,
                     delivery_provider=provider,
