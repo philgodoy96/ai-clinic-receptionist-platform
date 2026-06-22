@@ -40,6 +40,7 @@ See also:
 - [Appointment Slot Holds](appointment-holds.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
 - [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
+- [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md)
 - [Voice Conversation Bridge](voice-conversation-bridge.md)
 
 ## Flow
@@ -97,11 +98,12 @@ They resolve channel context, build `AppointmentReschedulingRequest`, and delega
 
 Voice and chat may update `voice_context` or `chat_context` only through the existing safe conversation metadata merge rules after the service succeeds.
 
+The Retell voice channel is wired through `reschedule_appointment` and delegates to `AppointmentReschedulingService`. See [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md).
+
 ## Future Work
 
 Future implementation phases may add:
 
-- Retell voice reschedule tool
 - written chat reschedule flow
 - reschedule notification email if supported
 - public demo deployment configuration
