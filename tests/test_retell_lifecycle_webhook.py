@@ -157,6 +157,60 @@ def test_malformed_payload_returns_400() -> None:
     assert len(repository.voice_call_events) == 0
 
 
+def test_malformed_json_returns_400() -> None:
+    repository = FakeVoiceCallRepository()
+    service = RetellCallLifecycleService(repository=repository)
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+    app.dependency_overrides[get_retell_call_lifecycle_service] = lambda: service
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            LIFECYCLE_WEBHOOK_PATH,
+            content=b"{not-valid-json",
+            settings=settings,
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
+    assert len(repository.voice_call_events) == 0
+
+
+def test_missing_provider_call_id_is_rejected() -> None:
+    repository = FakeVoiceCallRepository()
+    service = RetellCallLifecycleService(repository=repository)
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+    app.dependency_overrides[get_retell_call_lifecycle_service] = lambda: service
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            LIFECYCLE_WEBHOOK_PATH,
+            json_body={
+                "call_id": "   ",
+                "event": "call_started",
+                "occurred_at": OCCURRED_AT,
+                "event_id": "evt-missing",
+            },
+            settings=settings,
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
+    assert len(repository.voice_call_events) == 0
+    assert len(repository.voice_calls) == 0
+
+
 def test_unknown_event_type_is_persisted_as_unknown() -> None:
     repository = FakeVoiceCallRepository()
     service = RetellCallLifecycleService(repository=repository)

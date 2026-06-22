@@ -107,6 +107,75 @@ def test_call_ended_updates_status_and_ended_at() -> None:
     assert result.voice_call.started_at == started_at
 
 
+def test_update_event_updates_last_event_at() -> None:
+    repository = FakeVoiceCallRepository()
+    service = RetellCallLifecycleService(repository=repository)
+    first_at = datetime(2026, 6, 24, 10, 0, tzinfo=UTC)
+    second_at = first_at + timedelta(minutes=2)
+
+    service.ingest_event(
+        _payload(
+            event_type="call_started",
+            occurred_at=first_at,
+            provider_event_id="evt-1",
+        ),
+    )
+    result = service.ingest_event(
+        _payload(
+            event_type="call_updated",
+            occurred_at=second_at,
+            provider_event_id="evt-2",
+        ),
+    )
+
+    assert result.voice_call.last_event_at == second_at
+    assert len(repository.voice_call_events) == 2
+
+
+def test_failed_event_sets_status_failed() -> None:
+    repository = FakeVoiceCallRepository()
+    service = RetellCallLifecycleService(repository=repository)
+    failed_at = datetime(2026, 6, 24, 10, 30, tzinfo=UTC)
+
+    service.ingest_event(
+        _payload(
+            event_type="call_started",
+            occurred_at=datetime(2026, 6, 24, 10, 0, tzinfo=UTC),
+            provider_event_id="evt-start",
+        ),
+    )
+    result = service.ingest_event(
+        _payload(
+            event_type="call_failed",
+            occurred_at=failed_at,
+            provider_event_id="evt-failed",
+        ),
+    )
+
+    assert result.voice_call.status == VoiceCallStatus.FAILED
+    assert result.voice_call.ended_at == failed_at
+    assert result.voice_call_event.normalized_event_type == (
+        NormalizedVoiceCallEventType.CALL_FAILED
+    )
+
+
+def test_web_call_without_phone_numbers_leaves_redacted_fields_null() -> None:
+    repository = FakeVoiceCallRepository()
+    service = RetellCallLifecycleService(repository=repository)
+
+    result = service.ingest_event(
+        _payload(
+            from_number=None,
+            to_number=None,
+            direction="web",
+        ),
+    )
+
+    assert result.voice_call.from_number_redacted is None
+    assert result.voice_call.to_number_redacted is None
+    assert result.voice_call.direction == "web"
+
+
 def test_out_of_order_older_event_does_not_downgrade_ended_status() -> None:
     repository = FakeVoiceCallRepository()
     service = RetellCallLifecycleService(repository=repository)

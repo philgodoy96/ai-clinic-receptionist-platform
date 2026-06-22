@@ -270,3 +270,77 @@ def test_response_does_not_include_raw_payload_or_secrets(
     assert "raw_payload" not in str(events_body)
     assert "api_key" not in str(events_body)
     assert events_body["items"][0]["event_metadata"] == {"duration_seconds": 30}
+
+
+def test_list_voice_calls_cursor_pagination(
+    client_and_repository: tuple[TestClient, FakeVoiceCallRepository],
+) -> None:
+    client, repository = client_and_repository
+    base_time = datetime(2026, 6, 24, 8, 0, tzinfo=UTC)
+    for index in range(3):
+        repository.voice_calls.append(
+            create_voice_call(
+                provider_call_id=f"call-{index}",
+                created_at=base_time + timedelta(hours=index),
+            ),
+        )
+
+    first_page = client.get(BASE_PATH, params={"limit": 2})
+    second_page = client.get(
+        BASE_PATH,
+        params={"limit": 2, "cursor": first_page.json()["next_cursor"]},
+    )
+
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert len(first_body["items"]) == 2
+    assert first_body["next_cursor"] is not None
+
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+    assert len(second_body["items"]) == 1
+    assert second_body["next_cursor"] is None
+    assert second_body["items"][0]["provider_call_id"] == "call-0"
+
+
+def test_list_events_cursor_pagination(
+    client_and_repository: tuple[TestClient, FakeVoiceCallRepository],
+) -> None:
+    client, repository = client_and_repository
+    voice_call = create_voice_call(
+        provider_call_id="call-events-page",
+        created_at=datetime(2026, 6, 24, 10, 0, tzinfo=UTC),
+    )
+    repository.voice_calls.append(voice_call)
+    base_time = datetime(2026, 6, 24, 10, 0, tzinfo=UTC)
+    for index in range(3):
+        repository.voice_call_events.append(
+            create_voice_call_event(
+                voice_call_id=voice_call.id,
+                provider_call_id=voice_call.provider_call_id,
+                event_type="call_updated",
+                occurred_at=base_time + timedelta(minutes=index),
+                provider_event_id=f"evt-{index}",
+            ),
+        )
+
+    first_page = client.get(
+        f"{BASE_PATH}/{voice_call.id}/events",
+        params={"limit": 2},
+    )
+    second_page = client.get(
+        f"{BASE_PATH}/{voice_call.id}/events",
+        params={"limit": 2, "cursor": first_page.json()["next_cursor"]},
+    )
+
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert len(first_body["items"]) == 2
+    assert first_body["next_cursor"] is not None
+    assert first_body["items"][0]["provider_event_id"] == "evt-0"
+
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+    assert len(second_body["items"]) == 1
+    assert second_body["next_cursor"] is None
+    assert second_body["items"][0]["provider_event_id"] == "evt-2"
