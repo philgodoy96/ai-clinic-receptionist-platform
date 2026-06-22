@@ -82,3 +82,43 @@ def test_process_email_job_returns_not_found_for_missing_job() -> None:
 
     assert result.processed is False
     assert result.skip_reason == "not_found"
+
+
+def test_worker_stores_provider_message_id_on_success() -> None:
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    email_job = create_email_job()
+    repository = FakeEmailJobWorkerRepository([email_job])
+    provider = FakeEmailDeliveryProvider()
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=provider,
+        worker_id="worker-1",
+    )
+
+    result = worker.process_email_job(email_job.id, now=now)
+
+    assert result.processed is True
+    assert email_job.provider_message_id == "fake-1"
+
+
+def test_worker_stores_resend_provider_message_id_on_success() -> None:
+    from app.email.resend_provider import ResendEmailProvider
+    from tests.test_resend_email_provider import FakeResendEmailClient
+
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    email_job = create_email_job()
+    repository = FakeEmailJobWorkerRepository([email_job])
+    provider = ResendEmailProvider(
+        client=FakeResendEmailClient(response={"id": "resend-msg-456"}),
+        from_address="sender@example.test",
+    )
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=provider,
+        worker_id="worker-1",
+    )
+
+    result = worker.process_email_job(email_job.id, now=now)
+
+    assert result.processed is True
+    assert email_job.provider_message_id == "resend-msg-456"

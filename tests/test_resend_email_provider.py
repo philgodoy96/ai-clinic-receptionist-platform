@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
 
+from app.email.factory import create_email_provider_from_settings
 from app.email.resend_client import ResendEmailClientError
 from app.email.resend_provider import ResendEmailProvider
 from app.email.types import EmailProviderError, OutboundEmailMessage
@@ -127,3 +129,30 @@ def test_resend_provider_error_does_not_include_api_key() -> None:
         )
 
     assert "secret-key" not in str(exc_info.value)
+
+
+def test_resend_client_error_message_is_generic() -> None:
+    error = ResendEmailClientError("resend api request failed")
+
+    assert "Bearer" not in str(error)
+    assert "re_" not in str(error)
+
+
+def test_create_resend_provider_logs_do_not_expose_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.core.config import Settings
+
+    monkeypatch.setenv("EMAIL_PROVIDER", "resend")
+    monkeypatch.setenv("RESEND_API_KEY", "re_super_secret_key")
+    monkeypatch.setenv("EMAIL_FROM_ADDRESS", "sender@example.test")
+
+    settings = Settings(_env_file=None)
+
+    with caplog.at_level(logging.INFO, logger="app.email_provider"):
+        provider = create_email_provider_from_settings(settings)
+
+    assert provider is not None
+    assert "re_super_secret_key" not in caplog.text
+    assert "Bearer" not in caplog.text

@@ -244,6 +244,8 @@ class FakeEmailJobWorkerRepository:
         email_job.locked_by = None
         email_job.locked_until = None
         email_job.next_attempt_at = None
+        if provider_message_id is not None:
+            email_job.provider_message_id = provider_message_id
         email_job.updated_at = now
 
         return email_job
