@@ -22,6 +22,7 @@ This project focuses on:
 - Voice AI architecture
 - Retell web voice integration
 - Retell voice call lifecycle persistence
+- Retell voice tool-calling adapter (availability, hold, release)
 - Chat receptionist flow
 - Tool calling
 - Appointment scheduling
@@ -103,6 +104,7 @@ The receptionist will support:
 - Specialty information
 - Availability lookup
 - Temporary appointment slot holding
+- Retell voice tools: availability check, slot hold, and hold release (via verified `POST /api/v1/retell/tools`)
 - Human escalation case creation
 - Confirmation email jobs
 
@@ -159,6 +161,9 @@ Architecture docs:
 - `docs/architecture/provider-run-evaluation-mode.md`
 - `docs/architecture/public-demo-guardrails.md`
 - `docs/architecture/email-dispatch-reliability.md`
+- `docs/architecture/retell-webhook-security.md`
+- `docs/architecture/retell-call-lifecycle.md`
+- `docs/architecture/retell-tool-calling-adapter.md`
 
 ## Local Mode vs Public Demo Mode
 
@@ -200,6 +205,6 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. See `docs/architecture/retell-webhook-security.md` for the verification flow and `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs.
+**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, and `release_appointment_hold` via `POST /api/v1/retell/tools`. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, and `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
