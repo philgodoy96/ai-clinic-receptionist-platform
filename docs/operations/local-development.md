@@ -67,3 +67,27 @@ Local development and CI should keep:
     LLM_PROVIDER=fake
 
 Optional Bedrock configuration requires runtime AWS credentials and is not needed for the default demo flow.
+
+## Public Demo Guardrails
+
+Public demo guardrails are **disabled by default** in local development.
+
+Default local values:
+
+```env
+PUBLIC_DEMO_MODE=false
+PUBLIC_DEMO_GUARDRAILS_ENABLED=false
+```
+
+When guardrails are disabled, chat and Retell tool routes work without Redis rate-limit enforcement. Redis is still used for appointment holds.
+
+To test guardrails locally:
+
+```env
+PUBLIC_DEMO_GUARDRAILS_ENABLED=true
+DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=1
+```
+
+Then send two chat requests quickly — the first should succeed and the second should return `429`.
+
+See `docs/configuration.md` for all guardrail variables and `docs/architecture/public-demo-guardrails.md` for design details.

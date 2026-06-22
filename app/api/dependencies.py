@@ -36,6 +36,7 @@ from app.services.clock import SystemClock
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
 from app.services.date_parsing import NaturalLanguageDateParser
+from app.services.demo_guardrails import DemoGuardrailService
 from app.services.email_jobs import EmailJobService
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
@@ -54,6 +55,17 @@ def get_scheduling_service(
         patients=SQLAlchemyPatientRepository(db),
         availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
         appointments=SQLAlchemyAppointmentRepository(db),
+    )
+
+
+def get_demo_guardrail_service(
+    redis_client: Annotated[Any, Depends(get_redis_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DemoGuardrailService:
+    return DemoGuardrailService(
+        redis_client=redis_client,
+        settings=settings,
+        clock=SystemClock(),
     )
 
 

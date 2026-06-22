@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app.adapters.retell.appointment_booking_tools import RetellAppointmentBookingToolAdapter
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
+from app.api.demo_guardrail_enforcement import require_retell_tool_guardrail
 from app.api.dependencies import (
     get_retell_appointment_booking_tool_adapter,
     get_retell_appointment_hold_tool_adapter,
@@ -21,7 +22,11 @@ from app.schemas.retell_tools import (
     RetellUpcomingAppointmentsRequest,
 )
 
-router = APIRouter(prefix="/api/v1/retell/tools", tags=["retell-tools"])
+router = APIRouter(
+    prefix="/api/v1/retell/tools",
+    tags=["retell-tools"],
+    dependencies=[Depends(require_retell_tool_guardrail)],
+)
 
 
 @router.post("/list-specialties", response_model=RetellToolResponse)
