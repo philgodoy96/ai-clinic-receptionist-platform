@@ -6,6 +6,7 @@ from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.domain.jobs.email_job_retry import calculate_email_job_backoff_seconds
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
 from app.services.email_job_metrics import EmailJobOperationalMetrics, EmailJobStatusCounts
@@ -35,7 +36,7 @@ class SQLAlchemyEmailJobRepository:
             select(EmailJob)
             .where(
                 EmailJob.job_type == job_type,
-                EmailJob.payload["idempotency_key"].as_string() == idempotency_key,
+                EmailJob.idempotency_key == idempotency_key,
             )
             .limit(1)
         )
@@ -91,7 +92,7 @@ class SQLAlchemyEmailJobRepository:
         now: datetime,
     ) -> EmailJob:
         email_job.status = EmailJobStatus.PENDING
-        email_job.scheduled_for = now
+        email_job.next_attempt_at = now
         email_job.locked_by = None
         email_job.locked_until = None
         email_job.updated_at = now
@@ -99,38 +100,22 @@ class SQLAlchemyEmailJobRepository:
 
         return email_job
 
-    def create_replay(
+    def reset_for_replay(
         self,
         *,
-        original_email_job: EmailJob,
+        email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
-        replay_job = EmailJob(
-            job_type=original_email_job.job_type,
-            status=EmailJobStatus.PENDING,
-            appointment_id=original_email_job.appointment_id,
-            patient_id=original_email_job.patient_id,
-            recipient_email=original_email_job.recipient_email,
-            subject=original_email_job.subject,
-            body=original_email_job.body,
-            attempts=0,
-            max_attempts=original_email_job.max_attempts,
-            locked_by=None,
-            locked_until=None,
-            last_error=None,
-            payload={
-                **original_email_job.payload,
-                "replayed_from_email_job_id": str(original_email_job.id),
-                "replayed_from_attempts": original_email_job.attempts,
-                "replayed_from_status": original_email_job.status.value,
-            },
-            scheduled_for=now,
-            sent_at=None,
-            created_at=now,
-            updated_at=now,
-        )
+        email_job.status = EmailJobStatus.PENDING
+        email_job.attempt_count = 0
+        email_job.next_attempt_at = now
+        email_job.last_error = None
+        email_job.locked_by = None
+        email_job.locked_until = None
+        email_job.updated_at = now
+        self.session.flush()
 
-        return self.add(replay_job)
+        return email_job
 
     def get_operational_metrics(
         self,
@@ -153,13 +138,11 @@ class SQLAlchemyEmailJobRepository:
             EmailJob.locked_until < now,
         )
         overdue_pending_count = self._count_jobs(
-            EmailJob.status.in_(
-                [
-                    EmailJobStatus.PENDING,
-                    EmailJobStatus.FAILED,
-                ],
+            EmailJob.status == EmailJobStatus.PENDING,
+            or_(
+                EmailJob.next_attempt_at.is_(None),
+                EmailJob.next_attempt_at <= now,
             ),
-            EmailJob.scheduled_for <= now,
         )
         oldest_pending_created_at = self.session.scalar(
             select(func.min(EmailJob.created_at)).where(
@@ -212,21 +195,27 @@ class SQLAlchemyEmailJobRepository:
         statement = (
             select(EmailJob)
             .where(
-                EmailJob.status.in_(
-                    [
-                        EmailJobStatus.PENDING,
-                        EmailJobStatus.FAILED,
-                    ],
-                ),
-                EmailJob.scheduled_for <= now,
-                EmailJob.attempts < EmailJob.max_attempts,
                 or_(
-                    EmailJob.locked_until.is_(None),
-                    EmailJob.locked_until < now,
+                    and_(
+                        EmailJob.status == EmailJobStatus.PENDING,
+                        or_(
+                            EmailJob.next_attempt_at.is_(None),
+                            EmailJob.next_attempt_at <= now,
+                        ),
+                        or_(
+                            EmailJob.locked_until.is_(None),
+                            EmailJob.locked_until < now,
+                        ),
+                    ),
+                    and_(
+                        EmailJob.status == EmailJobStatus.PROCESSING,
+                        EmailJob.locked_until.is_not(None),
+                        EmailJob.locked_until < now,
+                    ),
                 ),
             )
             .order_by(
-                EmailJob.scheduled_for.asc(),
+                EmailJob.next_attempt_at.asc().nullsfirst(),
                 EmailJob.created_at.asc(),
                 EmailJob.id.asc(),
             )
@@ -241,7 +230,6 @@ class SQLAlchemyEmailJobRepository:
         email_job.status = EmailJobStatus.PROCESSING
         email_job.locked_by = worker_id
         email_job.locked_until = now + lock_duration
-        email_job.attempts += 1
         email_job.updated_at = now
         self.session.flush()
 
@@ -252,12 +240,16 @@ class SQLAlchemyEmailJobRepository:
         *,
         email_job: EmailJob,
         now: datetime,
+        provider_message_id: str | None = None,
     ) -> EmailJob:
         email_job.status = EmailJobStatus.SENT
         email_job.sent_at = now
         email_job.last_error = None
         email_job.locked_by = None
         email_job.locked_until = None
+        email_job.next_attempt_at = None
+        if provider_message_id is not None:
+            email_job.provider_message_id = provider_message_id
         email_job.updated_at = now
         self.session.flush()
 
@@ -269,17 +261,26 @@ class SQLAlchemyEmailJobRepository:
         email_job: EmailJob,
         error: str,
         now: datetime,
-        retry_delay: timedelta,
+        backoff_base_seconds: int,
+        backoff_max_seconds: int,
     ) -> EmailJob:
-        if email_job.attempts >= email_job.max_attempts:
-            email_job.status = EmailJobStatus.DEAD_LETTER
-        else:
-            email_job.status = EmailJobStatus.FAILED
-            email_job.scheduled_for = now + retry_delay
-
+        email_job.attempt_count += 1
         email_job.last_error = error
         email_job.locked_by = None
         email_job.locked_until = None
+
+        if email_job.attempt_count >= email_job.max_attempts:
+            email_job.status = EmailJobStatus.FAILED
+            email_job.next_attempt_at = None
+        else:
+            backoff_seconds = calculate_email_job_backoff_seconds(
+                email_job.attempt_count,
+                backoff_base_seconds,
+                backoff_max_seconds,
+            )
+            email_job.status = EmailJobStatus.PENDING
+            email_job.next_attempt_at = now + timedelta(seconds=backoff_seconds)
+
         email_job.updated_at = now
         self.session.flush()
 

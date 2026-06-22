@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import timedelta
 from uuid import uuid4
 
+from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal
 from app.providers.email import FakeEmailDeliveryProvider
@@ -32,6 +34,8 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_logging()
+    settings = get_settings()
+    lock_duration = timedelta(seconds=settings.email_job_lock_ttl_seconds)
 
     while True:
         with SessionLocal() as session:
@@ -41,6 +45,9 @@ def main() -> None:
                 repository=repository,
                 delivery_provider=provider,
                 worker_id=args.worker_id,
+                lock_duration=lock_duration,
+                backoff_base_seconds=settings.email_job_backoff_base_seconds,
+                backoff_max_seconds=settings.email_job_backoff_max_seconds,
             )
             result = worker.process_one()
             session.commit()

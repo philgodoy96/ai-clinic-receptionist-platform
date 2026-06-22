@@ -32,13 +32,15 @@ class EmailJobWorkerService:
         delivery_provider: EmailDeliveryProvider,
         worker_id: str,
         lock_duration: timedelta = timedelta(minutes=5),
-        retry_delay: timedelta = timedelta(minutes=1),
+        backoff_base_seconds: int = 30,
+        backoff_max_seconds: int = 900,
     ) -> None:
         self.repository = repository
         self.delivery_provider = delivery_provider
         self.worker_id = worker_id
         self.lock_duration = lock_duration
-        self.retry_delay = retry_delay
+        self.backoff_base_seconds = backoff_base_seconds
+        self.backoff_max_seconds = backoff_max_seconds
 
     def process_one(self, *, now: datetime | None = None) -> EmailJobWorkerResult:
         current_time = now or datetime.now(UTC)
@@ -56,7 +58,8 @@ class EmailJobWorkerService:
                 email_job=email_job,
                 error="recipient_email_missing",
                 now=current_time,
-                retry_delay=self.retry_delay,
+                backoff_base_seconds=self.backoff_base_seconds,
+                backoff_max_seconds=self.backoff_max_seconds,
             )
             logger.info(
                 "email_job_failed",
@@ -83,7 +86,8 @@ class EmailJobWorkerService:
                 email_job=email_job,
                 error=error,
                 now=current_time,
-                retry_delay=self.retry_delay,
+                backoff_base_seconds=self.backoff_base_seconds,
+                backoff_max_seconds=self.backoff_max_seconds,
             )
             logger.info(
                 "email_job_failed",
@@ -110,7 +114,8 @@ class EmailJobWorkerService:
                 email_job=email_job,
                 error=error,
                 now=current_time,
-                retry_delay=self.retry_delay,
+                backoff_base_seconds=self.backoff_base_seconds,
+                backoff_max_seconds=self.backoff_max_seconds,
             )
             logger.info(
                 "email_job_failed",

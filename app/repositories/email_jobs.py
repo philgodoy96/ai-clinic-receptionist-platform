@@ -44,10 +44,10 @@ class EmailJobRepository(Protocol):
     ) -> EmailJob:
         raise NotImplementedError
 
-    def create_replay(
+    def reset_for_replay(
         self,
         *,
-        original_email_job: EmailJob,
+        email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
         raise NotImplementedError
@@ -75,6 +75,7 @@ class EmailJobWorkerRepository(Protocol):
         *,
         email_job: EmailJob,
         now: datetime,
+        provider_message_id: str | None = None,
     ) -> EmailJob:
         raise NotImplementedError
 
@@ -84,6 +85,7 @@ class EmailJobWorkerRepository(Protocol):
         email_job: EmailJob,
         error: str,
         now: datetime,
-        retry_delay: timedelta,
+        backoff_base_seconds: int,
+        backoff_max_seconds: int,
     ) -> EmailJob:
         raise NotImplementedError

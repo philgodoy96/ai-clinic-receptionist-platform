@@ -82,7 +82,7 @@ def test_appointment_confirmation_worker_tests_remain_supported() -> None:
     from tests.test_email_job_worker import create_email_job
 
     now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
-    email_job = create_email_job(now=now)
+    email_job = create_email_job()
     repository = FakeEmailJobWorkerRepository([email_job])
     provider = FakeEmailDeliveryProvider()
     worker = EmailJobWorkerService(
@@ -109,10 +109,10 @@ def test_unknown_email_job_type_fails_with_existing_retry_behavior() -> None:
         recipient_email="ops@example.test",
         subject="Unsupported",
         body="Unsupported",
-        attempts=0,
+        attempt_count=0,
         max_attempts=3,
         payload={},
-        scheduled_for=now,
+        next_attempt_at=now,
         created_at=now,
         updated_at=now,
     )
@@ -126,7 +126,8 @@ def test_unknown_email_job_type_fails_with_existing_retry_behavior() -> None:
 
     result = worker.process_one(now=now)
 
-    assert result.status == EmailJobStatus.FAILED
+    assert result.status == EmailJobStatus.PENDING
+    assert email_job.attempt_count == 1
     assert email_job.last_error == "unsupported email job type: unsupported_type"
     assert provider.sent_messages == []
 
@@ -166,10 +167,9 @@ def create_human_escalation_email_job(
         recipient_email="clinic-staff@example.test",
         subject="placeholder subject",
         body="placeholder body",
-        attempts=0,
+        attempt_count=0,
         max_attempts=3,
         payload=payload,
-        scheduled_for=now,
         created_at=now,
         updated_at=now,
     )

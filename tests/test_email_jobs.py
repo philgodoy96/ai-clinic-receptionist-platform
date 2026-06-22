@@ -43,7 +43,7 @@ def test_enqueue_appointment_confirmation_creates_pending_email_job() -> None:
     assert email_job.appointment_id == appointment_id
     assert email_job.patient_id == patient_id
     assert email_job.recipient_email == "patient@example.test"
-    assert email_job.attempts == 0
+    assert email_job.attempt_count == 0
     assert email_job.max_attempts == 3
     assert email_job.payload["source"] == "retell_tool"
     assert "John Miller" in email_job.body
@@ -92,7 +92,7 @@ def test_enqueue_human_escalation_notification_creates_pending_email_job() -> No
     assert email_job.appointment_id == appointment_id
     assert email_job.patient_id == patient_id
     assert email_job.recipient_email is None
-    assert email_job.attempts == 0
+    assert email_job.attempt_count == 0
     assert email_job.max_attempts == 3
     assert email_job.payload["human_escalation_id"] == str(escalation_id)
     assert email_job.payload["conversation_id"] == str(conversation_id)
@@ -120,7 +120,7 @@ def test_enqueue_human_escalation_notification_uses_conversation_id_for_missing_
 def test_retry_failed_email_job_moves_failed_job_to_pending() -> None:
     failed_job = create_email_job(
         status=EmailJobStatus.FAILED,
-        attempts=2,
+        attempt_count=2,
         last_error="smtp failure",
     )
     repository = FakeEmailJobRepository()
@@ -131,10 +131,10 @@ def test_retry_failed_email_job_moves_failed_job_to_pending() -> None:
     result = service.retry_failed_email_job(failed_job.id, now=retry_at)
 
     assert result.status == EmailJobStatus.PENDING
-    assert result.scheduled_for == retry_at
+    assert result.next_attempt_at == retry_at
     assert result.locked_by is None
     assert result.locked_until is None
-    assert result.attempts == 2
+    assert result.attempt_count == 2
     assert result.last_error == "smtp failure"
 
 
@@ -159,10 +159,10 @@ def test_retry_failed_email_job_rejects_non_failed_status(
         service.retry_failed_email_job(email_job.id)
 
 
-def test_replay_dead_letter_email_job_creates_new_pending_job() -> None:
+def test_replay_failed_email_job_resets_failed_job_to_pending() -> None:
     original = create_email_job(
-        status=EmailJobStatus.DEAD_LETTER,
-        attempts=3,
+        status=EmailJobStatus.FAILED,
+        attempt_count=3,
         last_error="max attempts exceeded",
         payload={"source": "test"},
     )
@@ -171,27 +171,25 @@ def test_replay_dead_letter_email_job_creates_new_pending_job() -> None:
     service = EmailJobService(repository=repository)
     replay_at = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
 
-    replay = service.replay_dead_letter_email_job(original.id, now=replay_at)
+    replay = service.replay_failed_email_job(original.id, now=replay_at)
 
-    assert original.status == EmailJobStatus.DEAD_LETTER
-    assert replay.id != original.id
+    assert original.id == replay.id
     assert replay.status == EmailJobStatus.PENDING
-    assert replay.attempts == 0
-    assert replay.payload["replayed_from_email_job_id"] == str(original.id)
+    assert replay.attempt_count == 0
+    assert replay.next_attempt_at == replay_at
     assert replay.last_error is None
-    assert len(repository.email_jobs) == 2
+    assert len(repository.email_jobs) == 1
 
 
 @pytest.mark.parametrize(
     "status",
     [
-        EmailJobStatus.FAILED,
         EmailJobStatus.PENDING,
         EmailJobStatus.PROCESSING,
         EmailJobStatus.SENT,
     ],
 )
-def test_replay_dead_letter_email_job_rejects_non_dead_letter_status(
+def test_replay_failed_email_job_rejects_non_failed_status(
     status: EmailJobStatus,
 ) -> None:
     email_job = create_email_job(status=status)
@@ -200,7 +198,7 @@ def test_replay_dead_letter_email_job_rejects_non_dead_letter_status(
     service = EmailJobService(repository=repository)
 
     with pytest.raises(InvalidEmailJobReplayStateError):
-        service.replay_dead_letter_email_job(email_job.id)
+        service.replay_failed_email_job(email_job.id)
 
 
 METRICS_NOW = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
@@ -266,21 +264,21 @@ def test_get_operational_metrics_detects_overdue_pending_backlog() -> None:
         create_email_job(
             status=EmailJobStatus.PENDING,
             locked_by=None,
-            scheduled_for=METRICS_NOW - timedelta(hours=1),
-        ),
-    )
-    repository.add(
-        create_email_job(
-            status=EmailJobStatus.FAILED,
-            locked_by=None,
-            scheduled_for=METRICS_NOW - timedelta(hours=1),
+            next_attempt_at=METRICS_NOW - timedelta(hours=1),
         ),
     )
     repository.add(
         create_email_job(
             status=EmailJobStatus.PENDING,
             locked_by=None,
-            scheduled_for=METRICS_NOW + timedelta(hours=1),
+            next_attempt_at=None,
+        ),
+    )
+    repository.add(
+        create_email_job(
+            status=EmailJobStatus.PENDING,
+            locked_by=None,
+            next_attempt_at=METRICS_NOW + timedelta(hours=1),
         ),
     )
     service = EmailJobService(repository=repository)
@@ -369,7 +367,7 @@ class FakeEmailJobRepository:
                 email_job
                 for email_job in self.email_jobs
                 if email_job.job_type == job_type
-                and email_job.payload.get("idempotency_key") == idempotency_key
+                and email_job.idempotency_key == idempotency_key
             ),
             None,
         )
@@ -418,46 +416,28 @@ class FakeEmailJobRepository:
         now: datetime,
     ) -> EmailJob:
         email_job.status = EmailJobStatus.PENDING
-        email_job.scheduled_for = now
+        email_job.next_attempt_at = now
         email_job.locked_by = None
         email_job.locked_until = None
         email_job.updated_at = now
 
         return email_job
 
-    def create_replay(
+    def reset_for_replay(
         self,
         *,
-        original_email_job: EmailJob,
+        email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
-        replay_job = EmailJob(
-            id=uuid4(),
-            job_type=original_email_job.job_type,
-            status=EmailJobStatus.PENDING,
-            appointment_id=original_email_job.appointment_id,
-            patient_id=original_email_job.patient_id,
-            recipient_email=original_email_job.recipient_email,
-            subject=original_email_job.subject,
-            body=original_email_job.body,
-            attempts=0,
-            max_attempts=original_email_job.max_attempts,
-            locked_by=None,
-            locked_until=None,
-            last_error=None,
-            payload={
-                **original_email_job.payload,
-                "replayed_from_email_job_id": str(original_email_job.id),
-                "replayed_from_attempts": original_email_job.attempts,
-                "replayed_from_status": original_email_job.status.value,
-            },
-            scheduled_for=now,
-            sent_at=None,
-            created_at=now,
-            updated_at=now,
-        )
+        email_job.status = EmailJobStatus.PENDING
+        email_job.attempt_count = 0
+        email_job.next_attempt_at = now
+        email_job.last_error = None
+        email_job.locked_by = None
+        email_job.locked_until = None
+        email_job.updated_at = now
 
-        return self.add(replay_job)
+        return email_job
 
     def get_operational_metrics(
         self,
@@ -495,8 +475,11 @@ class FakeEmailJobRepository:
             overdue_pending_count=sum(
                 1
                 for job in jobs
-                if job.status in (EmailJobStatus.PENDING, EmailJobStatus.FAILED)
-                and job.scheduled_for <= now
+                if job.status == EmailJobStatus.PENDING
+                and (
+                    job.next_attempt_at is None
+                    or job.next_attempt_at <= now
+                )
             ),
             oldest_pending_created_at=(
                 min((job.created_at for job in pending_jobs), default=None)
@@ -513,16 +496,16 @@ class FakeEmailJobRepository:
 def create_email_job(
     *,
     status: EmailJobStatus,
-    attempts: int = 1,
+    attempt_count: int = 1,
     last_error: str | None = "smtp failure",
     locked_by: str | None = "worker-1",
     locked_until: datetime | None = None,
     payload: dict[str, str] | None = None,
     created_at: datetime | None = None,
-    scheduled_for: datetime | None = None,
+    next_attempt_at: datetime | None = None,
 ) -> EmailJob:
     effective_created_at = created_at or datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
-    effective_scheduled_for = scheduled_for or effective_created_at
+    effective_next_attempt_at = next_attempt_at
     effective_locked_until = locked_until
     if effective_locked_until is None and locked_by is not None:
         effective_locked_until = effective_created_at + timedelta(minutes=5)
@@ -536,13 +519,13 @@ def create_email_job(
         recipient_email="patient@example.test",
         subject="Appointment confirmation",
         body="Your appointment is confirmed.",
-        attempts=attempts,
+        attempt_count=attempt_count,
         max_attempts=3,
         locked_by=locked_by,
         locked_until=effective_locked_until,
         last_error=last_error,
         payload=payload or {"source": "test"},
-        scheduled_for=effective_scheduled_for,
+        next_attempt_at=effective_next_attempt_at,
         created_at=effective_created_at,
         updated_at=effective_created_at,
     )

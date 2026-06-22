@@ -163,7 +163,7 @@ def retry_failed_email_job(
 
 
 @router.post("/{email_job_id}/replay", response_model=EmailJobResponse)
-def replay_dead_letter_email_job(
+def replay_failed_email_job(
     email_job_id: UUID,
     db: Annotated[Session, Depends(get_db)],
     service: Annotated[EmailJobService, Depends(get_email_job_service)],
@@ -173,7 +173,7 @@ def replay_dead_letter_email_job(
     ],
 ) -> EmailJobResponse:
     try:
-        replayed_email_job = service.replay_dead_letter_email_job(email_job_id)
+        replayed_email_job = service.replay_failed_email_job(email_job_id)
         db.commit()
         db.refresh(replayed_email_job)
 
@@ -204,7 +204,7 @@ def replay_dead_letter_email_job(
         raise APIError(
             status_code=409,
             code="invalid_email_job_replay_state",
-            message="Only dead-letter email jobs can be replayed.",
+            message="Only failed email jobs can be replayed.",
         ) from exc
     except Exception:
         db.rollback()
