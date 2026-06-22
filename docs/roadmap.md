@@ -112,7 +112,7 @@ Implemented:
 - Chat appointment hold flow
 - Chat booking confirmation flow with patient identity parsing and confirmation email enqueue
 - Fake LLM provider foundation with structured output parsing and shadow analysis metadata
-- Real LLM provider adapter with configurable `FakeLLMProvider` default and optional Bedrock adapter
+- Real LLM provider adapter with configurable `FakeLLMProvider` default, optional Groq adapter for hosted public demo, and optional Bedrock adapter
 - Structured-output-assisted slot filling with validated merge into `chat_context`
 - Conversation health and escalation signals with deterministic health metadata and soft handoff behavior
 - Human escalation foundation with durable `HumanEscalation` records, handoff context, and internal listing/acknowledge/resolve API
@@ -136,7 +136,6 @@ Upcoming:
 - Staff notification provider adapter
 - Cost tracking aggregation
 - Hold expiration handling in chat
-- Groq provider adapter
 - Retell webhook security
 - Demo reset strategy
 
@@ -211,6 +210,6 @@ Potential work:
 - Retell webhook signature validation
 - Provider budget limits
 - DLQ support
-- GroqProvider or OpenAIProvider
+- OpenAI provider adapter
 - Grafana dashboard
 - Deployment documentation
