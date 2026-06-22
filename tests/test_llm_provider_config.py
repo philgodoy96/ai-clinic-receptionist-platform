@@ -73,3 +73,39 @@ def test_llm_max_primary_attempts_rejects_values_above_three(
 ) -> None:
     with pytest.raises(ValidationError):
         load_settings(monkeypatch, LLM_MAX_PRIMARY_ATTEMPTS="4")
+
+
+def test_llm_fallback_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_FALLBACK_ENABLED", raising=False)
+    settings = load_settings(monkeypatch)
+    assert settings.llm_fallback_enabled is False
+    assert settings.llm_fallback_provider is None
+
+
+def test_llm_fallback_enabled_requires_fallback_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError, match="LLM_FALLBACK_PROVIDER"):
+        load_settings(monkeypatch, LLM_FALLBACK_ENABLED="true")
+
+
+def test_llm_primary_provider_overrides_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PROVIDER="fake",
+        LLM_PRIMARY_PROVIDER="bedrock",
+        BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0",
+    )
+    assert settings.resolved_llm_primary_provider == LLMProviderName.BEDROCK
+
+
+def test_llm_max_fallback_attempts_rejects_values_above_two(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError):
+        load_settings(
+            monkeypatch,
+            LLM_FALLBACK_ENABLED="true",
+            LLM_FALLBACK_PROVIDER="fake",
+            LLM_MAX_FALLBACK_ATTEMPTS="3",
+        )
