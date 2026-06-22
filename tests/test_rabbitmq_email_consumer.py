@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
+
 from app.domain.jobs.enums import EmailJobStatus
 from app.messaging.email_job_consumer import EmailJobRabbitMQConsumer
 from app.messaging.email_job_dispatch import (
@@ -210,3 +212,78 @@ def test_dispatch_message_payload_contains_only_email_job_id() -> None:
     assert json.loads(body.decode("utf-8")) == {
         "email_job_id": str(email_job_id),
     }
+
+
+def test_duplicate_rabbitmq_delivery_sends_email_only_once() -> None:
+    email_job = create_email_job()
+    repository = FakeEmailJobWorkerRepository([email_job])
+    provider = FakeEmailDeliveryProvider()
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=provider,
+        worker_id="worker-1",
+    )
+    consumer = EmailJobRabbitMQConsumer(worker=worker)
+    acknowledger = FakeAcknowledger()
+    body = encode_email_job_dispatch_message(
+        EmailJobDispatchMessage(email_job_id=email_job.id),
+    )
+
+    first = consumer.handle_delivery(body=body, delivery_tag=1, acknowledger=acknowledger)
+    second = consumer.handle_delivery(body=body, delivery_tag=2, acknowledger=acknowledger)
+
+    assert first.ack is True
+    assert second.ack is True
+    assert acknowledger.acked == [1, 2]
+    assert len(provider.sent_messages) == 1
+    assert email_job.status == EmailJobStatus.SENT
+
+
+def test_already_sent_job_delivery_via_consumer_is_ignored() -> None:
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    email_job = create_email_job(status=EmailJobStatus.SENT)
+    email_job.sent_at = now
+    repository = FakeEmailJobWorkerRepository([email_job])
+    provider = FakeEmailDeliveryProvider()
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=provider,
+        worker_id="worker-1",
+    )
+    consumer = EmailJobRabbitMQConsumer(worker=worker)
+    acknowledger = FakeAcknowledger()
+    body = encode_email_job_dispatch_message(
+        EmailJobDispatchMessage(email_job_id=email_job.id),
+    )
+
+    result = consumer.handle_delivery(body=body, delivery_tag=4, acknowledger=acknowledger)
+
+    assert result.ack is True
+    assert provider.sent_messages == []
+    assert acknowledger.acked == [4]
+
+
+@pytest.mark.parametrize(
+    ("body",),
+    [
+        (b"{}",),
+        (b'{"email_job_id": ""}',),
+        (b'{"email_job_id": "not-a-uuid"}',),
+        (b'{"type": "email_job_ready"}',),
+    ],
+)
+def test_invalid_rabbitmq_payloads_are_acked_safely(body: bytes) -> None:
+    repository = FakeEmailJobWorkerRepository([])
+    worker = TrackingEmailJobWorkerService(
+        repository=repository,
+        delivery_provider=FakeEmailDeliveryProvider(),
+        worker_id="worker-1",
+    )
+    consumer = EmailJobRabbitMQConsumer(worker=worker)
+    acknowledger = FakeAcknowledger()
+
+    result = consumer.handle_delivery(body=body, delivery_tag=9, acknowledger=acknowledger)
+
+    assert result.ack is True
+    assert acknowledger.acked == [9]
+    assert worker.processed_job_ids == []

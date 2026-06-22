@@ -141,6 +141,45 @@ def test_sent_job_is_not_retried_automatically() -> None:
     assert sent_job.status == EmailJobStatus.SENT
 
 
+def test_process_email_job_skips_future_next_attempt_at() -> None:
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    future_job = create_email_job(next_attempt_at=now + timedelta(minutes=5))
+    repository = RetryPolicyEmailJobWorkerRepository([future_job])
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=FakeEmailDeliveryProvider(),
+        worker_id="worker-1",
+    )
+
+    result = worker.process_email_job(future_job.id, now=now)
+
+    assert result.processed is False
+    assert result.skip_reason == "not_claimable"
+    assert future_job.status == EmailJobStatus.PENDING
+
+
+def test_process_email_job_reclaims_expired_processing_lock() -> None:
+    now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    stuck_job = create_email_job(
+        status=EmailJobStatus.PROCESSING,
+        locked_by="worker-2",
+        locked_until=now - timedelta(minutes=1),
+    )
+    repository = RetryPolicyEmailJobWorkerRepository([stuck_job])
+    provider = FakeEmailDeliveryProvider()
+    worker = EmailJobWorkerService(
+        repository=repository,
+        delivery_provider=provider,
+        worker_id="worker-1",
+    )
+
+    result = worker.process_email_job(stuck_job.id, now=now)
+
+    assert result.processed is True
+    assert result.status == EmailJobStatus.SENT
+    assert len(provider.sent_messages) == 1
+
+
 def test_manual_replay_resets_failed_to_pending() -> None:
     failed_job = create_email_job(
         status=EmailJobStatus.FAILED,
