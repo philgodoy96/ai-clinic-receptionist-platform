@@ -21,9 +21,13 @@ The current implementation supports:
 - per-IP chat message limits
 - per-IP Retell tool limits
 - daily appointment creation quotas
-- daily confirmation email quotas
+- daily confirmation email quotas (`DEMO_CONFIRMATION_EMAILS_PER_DAY_PER_IP`, `DEMO_GLOBAL_CONFIRMATION_EMAILS_PER_DAY`)
 - global daily demo quotas
 - standardized 429 responses
+
+When confirmation email quotas are exceeded, booking can still succeed but the confirmation email job is skipped. This keeps the demo open while bounding outbound email volume.
+
+See also: [Email Dispatch Reliability](email-dispatch-reliability.md).
 
 ## Local Development
 
@@ -62,7 +66,7 @@ The following surfaces are protected:
 - chat messages
 - Retell tool endpoints
 - appointment creation quotas
-- confirmation email quotas
+- confirmation email quotas (per-IP and global daily limits on new confirmation email jobs)
 
 ## Failure Behavior
 

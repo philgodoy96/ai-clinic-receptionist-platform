@@ -124,6 +124,7 @@ Implemented:
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
 - LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
+- Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 
 Upcoming:
 
@@ -136,7 +137,6 @@ Upcoming:
 - Cost tracking aggregation
 - Hold expiration handling in chat
 - Groq provider adapter
-- Resend email provider
 - Retell webhook security
 - Demo reset strategy
 
@@ -168,11 +168,15 @@ Implemented:
 - Manual retry/replay endpoint
 - Email job operational metrics
 - `human_escalation_notification` worker rendering and fake delivery
+- Resend email provider adapter with fake provider default
+- Durable retry policy with exponential backoff, max attempts, and `next_attempt_at`
+- Appointment confirmation idempotency key
+- RabbitMQ wake-up messages containing only `email_job_id`
+- Worker claim/lock behavior and polling fallback worker
 
 Future work:
 
 - Admin auth/RBAC as future production hardening, outside current demo scope
-- Provider-level idempotency keys
 - Prometheus/Grafana integration (optional)
 
 ## Stage 9 — Observability
@@ -203,7 +207,6 @@ Potential work:
 - Retell webhook signature validation
 - Provider budget limits
 - DLQ support
-- ResendProvider
 - GroqProvider or OpenAIProvider
 - Grafana dashboard
 - Deployment documentation
