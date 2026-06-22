@@ -13,6 +13,7 @@ from app.schemas.retell_tools import (
     CheckAvailabilityToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
+    RescheduleAppointmentToolArguments,
     RetellProviderToolCallRequest,
     RetellToolCallResponse,
 )
@@ -25,6 +26,7 @@ _ARGUMENT_MODEL_BY_TOOL: dict[
         | ReleaseAppointmentHoldToolArguments
         | BookAppointmentToolArguments
         | CancelAppointmentToolArguments
+        | RescheduleAppointmentToolArguments
     ],
 ] = {}
 
@@ -35,6 +37,7 @@ class RetellSupportedToolName(StrEnum):
     RELEASE_APPOINTMENT_HOLD = "release_appointment_hold"
     BOOK_APPOINTMENT = "book_appointment"
     CANCEL_APPOINTMENT = "cancel_appointment"
+    RESCHEDULE_APPOINTMENT = "reschedule_appointment"
 
 
 class RetellToolCallStatus(StrEnum):
@@ -61,6 +64,7 @@ RetellToolArguments = (
     | ReleaseAppointmentHoldToolArguments
     | BookAppointmentToolArguments
     | CancelAppointmentToolArguments
+    | RescheduleAppointmentToolArguments
 )
 
 
@@ -200,5 +204,6 @@ _ARGUMENT_MODEL_BY_TOOL.update(
         RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD: ReleaseAppointmentHoldToolArguments,
         RetellSupportedToolName.BOOK_APPOINTMENT: BookAppointmentToolArguments,
         RetellSupportedToolName.CANCEL_APPOINTMENT: CancelAppointmentToolArguments,
+        RetellSupportedToolName.RESCHEDULE_APPOINTMENT: RescheduleAppointmentToolArguments,
     },
 )

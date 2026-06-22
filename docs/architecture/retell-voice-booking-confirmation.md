@@ -43,9 +43,9 @@ See also:
 6. The existing booking flow persists the appointment and queues confirmation email.
 7. The backend clears active hold context and returns a provider-safe response.
 
-Booked appointments can later be canceled through a separate `cancel_appointment` voice flow that requires explicit cancellation confirmation and delegates to `AppointmentCancellationService`. See [Retell Voice Appointment Cancellation](retell-voice-cancellation.md).
+Booked appointments can later be rescheduled through a separate `reschedule_appointment` voice flow that requires explicit reschedule confirmation, original appointment reference, and target hold or new slot before delegating to `AppointmentReschedulingService`. See [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md).
 
-Rescheduling is implemented as a shared backend service in `AppointmentReschedulingService`. Voice and chat adapters are not wired to a Retell reschedule tool yet. See [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md).
+Booked appointments can also be canceled through a separate `cancel_appointment` voice flow that requires explicit cancellation confirmation and delegates to `AppointmentCancellationService`. See [Retell Voice Appointment Cancellation](retell-voice-cancellation.md).
 
 ## Safety Boundary
 
@@ -84,7 +84,6 @@ The voice path is a channel adapter around the same business core.
 
 Future implementation phases may add:
 
-- Retell voice reschedule tool delegating to `AppointmentReschedulingService`
 - transcript summary persistence
 - Retell dashboard setup runbook
 - real Retell smoke test

@@ -23,6 +23,7 @@ from app.messaging.email_job_dispatch import (
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
 from app.repositories.sqlalchemy.appointments import (
     SQLAlchemyAppointmentCancellationAttemptRepository,
+    SQLAlchemyAppointmentRescheduleAttemptRepository,
 )
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
 from app.repositories.sqlalchemy.conversations import SQLAlchemyConversationRepository
@@ -42,6 +43,7 @@ from app.repositories.sqlalchemy.voice_calls import SQLAlchemyVoiceCallRepositor
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_holds import AppointmentHoldService
+from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.clock import SystemClock
@@ -350,6 +352,25 @@ def get_appointment_cancellation_service(
     )
 
 
+def get_appointment_rescheduling_service(
+    db: Annotated[Session, Depends(get_db)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+) -> AppointmentReschedulingService:
+    conversation_repository = SQLAlchemyConversationRepository(db)
+    return AppointmentReschedulingService(
+        appointments=SQLAlchemyAppointmentRepository(db),
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+        doctors=SQLAlchemyDoctorRepository(db),
+        hold_service=hold_service,
+        reschedule_attempts=SQLAlchemyAppointmentRescheduleAttemptRepository(db),
+        audit_logs=audit_logs,
+        conversations=ConversationService(repository=conversation_repository),
+        email_jobs=email_jobs,
+    )
+
+
 def get_retell_tool_calling_adapter(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -366,6 +387,10 @@ def get_retell_tool_calling_adapter(
         AppointmentCancellationService,
         Depends(get_appointment_cancellation_service),
     ],
+    appointment_rescheduling: Annotated[
+        AppointmentReschedulingService,
+        Depends(get_appointment_rescheduling_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -376,6 +401,7 @@ def get_retell_tool_calling_adapter(
         conversations=ConversationService(repository=conversation_repository),
         voice_booking_confirmation=voice_booking_confirmation,
         appointment_cancellation=appointment_cancellation,
+        appointment_rescheduling=appointment_rescheduling,
         appointments=SQLAlchemyAppointmentRepository(db),
     )
 
