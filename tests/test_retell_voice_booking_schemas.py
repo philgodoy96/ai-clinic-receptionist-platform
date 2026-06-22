@@ -146,3 +146,11 @@ def test_confirmation_text_too_long_rejected() -> None:
 
     with pytest.raises(ValidationError):
         BookAppointmentToolArguments.model_validate(payload)
+
+
+def test_blocked_transcript_fields_rejected() -> None:
+    payload = _valid_booking_arguments()
+    payload["transcript"] = "Patient said yes please book"
+
+    with pytest.raises(ValidationError):
+        BookAppointmentToolArguments.model_validate(payload)

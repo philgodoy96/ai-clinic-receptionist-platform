@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domain.audit.enums import AuditEventType
+from app.domain.audit.enums import AuditEventOutcome, AuditEventType
 from app.domain.conversations.enums import ConversationChannel, ConversationStatus
 from app.domain.voice_booking import (
     VoiceBookingConfirmationRequest,
@@ -330,6 +330,23 @@ def test_no_direct_appointment_insert_outside_service() -> None:
     assert len(context.tracking_booking.book_calls) == 1
 
 
+def test_active_hold_required() -> None:
+    context = create_voice_booking_confirmation_context()
+    context.conversation.conversation_metadata = {
+        "voice_context": {
+            "specialty_name": "Dermatology",
+            "doctor_name": "Dr. Emily Carter",
+        },
+    }
+
+    with pytest.raises(VoiceBookingMissingHoldError):
+        context.service.confirm_and_book(
+            _build_request(context, hold_id=""),
+        )
+
+    assert context.tracking_booking.book_calls == []
+
+
 def test_no_duplicate_email_job_on_duplicate_callback() -> None:
     context = create_voice_booking_confirmation_context()
     hold_id = _active_hold_id(context)
@@ -340,3 +357,51 @@ def test_no_duplicate_email_job_on_duplicate_callback() -> None:
     context.service.confirm_and_book(request)
 
     assert len(context.email_repository.email_jobs) == first_email_count
+
+
+def test_failed_recoverable_booking_preserves_useful_context() -> None:
+    context = create_voice_booking_confirmation_context(
+        book_error=AppointmentSlotAlreadyBookedError("slot already booked"),
+    )
+    hold_id = _active_hold_id(context)
+    voice_context_before = read_voice_context(context.conversation.conversation_metadata)
+
+    with pytest.raises(VoiceBookingTemporaryFailureError):
+        context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    voice_context_after = read_voice_context(context.conversation.conversation_metadata)
+    assert voice_context_after.get("hold_id") == voice_context_before.get("hold_id")
+    assert voice_context_after.get("availability_slot_id") == voice_context_before.get(
+        "availability_slot_id",
+    )
+    assert voice_context_after.get("appointment_id") is None
+
+
+def test_audit_success_event_recorded_when_audit_service_available() -> None:
+    context = create_voice_booking_confirmation_context()
+    hold_id = _active_hold_id(context)
+
+    context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    assert len(context.audit_logs.records) == 1
+    audit_record = context.audit_logs.records[0]
+    assert audit_record.event_type == AuditEventType.APPOINTMENT_BOOKING_CONFIRMED
+    assert audit_record.outcome == AuditEventOutcome.SUCCESS
+    assert audit_record.appointment_id is not None
+    assert "transcript" not in audit_record.event_metadata
+
+
+def test_audit_failure_event_recorded_on_recoverable_booking_error() -> None:
+    context = create_voice_booking_confirmation_context(
+        book_error=AppointmentSlotAlreadyBookedError("slot already booked"),
+    )
+    hold_id = _active_hold_id(context)
+
+    with pytest.raises(VoiceBookingTemporaryFailureError):
+        context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    assert len(context.audit_logs.records) == 1
+    audit_record = context.audit_logs.records[0]
+    assert audit_record.event_type == AuditEventType.APPOINTMENT_BOOKING_FAILED
+    assert audit_record.outcome == AuditEventOutcome.FAILURE
+    assert audit_record.event_metadata["reason"] == "slot_already_booked"
