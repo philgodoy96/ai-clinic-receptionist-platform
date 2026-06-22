@@ -4,6 +4,7 @@ import logging
 
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.groq_provider import GroqLLMProvider
 from app.ai.llm_provider import LLMProvider, LLMProviderName
 from app.core.config import Settings
 
@@ -37,6 +38,17 @@ def create_llm_provider_from_settings(
             max_retries=settings.bedrock_max_retries,
             temperature=settings.bedrock_temperature,
             max_tokens=settings.bedrock_max_tokens,
+        )
+
+    if provider_name == LLMProviderName.GROQ:
+        return GroqLLMProvider(
+            api_key=settings.groq_api_key,
+            model=settings.groq_model,
+            base_url=settings.groq_base_url,
+            timeout_seconds=settings.groq_request_timeout_seconds,
+            temperature=settings.groq_temperature,
+            max_output_tokens=settings.groq_max_output_tokens,
+            response_format=settings.groq_response_format,
         )
 
     raise LLMProviderConfigurationError(
