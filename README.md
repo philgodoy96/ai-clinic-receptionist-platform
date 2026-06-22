@@ -27,7 +27,7 @@ This project focuses on:
 - Chat receptionist flow
 - Tool calling
 - Appointment scheduling
-- Appointment rescheduling
+- Appointment rescheduling foundation (`AppointmentReschedulingService`)
 - Appointment cancellation
 - Patient lookup
 - Temporary appointment slot holding
@@ -99,7 +99,7 @@ The receptionist will support:
 - Existing patient lookup
 - Lightweight patient registration
 - Appointment lookup
-- Appointment rescheduling
+- Appointment rescheduling foundation
 - Appointment cancellation
 - Doctor information
 - Specialty information
@@ -146,7 +146,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, shared appointment rescheduling foundation via `AppointmentReschedulingService`, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -169,6 +169,7 @@ Architecture docs:
 - `docs/architecture/voice-conversation-bridge.md`
 - `docs/architecture/retell-voice-booking-confirmation.md`
 - `docs/architecture/retell-voice-cancellation.md`
+- `docs/architecture/appointment-rescheduling-foundation.md`
 
 ## Local Mode vs Public Demo Mode
 
@@ -210,6 +211,6 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, and `cancel_appointment` via `POST /api/v1/retell/tools`. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, and `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency.
+**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, and `cancel_appointment` via `POST /api/v1/retell/tools`. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Appointment rescheduling is implemented as a shared backend foundation in `AppointmentReschedulingService`; Retell and chat reschedule adapters are not wired yet. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency, and `docs/architecture/appointment-rescheduling-foundation.md` for the shared rescheduling service boundary.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
