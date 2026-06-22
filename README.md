@@ -172,6 +172,8 @@ Architecture docs:
 
 **Email mode:** `EMAIL_PROVIDER=fake` records outbound messages in memory for workers and tests. No Resend API key is required. Set `EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` only for a hosted public demo that sends real mail.
 
+Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, RabbitMQ wake-up messages only trigger workers, and retry timing is controlled by `next_attempt_at`. Resend idempotency keys reduce duplicate-send risk but do not guarantee exactly-once delivery across the external provider.
+
 **Public demo mode** is intended for a hosted unauthenticated demo:
 
 - `PUBLIC_DEMO_MODE=true`

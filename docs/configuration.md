@@ -24,6 +24,10 @@ See `.env.example` for a safe local template.
 
 ## Email Jobs
 
+Postgres `EmailJob` records are the durable source of truth for delivery state. RabbitMQ carries wake-up messages only (`email_job_id`). Retry scheduling uses `next_attempt_at`; RabbitMQ TTL retry queues are not used for provider failures.
+
+Email delivery is **at-least-once**. Exactly-once delivery across Postgres and external providers is not guaranteed. When `EMAIL_PROVIDER=resend`, the worker passes `EmailJob.idempotency_key` (or an `email_job:{id}` fallback) to Resend as an `Idempotency-Key` header.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMAIL_PROVIDER` | `fake` | Email provider selection: `fake` or `resend` |
