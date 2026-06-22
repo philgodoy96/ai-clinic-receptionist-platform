@@ -29,6 +29,7 @@ _BLOCKED_CONTEXT_KEYS = frozenset(
 _SAFE_VOICE_CONTEXT_KEYS = frozenset(
     {
         "appointment_id",
+        "appointment_status",
         "availability_slot_id",
         "doctor_id",
         "doctor_name",
