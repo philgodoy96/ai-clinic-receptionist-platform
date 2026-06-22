@@ -153,6 +153,40 @@ def is_reschedule_appointment_executable(
     )
 
 
+def resolve_reschedule_target_reference(
+    arguments: RescheduleAppointmentToolArguments,
+) -> tuple[UUID | None, UUID | None, str | None]:
+    hold_text = arguments.hold_id.strip() if arguments.hold_id else ""
+    slot_text = (
+        str(arguments.new_slot_id).strip()
+        if arguments.new_slot_id is not None
+        else ""
+    )
+
+    has_hold = bool(hold_text)
+    has_slot = bool(slot_text)
+
+    if not has_hold and not has_slot:
+        return None, None, "new_slot_required"
+
+    parsed_hold: UUID | None = None
+    parsed_slot: UUID | None = None
+
+    if has_hold:
+        try:
+            parsed_hold = UUID(hold_text)
+        except ValueError:
+            return None, None, "active_hold_required"
+
+    if has_slot:
+        try:
+            parsed_slot = UUID(slot_text)
+        except ValueError:
+            return None, None, "new_slot_required"
+
+    return parsed_hold, parsed_slot, None
+
+
 def read_reschedule_appointment_voice_context(
     conversation_metadata: dict[str, Any],
 ) -> dict[str, Any]:

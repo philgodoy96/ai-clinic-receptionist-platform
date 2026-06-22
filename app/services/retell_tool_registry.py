@@ -10,6 +10,7 @@ SIDE_EFFECTING_RETELL_TOOLS: frozenset[RetellSupportedToolName] = frozenset(
         RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD,
         RetellSupportedToolName.BOOK_APPOINTMENT,
         RetellSupportedToolName.CANCEL_APPOINTMENT,
+        RetellSupportedToolName.RESCHEDULE_APPOINTMENT,
     },
 )
 
