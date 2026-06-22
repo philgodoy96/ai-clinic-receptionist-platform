@@ -11,6 +11,10 @@ from app.domain.conversations.enums import (
     ConversationMessageRole,
     ConversationStatus,
 )
+from app.domain.voice_conversation import (
+    clear_active_hold_voice_context_metadata,
+    merge_voice_context_metadata,
+)
 from app.models.conversations import Conversation, ConversationMessage
 from app.repositories.conversations import ConversationRepository
 
@@ -171,5 +175,31 @@ class ConversationService:
                 **chat_context,
             },
         }
+        conversation.updated_at = datetime.now(UTC)
+        return self.repository.update(conversation)
+
+    def merge_voice_context(
+        self,
+        *,
+        conversation_id: UUID,
+        voice_context: dict[str, Any],
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        conversation.conversation_metadata = merge_voice_context_metadata(
+            conversation.conversation_metadata,
+            voice_context,
+        )
+        conversation.updated_at = datetime.now(UTC)
+        return self.repository.update(conversation)
+
+    def clear_voice_active_hold(
+        self,
+        *,
+        conversation_id: UUID,
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        conversation.conversation_metadata = clear_active_hold_voice_context_metadata(
+            conversation.conversation_metadata,
+        )
         conversation.updated_at = datetime.now(UTC)
         return self.repository.update(conversation)

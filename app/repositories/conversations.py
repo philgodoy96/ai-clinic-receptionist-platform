@@ -21,6 +21,9 @@ class ConversationRepository(Protocol):
     ) -> Conversation | None:
         raise NotImplementedError
 
+    def get_by_call_id(self, call_id: str) -> Conversation | None:
+        raise NotImplementedError
+
     def add_message(self, message: ConversationMessage) -> ConversationMessage:
         raise NotImplementedError
 

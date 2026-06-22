@@ -9,6 +9,8 @@ from app.services.voice_call_pagination import VoiceCallCursor, VoiceCallEventCu
 
 
 class VoiceCallRepository(Protocol):
+    """Persistence boundary for voice calls used by lifecycle and bridge services."""
+
     def get_by_id(self, voice_call_id: UUID) -> VoiceCall | None:
         raise NotImplementedError
 
