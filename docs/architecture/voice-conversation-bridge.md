@@ -23,12 +23,15 @@ The implementation includes:
 - voice cancellation context resolution for `cancel_appointment`
 - internal/debug context endpoint
 
+Rescheduling is not wired through Retell tools yet. The shared backend foundation lives in `AppointmentReschedulingService`. See [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md).
+
 See also:
 
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
 - [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
+- [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md)
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Conversation Domain](conversation-domain.md)
 
@@ -107,6 +110,8 @@ Before executing supported scheduling tools, the Retell tool adapter ensures the
 
 `cancel_appointment` resolves the target appointment from tool arguments or linked `voice_context`, requires explicit cancellation confirmation, and on success updates `appointment_status` to `cancelled` while clearing active hold fields when present.
 
+After a successful reschedule through a future channel adapter, `voice_context` should store the new `appointment_id`, `appointment_status`, slot timing fields, and cleared hold fields using the same safe merge rules as booking and cancellation.
+
 ## Internal Debug Endpoint
 
 For local verification and demo debugging only:
@@ -137,7 +142,7 @@ The two context namespaces are separate so chat and voice adapters do not overwr
 
 Future implementation phases may add:
 
-- reschedule appointment via voice
+- Retell voice reschedule tool delegating to `AppointmentReschedulingService`
 - transcript summary persistence
 - deployment runbook
 - Retell dashboard setup

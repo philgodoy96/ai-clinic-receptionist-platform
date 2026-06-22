@@ -78,7 +78,7 @@ Goals:
 - Implement doctor and specialty listing
 - Implement availability lookup
 - Implement appointment booking
-- Implement rescheduling
+- Implement appointment rescheduling foundation
 - Implement cancellation
 
 ## Stage 5 — Redis Appointment Holds
@@ -130,6 +130,7 @@ Implemented:
 - Voice conversation bridge with durable `VoiceCall` to `Conversation` linkage, safe `voice_context` storage, Retell tool context integration, and internal/debug conversation-context API
 - Retell voice booking confirmation with active hold validation, patient identity validation, explicit caller confirmation, idempotent provider callback handling, and delegation to `AppointmentBookingService` (see `docs/architecture/retell-voice-booking-confirmation.md`)
 - Retell voice appointment cancellation with explicit cancellation confirmation, cancelable status validation, idempotent provider callback handling, and delegation to `AppointmentCancellationService` (see `docs/architecture/retell-voice-cancellation.md`)
+- Appointment rescheduling foundation with shared `AppointmentReschedulingService`, original appointment validation, target slot/hold validation, explicit confirmation, idempotency, safe audit logging, and safe conversation metadata updates (see `docs/architecture/appointment-rescheduling-foundation.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 
 Upcoming:
@@ -162,9 +163,12 @@ Implemented:
 - Voice conversation bridge with `VoiceCall` to `Conversation` linkage, safe voice context, Retell tool integration, and internal/debug context endpoint (see `docs/architecture/voice-conversation-bridge.md`)
 - Retell voice booking confirmation with hold, identity, and explicit confirmation validation (see `docs/architecture/retell-voice-booking-confirmation.md`)
 - Retell voice appointment cancellation with explicit confirmation, cancelable status validation, and shared `AppointmentCancellationService` delegation (see `docs/architecture/retell-voice-cancellation.md`)
+- Appointment rescheduling foundation with shared `AppointmentReschedulingService` and attempt/audit support (see `docs/architecture/appointment-rescheduling-foundation.md`)
 
 Upcoming:
 
+- Retell voice reschedule tool
+- written chat reschedule flow
 - Tool call recording
 
 ## Stage 8 — Background Email Jobs
