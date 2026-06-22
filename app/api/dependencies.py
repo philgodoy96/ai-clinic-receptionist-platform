@@ -55,6 +55,7 @@ from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
 from app.services.voice_calls import VoiceCallInspectionService
+from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 
 
 def get_scheduling_service(
@@ -286,15 +287,31 @@ def get_retell_scheduling_tool_adapter(
     return RetellSchedulingToolAdapter(service)
 
 
+def get_voice_conversation_bridge_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> VoiceConversationBridgeService:
+    return VoiceConversationBridgeService(
+        voice_calls=SQLAlchemyVoiceCallRepository(db),
+        conversations=SQLAlchemyConversationRepository(db),
+    )
+
+
 def get_retell_tool_calling_adapter(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    voice_conversation_bridge: Annotated[
+        VoiceConversationBridgeService,
+        Depends(get_voice_conversation_bridge_service),
+    ],
 ) -> RetellToolCallingAdapter:
+    conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
         scheduling_service=scheduling_service,
         hold_service=hold_service,
         voice_calls=SQLAlchemyVoiceCallRepository(db),
+        voice_conversation_bridge=voice_conversation_bridge,
+        conversations=ConversationService(repository=conversation_repository),
     )
 
 
