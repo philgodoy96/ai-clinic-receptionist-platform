@@ -75,6 +75,9 @@ class RetellProviderToolCallRequest(BaseModel):
     occurred_at: datetime | None = None
 
 
+RetellToolCallRequest = RetellProviderToolCallRequest
+
+
 class RetellToolCallResponse(BaseModel):
     status: Literal["succeeded", "failed", "rejected"]
     tool_name: str = Field(min_length=1, max_length=120)
