@@ -50,6 +50,7 @@ from app.services.llm_receptionist import (
     build_llm_receptionist_analysis_service_from_settings,
 )
 from app.services.retell_call_lifecycle import RetellCallLifecycleService
+from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
@@ -283,6 +284,18 @@ def get_retell_scheduling_tool_adapter(
     service: Annotated[SchedulingService, Depends(get_scheduling_service)],
 ) -> RetellSchedulingToolAdapter:
     return RetellSchedulingToolAdapter(service)
+
+
+def get_retell_tool_calling_adapter(
+    db: Annotated[Session, Depends(get_db)],
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+) -> RetellToolCallingAdapter:
+    return RetellToolCallingAdapter(
+        scheduling_service=scheduling_service,
+        hold_service=hold_service,
+        voice_calls=SQLAlchemyVoiceCallRepository(db),
+    )
 
 
 def get_retell_appointment_hold_tool_adapter(
