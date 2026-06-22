@@ -24,7 +24,28 @@ The implementation includes:
 - structured output / JSON response mode configuration
 - provider metadata
 - integration with LLM reliability orchestration
+- explicit `User-Agent` on outbound HTTP requests
 - tests with mocked provider calls
+
+## HTTP Client
+
+`GroqLLMProvider` uses Python `urllib` for outbound calls. Groq's API is fronted by
+Cloudflare, which blocks the default `Python-urllib/3.x` user agent. Requests without
+an explicit `User-Agent` can fail immediately with HTTP `403` and body `error code: 1010`
+before Groq processes the prompt.
+
+The adapter sends `User-Agent: ai-clinic-receptionist-platform/1.0` on every request.
+Provider exceptions for HTTP `4xx`/`5xx` responses include the response body when
+available to simplify troubleshooting.
+
+### Troubleshooting shadow analysis failures
+
+If chat shadow metadata shows `used_fallback=true`, `failure_reason=provider_exception`,
+and `input_tokens=0` while a manual Groq API test succeeds from another HTTP client:
+
+- confirm the running API process includes the explicit `User-Agent` fix
+- compare the failing client fingerprint (for example PowerShell vs Python `urllib`)
+- inspect the provider exception message for Cloudflare `1010` or Groq API error JSON
 
 ## Local Development
 
