@@ -21,6 +21,13 @@ def provider_failure_reason(error: LLMProviderError) -> LLMFailureReason:
 class LLMProviderName(StrEnum):
     FAKE = "fake"
     BEDROCK = "bedrock"
+    GROQ = "groq"
+
+
+class GroqResponseFormat(StrEnum):
+    JSON_SCHEMA = "json_schema"
+    JSON_OBJECT = "json_object"
+    NONE = "none"
 
 
 class LLMFinishReason(StrEnum):
