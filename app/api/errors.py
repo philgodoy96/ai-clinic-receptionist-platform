@@ -25,6 +25,9 @@ RETELL_SIGNATURE_INVALID_CODE = "retell_signature_invalid"
 RETELL_WEBHOOK_VERIFICATION_UNAVAILABLE_CODE = "retell_webhook_verification_unavailable"
 RETELL_PAYLOAD_TOO_LARGE_CODE = "retell_payload_too_large"
 INVALID_RETELL_PAYLOAD_CODE = "invalid_retell_payload"
+UNSUPPORTED_RETELL_TOOL_CODE = "unsupported_retell_tool"
+RETELL_TOOL_PROVIDER_CALL_ID_REQUIRED_CODE = "retell_tool_provider_call_id_required"
+RETELL_TOOL_ARGUMENTS_INVALID_CODE = "retell_tool_arguments_invalid"
 
 
 def error_detail(
