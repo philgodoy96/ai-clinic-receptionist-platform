@@ -107,7 +107,7 @@ class EmailJobWorkerService:
             )
 
         try:
-            self.delivery_provider.send(message)
+            send_result = self.delivery_provider.send(message)
         except Exception as exc:
             error = str(exc)
             failed_job = self.repository.mark_failed(
@@ -137,6 +137,7 @@ class EmailJobWorkerService:
         sent_job = self.repository.mark_sent(
             email_job=email_job,
             now=current_time,
+            provider_message_id=send_result.provider_message_id,
         )
         logger.info(
             "email_job_sent",
