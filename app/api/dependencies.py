@@ -32,6 +32,9 @@ from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyPatientRepository,
     SQLAlchemySpecialtyRepository,
 )
+from app.repositories.sqlalchemy.voice_booking_attempts import (
+    SQLAlchemyVoiceBookingAttemptRepository,
+)
 from app.repositories.sqlalchemy.voice_calls import SQLAlchemyVoiceCallRepository
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
@@ -54,6 +57,7 @@ from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
 from app.services.voice_calls import VoiceCallInspectionService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 
@@ -290,9 +294,44 @@ def get_retell_scheduling_tool_adapter(
 def get_voice_conversation_bridge_service(
     db: Annotated[Session, Depends(get_db)],
 ) -> VoiceConversationBridgeService:
+    conversation_repository = SQLAlchemyConversationRepository(db)
     return VoiceConversationBridgeService(
         voice_calls=SQLAlchemyVoiceCallRepository(db),
-        conversations=SQLAlchemyConversationRepository(db),
+        conversations=conversation_repository,
+        conversation_service=ConversationService(repository=conversation_repository),
+    )
+
+
+def get_voice_booking_confirmation_service(
+    db: Annotated[Session, Depends(get_db)],
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    booking_service: Annotated[
+        AppointmentBookingService,
+        Depends(get_appointment_booking_service),
+    ],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+    email_job_dispatch: Annotated[
+        EmailJobDispatchPublisher,
+        Depends(get_email_job_dispatch_publisher),
+    ],
+    demo_guardrails: Annotated[DemoGuardrailService, Depends(get_demo_guardrail_service)],
+) -> VoiceBookingConfirmationService:
+    conversation_repository = SQLAlchemyConversationRepository(db)
+    return VoiceBookingConfirmationService(
+        db=db,
+        booking_service=booking_service,
+        hold_service=hold_service,
+        scheduling_service=scheduling_service,
+        conversations=ConversationService(repository=conversation_repository),
+        audit_logs=audit_logs,
+        email_jobs=email_jobs,
+        voice_booking_attempts=SQLAlchemyVoiceBookingAttemptRepository(db),
+        appointments=SQLAlchemyAppointmentRepository(db),
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+        email_job_dispatch=email_job_dispatch,
+        demo_guardrails=demo_guardrails,
     )
 
 
@@ -304,6 +343,10 @@ def get_retell_tool_calling_adapter(
         VoiceConversationBridgeService,
         Depends(get_voice_conversation_bridge_service),
     ],
+    voice_booking_confirmation: Annotated[
+        VoiceBookingConfirmationService,
+        Depends(get_voice_booking_confirmation_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -312,6 +355,8 @@ def get_retell_tool_calling_adapter(
         voice_calls=SQLAlchemyVoiceCallRepository(db),
         voice_conversation_bridge=voice_conversation_bridge,
         conversations=ConversationService(repository=conversation_repository),
+        voice_booking_confirmation=voice_booking_confirmation,
+        appointments=SQLAlchemyAppointmentRepository(db),
     )
 
 
