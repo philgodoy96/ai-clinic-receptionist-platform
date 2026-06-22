@@ -18,6 +18,7 @@ from app.services.scheduling import (
     InvalidAvailabilityWindowError,
     PatientLookupCriteria,
 )
+from tests.retell_webhook_support import configure_retell_for_tests
 
 
 @pytest.fixture()
@@ -81,6 +82,7 @@ def fake_service() -> FakeSchedulingService:
 @pytest.fixture()
 def client(fake_service: FakeSchedulingService) -> Generator[TestClient, None, None]:
     app = create_app()
+    configure_retell_for_tests(app)
 
     def override_adapter() -> RetellSchedulingToolAdapter:
         return RetellSchedulingToolAdapter(fake_service)

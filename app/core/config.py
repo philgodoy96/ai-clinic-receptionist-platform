@@ -44,8 +44,26 @@ class Settings(BaseSettings):
         alias="EMAIL_JOB_LOCK_TTL_SECONDS",
     )
 
+    retell_enabled: bool = Field(default=False, alias="RETELL_ENABLED")
     retell_api_key: str = Field(default="", alias="RETELL_API_KEY")
-    retell_webhook_secret: str = Field(default="", alias="RETELL_WEBHOOK_SECRET")
+    retell_webhook_verification_enabled: bool = Field(
+        default=True,
+        alias="RETELL_WEBHOOK_VERIFICATION_ENABLED",
+    )
+    retell_webhook_secret: str | None = Field(default=None, alias="RETELL_WEBHOOK_SECRET")
+    retell_allow_insecure_webhooks: bool = Field(
+        default=False,
+        alias="RETELL_ALLOW_INSECURE_WEBHOOKS",
+    )
+    retell_signature_header_name: str = Field(
+        default="x-retell-signature",
+        alias="RETELL_SIGNATURE_HEADER_NAME",
+    )
+    retell_request_max_body_bytes: int = Field(
+        default=262144,
+        ge=1,
+        alias="RETELL_REQUEST_MAX_BODY_BYTES",
+    )
 
     email_provider: str = Field(default="fake", alias="EMAIL_PROVIDER")
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
@@ -196,8 +214,30 @@ class Settings(BaseSettings):
             self._validate_llm_provider_config(self.llm_fallback_provider)
 
         self._validate_email_provider_settings()
+        self._validate_retell_settings()
 
         return self
+
+    _INSECURE_WEBHOOK_ALLOWED_ENVS = frozenset({"local", "test", "development"})
+
+    def _validate_retell_settings(self) -> None:
+        if (
+            self.retell_enabled
+            and self.retell_webhook_verification_enabled
+            and not (self.retell_webhook_secret or "").strip()
+        ):
+            raise ValueError(
+                "RETELL_WEBHOOK_SECRET is required when RETELL_ENABLED and "
+                "RETELL_WEBHOOK_VERIFICATION_ENABLED are true",
+            )
+
+        if self.retell_allow_insecure_webhooks:
+            normalized_env = self.app_env.strip().lower()
+            if normalized_env not in self._INSECURE_WEBHOOK_ALLOWED_ENVS:
+                raise ValueError(
+                    "RETELL_ALLOW_INSECURE_WEBHOOKS is only allowed when APP_ENV is "
+                    "local, test, or development",
+                )
 
     def _validate_email_provider_settings(self) -> None:
         provider_name = self.email_provider.strip().lower()

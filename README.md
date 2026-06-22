@@ -169,7 +169,8 @@ Architecture docs:
 - `LLM_MAX_PRIMARY_ATTEMPTS=2`
 - `LLM_FALLBACK_ENABLED=false`
 - `EMAIL_PROVIDER=fake`
-- no Groq, Bedrock, or Resend API keys required
+- `RETELL_ENABLED=false`
+- no Groq, Bedrock, Resend, or Retell API keys required
 - Docker Compose for PostgreSQL, Redis, and RabbitMQ
 
 **Groq public demo mode** is intended for a hosted unauthenticated demo with real LLM analysis:
@@ -197,5 +198,7 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - standardized `429` responses when limits are exceeded
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
+
+**Retell voice integration** is disabled by default. Protected Retell tool routes require webhook signature verification when enabled for a hosted demo. See `docs/architecture/retell-webhook-security.md` for the verification flow and safety boundary.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.

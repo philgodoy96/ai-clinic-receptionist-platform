@@ -112,10 +112,36 @@ See also: [Groq LLM Provider](architecture/groq-llm-provider.md), [Real LLM Prov
 
 ## Retell
 
+Retell is **disabled by default** for local development and CI.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `RETELL_ENABLED` | `false` | Enable Retell provider callback/tool routes |
 | `RETELL_API_KEY` | empty | Retell API key |
-| `RETELL_WEBHOOK_SECRET` | empty | Retell webhook secret |
+| `RETELL_WEBHOOK_VERIFICATION_ENABLED` | `true` | Verify `x-retell-signature` on protected Retell routes |
+| `RETELL_WEBHOOK_SECRET` | empty | Webhook signing secret. Required when `RETELL_ENABLED=true` and `RETELL_WEBHOOK_VERIFICATION_ENABLED=true` |
+| `RETELL_ALLOW_INSECURE_WEBHOOKS` | `false` | Skip signature verification. Allowed only when `APP_ENV` is `local`, `test`, or `development` |
+| `RETELL_SIGNATURE_HEADER_NAME` | `x-retell-signature` | Request header carrying the Retell webhook signature |
+| `RETELL_REQUEST_MAX_BODY_BYTES` | `262144` | Maximum raw request body size for Retell callbacks (`>= 1`) |
+
+For local development and CI, keep:
+
+```env
+RETELL_ENABLED=false
+RETELL_WEBHOOK_VERIFICATION_ENABLED=true
+RETELL_ALLOW_INSECURE_WEBHOOKS=false
+```
+
+Optional hosted public demo configuration:
+
+```env
+RETELL_ENABLED=true
+RETELL_WEBHOOK_VERIFICATION_ENABLED=true
+RETELL_WEBHOOK_SECRET=whsec_...
+RETELL_ALLOW_INSECURE_WEBHOOKS=false
+```
+
+See also: [Retell Webhook Security](architecture/retell-webhook-security.md).
 
 ## Public Demo Guardrails
 

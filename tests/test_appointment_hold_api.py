@@ -25,6 +25,7 @@ from app.models.scheduling import AvailabilitySlot
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogCreate, AuditLogService
 from app.services.scheduling import AvailabilitySlotNotFoundError, AvailabilitySlotUnavailableError
+from tests.retell_webhook_support import configure_retell_for_tests
 
 
 @pytest.fixture()
@@ -54,6 +55,7 @@ def client(
     hold_service: AppointmentHoldService,
 ) -> Generator[TestClient, None, None]:
     app = create_app()
+    configure_retell_for_tests(app)
     scheduling_service = FakeSchedulingService(slot)
     db = FakeDatabaseSession()
     audit_logs = FakeAuditLogService()

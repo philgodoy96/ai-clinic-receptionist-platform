@@ -11,6 +11,10 @@ from app.ai.provider_factory import build_llm_provider
 from app.cache.redis import get_redis_client
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.integrations.retell.signature import (
+    RetellSignatureVerifier,
+    create_retell_signature_verifier,
+)
 from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisher,
     NoopEmailJobDispatchPublisher,
@@ -248,6 +252,12 @@ def get_email_job_dispatch_publisher() -> EmailJobDispatchPublisher:
         rabbitmq_url=settings.rabbitmq_url,
         queue_name=settings.email_job_queue_name,
     )
+
+
+def get_retell_signature_verifier(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RetellSignatureVerifier:
+    return create_retell_signature_verifier(settings)
 
 
 def get_retell_scheduling_tool_adapter(
