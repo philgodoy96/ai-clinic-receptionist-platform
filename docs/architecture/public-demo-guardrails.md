@@ -24,10 +24,13 @@ The current implementation supports:
 - daily confirmation email quotas (`DEMO_CONFIRMATION_EMAILS_PER_DAY_PER_IP`, `DEMO_GLOBAL_CONFIRMATION_EMAILS_PER_DAY`)
 - global daily demo quotas
 - standardized 429 responses
+- Retell webhook signature verification as the provider-auth boundary on `/api/v1/retell/tools/*`
 
 When confirmation email quotas are exceeded, booking can still succeed but the confirmation email job is skipped. This keeps the demo open while bounding outbound email volume.
 
-See also: [Email Dispatch Reliability](email-dispatch-reliability.md).
+Signature verification runs before guardrails on Retell tool routes. Invalid signatures are rejected without consuming Redis rate-limit counters or executing domain logic.
+
+See also: [Email Dispatch Reliability](email-dispatch-reliability.md), [Retell Webhook Security](retell-webhook-security.md).
 
 ## Local Development
 
@@ -55,9 +58,12 @@ Recommended real demo providers in future implementation phases:
 LLM_PROVIDER=groq
 EMAIL_PROVIDER=resend
 RETELL_ENABLED=true
+RETELL_WEBHOOK_VERIFICATION_ENABLED=true
+RETELL_WEBHOOK_SECRET=...
+RETELL_ALLOW_INSECURE_WEBHOOKS=false
 ```
 
-Fake providers remain the default for local development and CI.
+Fake providers remain the default for local development and CI. Retell remains disabled by default until explicitly enabled.
 
 ## Protected Surfaces
 

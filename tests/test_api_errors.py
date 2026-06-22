@@ -20,6 +20,7 @@ from app.services.email_job_metrics import EmailJobOperationalMetrics, EmailJobS
 from app.services.email_job_pagination import EmailJobCursor
 from app.services.email_jobs import EmailJobService
 from app.services.scheduling import PatientLookupCriteria
+from tests.retell_webhook_support import configure_retell_for_tests
 
 
 @pytest.fixture()
@@ -41,6 +42,7 @@ def email_job_client() -> Generator[TestClient, None, None]:
 @pytest.fixture()
 def retell_client() -> Generator[TestClient, None, None]:
     app = create_app()
+    configure_retell_for_tests(app)
     fake_service = EmptySchedulingService()
 
     def override_adapter() -> RetellSchedulingToolAdapter:

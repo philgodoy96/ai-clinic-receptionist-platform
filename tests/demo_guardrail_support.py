@@ -31,6 +31,7 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
+from tests.retell_webhook_support import configure_retell_for_tests, make_retell_enabled_settings
 from tests.test_api_errors import EmptySchedulingService
 from tests.test_chat_api import FakeDatabaseSession, FakeEmailJobService
 from tests.test_chat_booking_confirmation_flow import create_jane_doe_patient
@@ -214,6 +215,29 @@ def create_guarded_retell_app(
 ) -> tuple[Any, FakeRedisClient]:
     redis = redis_client or FakeRedisClient()
     app = create_app()
+    configure_retell_for_tests(
+        app,
+        settings=make_retell_enabled_settings(
+            PUBLIC_DEMO_GUARDRAILS_ENABLED=settings.public_demo_guardrails_enabled,
+            PUBLIC_DEMO_MODE=settings.public_demo_mode,
+            TRUST_PROXY_HEADERS=settings.trust_proxy_headers,
+            DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=settings.demo_chat_messages_per_minute_per_ip,
+            DEMO_CHAT_MESSAGES_PER_DAY_PER_IP=settings.demo_chat_messages_per_day_per_ip,
+            DEMO_RETELL_TOOL_CALLS_PER_MINUTE_PER_IP=(
+                settings.demo_retell_tool_calls_per_minute_per_ip
+            ),
+            DEMO_RETELL_TOOL_CALLS_PER_DAY_PER_IP=settings.demo_retell_tool_calls_per_day_per_ip,
+            DEMO_APPOINTMENTS_PER_DAY_PER_IP=settings.demo_appointments_per_day_per_ip,
+            DEMO_CONFIRMATION_EMAILS_PER_DAY_PER_IP=(
+                settings.demo_confirmation_emails_per_day_per_ip
+            ),
+            DEMO_GLOBAL_CHAT_MESSAGES_PER_DAY=settings.demo_global_chat_messages_per_day,
+            DEMO_GLOBAL_APPOINTMENTS_PER_DAY=settings.demo_global_appointments_per_day,
+            DEMO_GLOBAL_CONFIRMATION_EMAILS_PER_DAY=(
+                settings.demo_global_confirmation_emails_per_day
+            ),
+        ),
+    )
 
     def override_guardrails() -> DemoGuardrailService:
         return DemoGuardrailService(
