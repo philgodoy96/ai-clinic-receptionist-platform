@@ -278,7 +278,7 @@ def test_unknown_tool_still_rejected() -> None:
         RetellToolCallRequest.model_validate(
             {
                 "provider_call_id": PROVIDER_CALL_ID,
-                "tool_name": "cancel_appointment",
+                "tool_name": "reschedule_appointment",
                 "arguments": {},
             },
         ),

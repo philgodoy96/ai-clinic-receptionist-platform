@@ -116,7 +116,7 @@ def test_unsupported_tool_name_rejected() -> None:
     request = RetellProviderToolCallRequest.model_validate(
         {
             "provider_call_id": "retell-call-123",
-            "tool_name": "cancel_appointment",
+            "tool_name": "reschedule_appointment",
             "arguments": {},
         },
     )
