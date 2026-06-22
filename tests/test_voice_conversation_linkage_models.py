@@ -112,3 +112,23 @@ def test_voice_conversation_does_not_require_phone_number(db_session: Session) -
     assert persisted is not None
     assert persisted.patient_id is None
     assert persisted.appointment_id is None
+
+
+def test_voice_call_can_exist_without_phone_numbers(db_session: Session) -> None:
+    conversation = Conversation(channel=ConversationChannel.VOICE)
+    voice_call = VoiceCall(
+        provider="retell",
+        provider_call_id="call-web-no-phone",
+        conversation=conversation,
+        from_number_redacted=None,
+        to_number_redacted=None,
+    )
+
+    db_session.add(voice_call)
+    db_session.commit()
+
+    persisted = db_session.get(VoiceCall, voice_call.id)
+    assert persisted is not None
+    assert persisted.from_number_redacted is None
+    assert persisted.to_number_redacted is None
+    assert persisted.conversation_id == conversation.id

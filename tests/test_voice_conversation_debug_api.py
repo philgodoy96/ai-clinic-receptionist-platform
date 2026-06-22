@@ -254,6 +254,34 @@ def test_response_does_not_expose_raw_metadata_or_secrets(
     assert body["active_hold_summary"]["hold_id"] == "hold-safe"
 
 
+def test_unlinked_voice_call_returns_empty_conversation_fields(
+    client_and_bridge: tuple[
+        TestClient,
+        FakeVoiceCallRepository,
+        FakeConversationRepository,
+        VoiceConversationBridgeService,
+    ],
+) -> None:
+    client, voice_calls, _conversations, _bridge = client_and_bridge
+    voice_call = _create_voice_call(
+        voice_calls,
+        provider_call_id="call-unlinked",
+        conversation_id=None,
+    )
+
+    response = client.get(f"{BASE_PATH}/{voice_call.id}/conversation-context")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["conversation_id"] is None
+    assert body["conversation_channel"] is None
+    assert body["active_hold_summary"] is None
+    assert body["requested_specialty"] is None
+    assert body["requested_date"] is None
+    assert body["requested_time_window"] is None
+    assert body["last_selected_slot_id"] is None
+
+
 def _snapshot_voice_calls(voice_calls: list[VoiceCall]) -> list[dict[str, object]]:
     return [
         {
