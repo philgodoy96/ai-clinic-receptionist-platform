@@ -19,6 +19,8 @@ from app.evals.receptionist_analysis import (
     EvaluationInput,
     EvaluationMode,
     ReceptionistAnalysisEvalCase,
+    evaluate_receptionist_analysis_cases,
+    load_receptionist_analysis_eval_cases,
 )
 from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
@@ -274,5 +276,41 @@ def test_provider_eval_builds_groq_service_from_settings_without_real_calls(
             llm_analysis_service=service,
         )
 
+    assert summary.passed_cases == 1
+    assert summary.failed_cases == 0
+
+
+def test_recorded_eval_stays_offline_without_groq_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    case = _build_case()
+    dataset_path = tmp_path / "cases.jsonl"
+    dataset_path.write_text(
+        (
+            "{"
+            f'"id":"{case.id}",'
+            f'"prompt_version":"{case.prompt_version}",'
+            '"input":{"message":"Hello"},'
+            '"expected":{"intent":"greeting","urgency":"normal","requires_human":false,'
+            '"safety_flags":[],"extracted":{"specialty":null,"doctor":null,"date":null,"time":null}},'
+            '"recorded_output":{"intent":"greeting","urgency":"normal","requires_human":false,'
+            '"safety_flags":[],"extracted":{"specialty":null,"doctor":null,"date":null,"time":null}}'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(
+            "app.ai.groq_provider.GroqLLMProvider",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("recorded eval must not instantiate Groq"),
+            ),
+        )
+        cases = load_receptionist_analysis_eval_cases(dataset_path)
+        summary = evaluate_receptionist_analysis_cases(cases, mode=EvaluationMode.RECORDED)
+
+    assert summary.mode == EvaluationMode.RECORDED
     assert summary.passed_cases == 1
     assert summary.failed_cases == 0

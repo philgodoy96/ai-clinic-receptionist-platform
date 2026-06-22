@@ -11,7 +11,12 @@ from app.ai.llm_provider import (
     LLMProviderTimeoutError,
     provider_failure_reason,
 )
-from app.ai.llm_reliability import LLMFailureReason, failure_reason_for_typed_provider_error
+from app.ai.llm_reliability import (
+    LLMFailureReason,
+    failure_reason_for_typed_provider_error,
+    is_fallback_provider_eligible,
+    is_primary_provider_retryable,
+)
 from app.ai.receptionist_output import build_receptionist_analysis_openai_json_schema
 from tests.llm_provider_test_helpers import (
     build_receptionist_analysis_payload,
@@ -51,6 +56,37 @@ class StubGroqHttpClient:
         return self.response
 
 
+class SequentialStubGroqHttpClient(StubGroqHttpClient):
+    def __init__(
+        self,
+        *,
+        steps: list[tuple[dict[str, object] | None, Exception | None]],
+    ) -> None:
+        super().__init__()
+        self.steps = steps
+        self.call_count = 0
+
+    def post_chat_completion(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, object],
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        self.call_count += 1
+        step_index = min(self.call_count - 1, len(self.steps) - 1)
+        response, error = self.steps[step_index]
+        self.last_url = url
+        self.last_headers = headers
+        self.last_payload = payload
+        self.last_timeout_seconds = timeout_seconds
+        if error is not None:
+            raise error
+        assert response is not None
+        return response
+
+
 def build_groq_provider(
     *,
     response: dict[str, object] | None = None,
@@ -58,7 +94,16 @@ def build_groq_provider(
     response_format: GroqResponseFormat = GroqResponseFormat.JSON_SCHEMA,
 ) -> tuple[GroqLLMProvider, StubGroqHttpClient]:
     client = StubGroqHttpClient(response=response, error=error)
-    provider = GroqLLMProvider(
+    provider = build_groq_provider_with_client(client, response_format=response_format)
+    return provider, client
+
+
+def build_groq_provider_with_client(
+    client: StubGroqHttpClient,
+    *,
+    response_format: GroqResponseFormat = GroqResponseFormat.JSON_SCHEMA,
+) -> GroqLLMProvider:
+    return GroqLLMProvider(
         api_key="gsk_test",
         model="llama-3.3-70b-versatile",
         base_url="https://api.groq.com/openai/v1",
@@ -68,7 +113,6 @@ def build_groq_provider(
         response_format=response_format,
         http_client=client,
     )
-    return provider, client
 
 
 def build_valid_chat_completion_response(*, content: str) -> dict[str, object]:
@@ -166,6 +210,8 @@ def test_groq_429_maps_to_rate_limit_error() -> None:
         provider_failure_reason(LLMProviderRateLimitError("Groq rate limit exceeded"))
         == LLMFailureReason.PROVIDER_RATE_LIMITED
     )
+    assert is_primary_provider_retryable(LLMFailureReason.PROVIDER_RATE_LIMITED)
+    assert is_fallback_provider_eligible(LLMFailureReason.PROVIDER_RATE_LIMITED)
 
 
 def test_groq_5xx_maps_to_provider_error() -> None:
@@ -173,6 +219,13 @@ def test_groq_5xx_maps_to_provider_error() -> None:
 
     with pytest.raises(LLMProviderError, match="503"):
         provider.complete(build_sample_llm_request())
+
+    assert is_primary_provider_retryable(
+        provider_failure_reason(LLMProviderError("Groq server error: 503")),
+    )
+    assert is_fallback_provider_eligible(
+        provider_failure_reason(LLMProviderError("Groq server error: 503")),
+    )
 
 
 def test_groq_empty_response_raises_empty_response_failure_path() -> None:
@@ -223,6 +276,33 @@ def test_groq_sends_json_object_response_format_when_configured() -> None:
     assert client.last_headers is not None
     assert client.last_headers["Authorization"] == "Bearer gsk_test"
     assert "gsk_test" not in str(client.last_payload)
+
+
+def test_groq_omits_response_format_when_mode_none() -> None:
+    payload = build_receptionist_analysis_payload(intent="greeting")
+    provider, client = build_groq_provider(
+        response=build_valid_chat_completion_response(content=payload),
+        response_format=GroqResponseFormat.NONE,
+    )
+
+    provider.complete(build_sample_llm_request())
+
+    assert client.last_payload is not None
+    assert "response_format" not in client.last_payload
+
+
+def test_groq_provider_does_not_retry_internally_on_failure() -> None:
+    client = SequentialStubGroqHttpClient(
+        steps=[
+            (None, LLMProviderError("Groq server error: 503")),
+        ],
+    )
+    provider = build_groq_provider_with_client(client)
+
+    with pytest.raises(LLMProviderError, match="503"):
+        provider.complete(build_sample_llm_request())
+
+    assert client.call_count == 1
 
 
 def test_groq_stub_client_avoids_real_network_calls() -> None:

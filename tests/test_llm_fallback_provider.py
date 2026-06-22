@@ -8,9 +8,10 @@ import pytest
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
 from app.ai.groq_provider import GroqLLMProvider
-from app.ai.llm_provider import LLMProviderName
+from app.ai.llm_provider import LLMProviderError, LLMProviderName
 from app.ai.llm_reliability import LLMFailureReason
 from app.api.dependencies import get_llm_receptionist_analysis_service
+from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
 from tests.llm_reliability_test_helpers import (
     AlwaysFailingLLMProvider,
@@ -18,6 +19,11 @@ from tests.llm_reliability_test_helpers import (
     analysis_request,
     assert_result_reliability_metadata,
     build_orchestration_service,
+)
+from tests.test_groq_llm_provider import (
+    SequentialStubGroqHttpClient,
+    build_groq_provider_with_client,
+    build_valid_chat_completion_response,
 )
 from tests.test_llm_provider_config import load_settings
 
@@ -330,3 +336,60 @@ def test_bedrock_primary_with_groq_fallback_config_is_accepted(
     assert isinstance(service.fallback_provider, GroqLLMProvider)
     assert service.primary_provider_name == LLMProviderName.BEDROCK
     assert service.fallback_provider_name == LLMProviderName.GROQ
+
+
+def test_groq_primary_failure_uses_fake_fallback_in_orchestration() -> None:
+    primary_client = SequentialStubGroqHttpClient(
+        steps=[
+            (None, LLMProviderError("Groq server error: 503")),
+        ],
+    )
+    primary = build_groq_provider_with_client(primary_client)
+    fallback = CountingLLMProvider(
+        content=build_receptionist_analysis_payload(),
+        name="fallback",
+    )
+    service = LLMReceptionistAnalysisService(
+        primary_provider=primary,
+        fallback_provider=fallback,
+        primary_provider_name=LLMProviderName.GROQ,
+        fallback_provider_name=LLMProviderName.FAKE,
+        max_primary_attempts=1,
+        max_fallback_attempts=1,
+    )
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary_client.call_count == 1
+    assert fallback.call_count == 1
+    assert result.used_fallback_provider is True
+    assert result.provider == LLMProviderName.FAKE.value
+    assert result.primary_provider == LLMProviderName.GROQ.value
+    assert result.fallback_provider == LLMProviderName.FAKE.value
+
+
+def test_fake_primary_failure_uses_mocked_groq_fallback_in_orchestration() -> None:
+    primary = AlwaysFailingLLMProvider()
+    payload = build_receptionist_analysis_payload()
+    fallback_client = SequentialStubGroqHttpClient(
+        steps=[
+            (build_valid_chat_completion_response(content=payload), None),
+        ],
+    )
+    fallback = build_groq_provider_with_client(fallback_client)
+    service = LLMReceptionistAnalysisService(
+        primary_provider=primary,
+        fallback_provider=fallback,
+        primary_provider_name=LLMProviderName.FAKE,
+        fallback_provider_name=LLMProviderName.GROQ,
+        max_primary_attempts=1,
+        max_fallback_attempts=1,
+    )
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary.call_count == 1
+    assert fallback_client.call_count == 1
+    assert result.used_fallback_provider is True
+    assert result.provider == LLMProviderName.GROQ.value
+    assert result.fallback_provider == LLMProviderName.GROQ.value
