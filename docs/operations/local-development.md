@@ -92,6 +92,31 @@ Optional Groq configuration is for hosted public demo only. See `docs/architectu
 
 Optional Bedrock configuration requires runtime AWS credentials and is not needed for the default demo flow.
 
+## Retell Webhook Security
+
+Retell settings are documented in `docs/configuration.md`.
+
+Local development and CI should keep:
+
+```env
+RETELL_ENABLED=false
+RETELL_ALLOW_INSECURE_WEBHOOKS=false
+```
+
+Protected Retell tool routes under `/api/v1/retell/tools/*` reject requests when Retell is disabled. Non-Retell routes such as `/health` and chat APIs do not require Retell signatures.
+
+To exercise Retell tool routes locally without real Retell credentials:
+
+```env
+RETELL_ENABLED=true
+RETELL_ALLOW_INSECURE_WEBHOOKS=true
+RETELL_WEBHOOK_SECRET=test-webhook-secret
+```
+
+`RETELL_ALLOW_INSECURE_WEBHOOKS=true` is only valid when `APP_ENV` is `local`, `test`, or `development`.
+
+See `docs/architecture/retell-webhook-security.md` for verification flow, safety boundary, and hosted demo configuration.
+
 ## Public Demo Guardrails
 
 Public demo guardrails are **disabled by default** in local development.
