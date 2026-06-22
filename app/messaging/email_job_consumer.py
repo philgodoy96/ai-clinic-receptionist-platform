@@ -28,6 +28,19 @@ class EmailJobRabbitMQAcknowledger(Protocol):
         raise NotImplementedError
 
 
+def apply_email_job_delivery_ack(
+    result: EmailJobConsumerHandleResult,
+    *,
+    delivery_tag: int,
+    acknowledger: EmailJobRabbitMQAcknowledger,
+) -> None:
+    if result.ack:
+        acknowledger.ack(delivery_tag=delivery_tag)
+        return
+
+    acknowledger.nack(delivery_tag=delivery_tag, requeue=result.requeue)
+
+
 class EmailJobRabbitMQConsumer:
     def __init__(self, *, worker: EmailJobWorkerService) -> None:
         self.worker = worker
@@ -68,7 +81,7 @@ class EmailJobRabbitMQConsumer:
                     "email_job_id": str(message.email_job_id),
                 },
             )
-            return EmailJobConsumerHandleResult(ack=True)
+            return EmailJobConsumerHandleResult(ack=False, requeue=True)
 
         self._log_processing_result(message.email_job_id, result)
         return EmailJobConsumerHandleResult(ack=True)

@@ -12,10 +12,24 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal
 from app.email.factory import create_email_provider_from_settings
-from app.messaging.email_job_consumer import EmailJobRabbitMQConsumer
+from app.messaging.email_job_consumer import (
+    EmailJobRabbitMQConsumer,
+    apply_email_job_delivery_ack,
+)
 from app.services.email_job_worker import EmailJobWorkerService
 
 logger = logging.getLogger("app.email_job_consumer")
+
+
+class _PikaAcknowledger:
+    def __init__(self, channel: BlockingChannel) -> None:
+        self._channel = channel
+
+    def ack(self, *, delivery_tag: int) -> None:
+        self._channel.basic_ack(delivery_tag=delivery_tag)
+
+    def nack(self, *, delivery_tag: int, requeue: bool = False) -> None:
+        self._channel.basic_nack(delivery_tag=delivery_tag, requeue=requeue)
 
 
 def main() -> None:
@@ -49,9 +63,11 @@ def main() -> None:
             body=body,
             delivery_tag=method.delivery_tag,
         )
-
-        if result.ack:
-            channel.basic_ack(delivery_tag=method.delivery_tag)
+        apply_email_job_delivery_ack(
+            result,
+            delivery_tag=method.delivery_tag,
+            acknowledger=_PikaAcknowledger(channel),
+        )
 
     channel.basic_consume(
         queue=settings.email_job_queue_name,
