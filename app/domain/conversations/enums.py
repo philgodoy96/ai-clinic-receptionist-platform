@@ -3,6 +3,7 @@ from enum import StrEnum
 
 class ConversationChannel(StrEnum):
     CHAT = "chat"
+    VOICE = "voice"
     RETELL_VOICE = "retell_voice"
     SYSTEM = "system"
 

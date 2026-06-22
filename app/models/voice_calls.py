@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
@@ -11,6 +11,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
 from app.domain.voice_calls.enums import NormalizedVoiceCallEventType, VoiceCallStatus
+
+if TYPE_CHECKING:
+    from app.models.conversations import Conversation
 
 
 def voice_call_status_values(enum_class: type[VoiceCallStatus]) -> list[str]:
@@ -69,9 +72,13 @@ class VoiceCall(Base):
         back_populates="voice_call",
         cascade="all, delete-orphan",
     )
+    conversation: Mapped[Conversation | None] = relationship(
+        "Conversation",
+    )
 
     __table_args__ = (
         UniqueConstraint("provider", "provider_call_id", name="uq_voice_calls_provider_call_id"),
+        Index("ix_voice_calls_conversation_id", "conversation_id"),
         Index("ix_voice_calls_status_created_at", "status", "created_at"),
     )
 
