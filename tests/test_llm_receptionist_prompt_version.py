@@ -129,7 +129,7 @@ def test_llm_analysis_provider_failure_fallback_includes_prompt_version() -> Non
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.PROVIDER_ERROR
+    assert result.failure_reason == LLMFailureReason.PROVIDER_EXCEPTION
     assert result.prompt_version == expected_prompt_version()
 
 
@@ -146,7 +146,7 @@ def test_llm_analysis_invalid_json_fallback_includes_prompt_version() -> None:
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.INVALID_JSON
+    assert result.failure_reason == LLMFailureReason.JSON_PARSE_FAILED
     assert result.prompt_version == expected_prompt_version()
 
 

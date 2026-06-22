@@ -39,7 +39,28 @@ class Settings(BaseSettings):
     )
 
     llm_provider: LLMProviderName = Field(default=LLMProviderName.FAKE, alias="LLM_PROVIDER")
+    llm_primary_provider: LLMProviderName | None = Field(
+        default=None,
+        alias="LLM_PRIMARY_PROVIDER",
+    )
     llm_enabled: bool = Field(default=True, alias="LLM_ENABLED")
+    llm_max_primary_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        alias="LLM_MAX_PRIMARY_ATTEMPTS",
+    )
+    llm_fallback_enabled: bool = Field(default=False, alias="LLM_FALLBACK_ENABLED")
+    llm_fallback_provider: LLMProviderName | None = Field(
+        default=None,
+        alias="LLM_FALLBACK_PROVIDER",
+    )
+    llm_max_fallback_attempts: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        alias="LLM_MAX_FALLBACK_ATTEMPTS",
+    )
     bedrock_model_id: str = Field(default="", alias="BEDROCK_MODEL_ID")
     aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
     bedrock_request_timeout_seconds: int = Field(
@@ -113,11 +134,28 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @property
+    def resolved_llm_primary_provider(self) -> LLMProviderName:
+        return self.llm_primary_provider or self.llm_provider
+
     @model_validator(mode="after")
-    def validate_bedrock_settings(self) -> "Settings":
-        if self.llm_provider == LLMProviderName.BEDROCK and not self.bedrock_model_id.strip():
-            raise ValueError("BEDROCK_MODEL_ID is required when LLM_PROVIDER is bedrock")
+    def validate_llm_provider_settings(self) -> "Settings":
+        self._validate_bedrock_provider_config(self.resolved_llm_primary_provider)
+
+        if self.llm_fallback_enabled:
+            if self.llm_fallback_provider is None:
+                raise ValueError(
+                    "LLM_FALLBACK_PROVIDER is required when LLM_FALLBACK_ENABLED is true",
+                )
+            self._validate_bedrock_provider_config(self.llm_fallback_provider)
+
         return self
+
+    def _validate_bedrock_provider_config(self, provider: LLMProviderName) -> None:
+        if provider == LLMProviderName.BEDROCK and not self.bedrock_model_id.strip():
+            raise ValueError(
+                "BEDROCK_MODEL_ID is required when a configured LLM provider is bedrock",
+            )
 
 
 @lru_cache

@@ -36,9 +36,14 @@ See `.env.example` for a safe local template.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `fake` | LLM provider selection: `fake` or `bedrock` |
+| `LLM_PROVIDER` | `fake` | LLM provider selection: `fake` or `bedrock`. Kept for backward compatibility; see `LLM_PRIMARY_PROVIDER`. |
+| `LLM_PRIMARY_PROVIDER` | empty | Optional explicit primary provider. When unset, `LLM_PROVIDER` is used. |
 | `LLM_ENABLED` | `true` | Enable LLM shadow analysis and slot-filling assistance |
-| `BEDROCK_MODEL_ID` | empty | Required when `LLM_PROVIDER=bedrock` |
+| `LLM_MAX_PRIMARY_ATTEMPTS` | `2` | Bounded primary provider attempts per analysis (`1`–`3`) |
+| `LLM_FALLBACK_ENABLED` | `false` | Enable optional fallback LLM provider after primary exhaustion |
+| `LLM_FALLBACK_PROVIDER` | empty | Required when `LLM_FALLBACK_ENABLED=true` (`fake` or `bedrock`) |
+| `LLM_MAX_FALLBACK_ATTEMPTS` | `1` | Bounded fallback provider attempts per analysis (`1`–`2`) |
+| `BEDROCK_MODEL_ID` | empty | Required when primary or fallback provider is `bedrock` |
 | `AWS_REGION` | `us-east-1` | AWS region for Bedrock runtime client |
 | `BEDROCK_REQUEST_TIMEOUT_SECONDS` | `10` | Bedrock request timeout |
 | `BEDROCK_MAX_RETRIES` | `0` | Bedrock client retry count |
@@ -51,9 +56,11 @@ For local development and CI, keep:
 
 ```env
 LLM_PROVIDER=fake
+LLM_MAX_PRIMARY_ATTEMPTS=2
+LLM_FALLBACK_ENABLED=false
 ```
 
-See also: [Real LLM Provider Adapter Boundary](architecture/real-llm-provider-adapter.md).
+See also: [Real LLM Provider Adapter Boundary](architecture/real-llm-provider-adapter.md), [LLM Reliability Orchestration](architecture/llm-reliability-orchestration.md).
 
 ## Retell
 

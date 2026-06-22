@@ -23,7 +23,8 @@ The implementation supports:
 - Bedrock provider adapter
 - structured output prompting
 - provider timeout/retry configuration
-- validation and fallback through the existing reliability layer
+- validation and fallback through the reliability orchestration layer
+- bounded primary retries, optional fallback provider, and deterministic fallback after exhaustion
 - offline evaluation dataset with recorded-output comparison for structured analysis quality
 - optional manual provider-run evaluation mode for local quality checks
 - prompt version registry with runtime `prompt_version` metadata on LLM analysis results
@@ -50,12 +51,15 @@ Default:
 
 ```env
 LLM_PROVIDER=fake
+LLM_MAX_PRIMARY_ATTEMPTS=2
+LLM_FALLBACK_ENABLED=false
 ```
 
 Optional real provider:
 
 ```env
 LLM_PROVIDER=bedrock
+LLM_PRIMARY_PROVIDER=bedrock
 BEDROCK_MODEL_ID=your-model-id
 AWS_REGION=us-east-1
 BEDROCK_REQUEST_TIMEOUT_SECONDS=10
@@ -63,6 +67,16 @@ BEDROCK_MAX_RETRIES=0
 BEDROCK_TEMPERATURE=0
 BEDROCK_MAX_TOKENS=800
 ```
+
+Optional fallback provider (disabled by default):
+
+```env
+LLM_FALLBACK_ENABLED=true
+LLM_FALLBACK_PROVIDER=bedrock
+LLM_MAX_FALLBACK_ATTEMPTS=1
+```
+
+When fallback is enabled, the fallback provider is only used after fallback-eligible retryable primary failures. See [LLM Reliability Orchestration](llm-reliability-orchestration.md).
 
 AWS credentials are not stored in the repository.
 
@@ -88,18 +102,25 @@ See [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluatio
 
 ## Failure Handling
 
-Provider failures should fall back safely.
+Provider failures are handled by the reliability orchestration layer:
 
-Invalid JSON, schema violations, safety violations, and low-confidence outputs are handled by the existing reliability layer.
+- local JSON repair before provider retry
+- bounded primary provider attempts
+- optional fallback provider for fallback-eligible retryable failures
+- deterministic fallback analysis after exhaustion
+
+Invalid JSON, schema violations, safety violations, and low-confidence outputs are classified explicitly. The system does not retry for medical emergency, explicit human request, safety violation, low confidence, or policy violation.
+
+See [LLM Reliability Orchestration](llm-reliability-orchestration.md).
 
 ## Future Work
 
 Future implementation phases may add:
 
-- provider fallback chain
+- Groq primary provider
 - circuit breaker
 - rate limit handling
 - tenant-level cost tracking
 - streaming support for voice
 
-See also: [LLM Provider Foundation](llm-provider-foundation.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).

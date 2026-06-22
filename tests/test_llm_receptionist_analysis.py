@@ -89,7 +89,7 @@ def test_invalid_json_fallback_includes_prompt_version() -> None:
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.INVALID_JSON
+    assert result.failure_reason == LLMFailureReason.JSON_PARSE_FAILED
     assert result.prompt_version == expected_prompt_version()
 
 
@@ -136,10 +136,11 @@ def test_llm_receptionist_analysis_service_records_fallback_on_provider_error() 
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.PROVIDER_ERROR
+    assert result.failure_reason == LLMFailureReason.PROVIDER_EXCEPTION
     assert result.prompt_version == expected_prompt_version()
     assert result.latency_ms >= 0
-    assert result.attempt_count == 1
+    assert result.attempt_count == 2
+    assert result.primary_attempt_count == 2
 
 
 def test_llm_receptionist_analysis_service_records_schema_validation_failure() -> None:
@@ -162,7 +163,7 @@ def test_llm_receptionist_analysis_service_records_schema_validation_failure() -
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.SCHEMA_VALIDATION_ERROR
+    assert result.failure_reason == LLMFailureReason.SCHEMA_VALIDATION_FAILED
     assert result.prompt_version == expected_prompt_version()
 
 

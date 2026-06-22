@@ -591,13 +591,21 @@ class ChatReceptionistService:
                 "safety_flags": analysis.safety_flags,
                 "used_fallback": llm_analysis_result.used_fallback,
                 "failure_reason": llm_analysis_result.failure_reason.value,
+                "failure_category": llm_analysis_result.failure_category.value,
                 "prompt_version": llm_analysis_result.prompt_version,
                 "model": llm_analysis_result.model,
+                "provider": llm_analysis_result.provider,
+                "primary_provider": llm_analysis_result.primary_provider,
+                "fallback_provider": llm_analysis_result.fallback_provider,
+                "used_fallback_provider": llm_analysis_result.used_fallback_provider,
                 "input_tokens": llm_analysis_result.input_tokens,
                 "output_tokens": llm_analysis_result.output_tokens,
                 "estimated_cost_micros": llm_analysis_result.estimated_cost_micros,
                 "latency_ms": llm_analysis_result.latency_ms,
                 "attempt_count": llm_analysis_result.attempt_count,
+                "primary_attempt_count": llm_analysis_result.primary_attempt_count,
+                "fallback_attempt_count": llm_analysis_result.fallback_attempt_count,
+                "used_repair": llm_analysis_result.used_repair,
             }
         if slot_filling_result is not None:
             assistant_metadata["slot_filling"] = slot_filling_result.to_metadata()
