@@ -122,6 +122,7 @@ Implemented:
 - Time-of-day preference parsing with deterministic `TimePreferenceParser` for chat availability filtering and LLM slot filling
 - LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, offline evaluation runner, metrics grouped by prompt version, and optional provider-run evaluation mode
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
+- LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
 
 Upcoming:
@@ -130,12 +131,10 @@ Upcoming:
 - Clinic timezone settings
 - Voice provider transfer integration
 - StaffUser/RBAC
-- Provider fallback chain
 - Assignment notification job
 - Staff notification provider adapter
 - Cost tracking aggregation
 - Hold expiration handling in chat
-- LLM reliability orchestration
 - Groq provider adapter
 - Resend email provider
 - Retell webhook security
