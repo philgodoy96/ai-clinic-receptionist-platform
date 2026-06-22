@@ -25,6 +25,7 @@ The implementation includes:
 See also:
 
 - [Retell Webhook Security](retell-webhook-security.md)
+- [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Configuration](../configuration.md)
 
 ## Entity Model
@@ -65,7 +66,9 @@ Lifecycle events cannot directly:
 - execute Retell tools
 - trigger LLM calls
 
-Lifecycle ingestion is separate from Retell tool routes under `/api/v1/retell/tools/*`.
+Lifecycle ingestion is separate from Retell tool execution.
+
+Tool callbacks are handled by the [Retell tool-calling adapter](retell-tool-calling-adapter.md) at `POST /api/v1/retell/tools`. Lifecycle webhooks do not execute scheduling tools.
 
 ## Payload Storage
 
@@ -85,7 +88,6 @@ Terminal statuses such as `ended` or `failed` are not downgraded by older out-of
 
 Future implementation phases may add:
 
-- Retell tool-calling adapter
 - voice conversation bridge
 - voice booking/cancel/reschedule flow
 - transcript summary persistence

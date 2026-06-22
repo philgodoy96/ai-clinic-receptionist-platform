@@ -30,7 +30,7 @@ When confirmation email quotas are exceeded, booking can still succeed but the c
 
 Signature verification runs before guardrails on Retell tool routes. Invalid signatures are rejected without consuming Redis rate-limit counters or executing domain logic.
 
-See also: [Email Dispatch Reliability](email-dispatch-reliability.md), [Retell Webhook Security](retell-webhook-security.md).
+See also: [Email Dispatch Reliability](email-dispatch-reliability.md), [Retell Webhook Security](retell-webhook-security.md), [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md).
 
 ## Local Development
 
@@ -70,9 +70,11 @@ Fake providers remain the default for local development and CI. Retell remains d
 The following surfaces are protected:
 
 - chat messages
-- Retell tool endpoints
+- Retell tool endpoints (`POST /api/v1/retell/tools` and related `/api/v1/retell/tools/*` routes)
 - appointment creation quotas
 - confirmation email quotas (per-IP and global daily limits on new confirmation email jobs)
+
+Retell tools are subject to the same public demo limits as chat. Per-IP Retell tool rate limits apply after signature verification succeeds. Unsupported or invalid tool requests are rejected without bypassing scheduling or hold invariants.
 
 ## Failure Behavior
 
