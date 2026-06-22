@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import (
     get_appointment_booking_service,
     get_email_job_service,
+    get_retell_signature_verifier,
     get_retell_tool_calling_adapter,
     get_scheduling_service,
 )
@@ -18,6 +19,7 @@ from app.db.session import get_db
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AvailabilitySlotStatus
 from app.domain.voice_calls.enums import VoiceCallStatus
+from app.integrations.retell.signature import HmacRetellSignatureVerifier
 from app.main import create_app
 from app.models.scheduling import AvailabilitySlot, Doctor, Specialty
 from app.models.voice_calls import VoiceCall
@@ -32,9 +34,11 @@ from tests.demo_guardrail_support import (
 from tests.retell_webhook_support import (
     configure_retell_for_tests,
     install_fake_retell_verifier,
+    make_retell_enabled_settings,
     make_secured_retell_settings,
     post_retell_tool,
     retell_request_headers,
+    sign_retell_body,
 )
 from tests.test_appointment_hold_api import FakeDatabaseSession
 from tests.test_retell_read_tools import FakeSchedulingService
@@ -192,6 +196,282 @@ def test_valid_check_availability_tool_call_returns_slots(
     assert body["status"] == "succeeded"
     assert len(body["result"]["available_slots"]) == 1
     assert len(tracking_adapter.execute_calls) == 1
+
+
+def test_valid_signature_allows_adapter_call(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, tracking_adapter = secured_client
+    settings = make_secured_retell_settings()
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-signed",
+            "tool_name": "check_availability",
+            "arguments": {
+                "doctor_id": str(route_context.doctor.id),
+                "start_from": "2026-07-01T09:00:00Z",
+                "start_to": "2026-07-01T12:00:00Z",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(tracking_adapter.execute_calls) == 1
+
+
+def test_malformed_json_returns_standardized_error(route_context: RouteContext) -> None:
+    app = create_app()
+    timestamp_ms = 1_700_000_000_000
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    tracking_adapter = NeverCalledRetellToolCallingAdapter()
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
+        secret="test-webhook-secret",
+        now_millis=lambda: timestamp_ms,
+    )
+
+    raw_body = b"{not-json"
+    signature = sign_retell_body(
+        raw_body=raw_body,
+        secret="test-webhook-secret",
+        timestamp_ms=timestamp_ms,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature=signature),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
+    assert tracking_adapter.execute_calls == []
+
+
+def test_retell_disabled_rejects_unified_route() -> None:
+    app = create_app()
+    settings = make_retell_enabled_settings(RETELL_ENABLED=False)
+    configure_retell_for_tests(app, settings=settings)
+    tracking_adapter = NeverCalledRetellToolCallingAdapter()
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            "/api/v1/retell/tools",
+            settings=settings,
+            json_body={
+                "provider_call_id": "retell-call-123",
+                "tool_name": "check_availability",
+                "arguments": {
+                    "start_from": "2026-07-01T09:00:00Z",
+                    "start_to": "2026-07-01T12:00:00Z",
+                },
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "retell_disabled"
+    assert tracking_adapter.execute_calls == []
+
+
+def test_response_does_not_expose_raw_payload_or_secrets(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+    secret = settings.retell_webhook_secret or ""
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-123",
+            "tool_name": "check_availability",
+            "arguments": {
+                "doctor_id": str(route_context.doctor.id),
+                "start_from": "2026-07-01T09:00:00Z",
+                "start_to": "2026-07-01T12:00:00Z",
+            },
+            "webhook_secret": secret,
+            "transcript": "patient said secret things",
+            "raw_payload": {"api_key": "hidden"},
+        },
+    )
+
+    assert response.status_code == 200
+    body_text = response.text
+    assert secret not in body_text
+    assert "patient said secret things" not in body_text
+    assert "hidden" not in body_text
+    assert "raw_payload" not in response.json()
+
+
+def test_hold_tool_call_creates_only_hold_not_appointment(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-456",
+            "tool_name": "hold_appointment_slot",
+            "arguments": {
+                "availability_slot_id": str(route_context.slot.id),
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert len(route_context.hold_repository.create_calls) == 1
+    assert route_context.scheduling_service.appointments == []
+    assert route_context.booking_service.calls == []
+
+
+def test_release_tool_call_does_not_cancel_appointment(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    from app.domain.scheduling.enums import AppointmentStatus
+    from app.models.scheduling import Appointment
+
+    appointment = Appointment(
+        id=uuid4(),
+        patient_id=uuid4(),
+        doctor_id=route_context.doctor.id,
+        specialty_id=route_context.specialty.id,
+        availability_slot_id=route_context.slot.id,
+        start_time=route_context.slot.start_time,
+        end_time=route_context.slot.end_time,
+        status=AppointmentStatus.SCHEDULED,
+        reason="Skin check",
+    )
+    route_context.scheduling_service.appointments = [appointment]
+
+    hold = AppointmentHold.create(
+        availability_slot_id=route_context.slot.id,
+        doctor_id=route_context.slot.doctor_id,
+        start_time=route_context.slot.start_time,
+        end_time=route_context.slot.end_time,
+        owner_id="retell-call-789",
+    )
+    route_context.hold_repository.holds[(hold.doctor_id, hold.start_time)] = hold
+    route_context.hold_repository.holds_by_id[hold.hold_id] = hold
+
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-789",
+            "tool_name": "release_appointment_hold",
+            "arguments": {
+                "hold_id": str(hold.hold_id),
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(route_context.scheduling_service.appointments) == 1
+    assert route_context.scheduling_service.appointments[0].status == AppointmentStatus.SCHEDULED
+    assert route_context.booking_service.calls == []
+
+
+def test_check_availability_tool_call_has_no_side_effects(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+
+    post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-123",
+            "tool_name": "check_availability",
+            "arguments": {
+                "doctor_id": str(route_context.doctor.id),
+                "start_from": "2026-07-01T09:00:00Z",
+                "start_to": "2026-07-01T12:00:00Z",
+            },
+        },
+    )
+
+    assert route_context.hold_repository.create_calls == []
+    assert route_context.hold_repository.delete_calls == []
+    assert route_context.voice_calls.outcomes == {}
+    assert route_context.booking_service.calls == []
+
+
+def test_duplicate_release_tool_call_is_idempotent(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+    hold = AppointmentHold.create(
+        availability_slot_id=route_context.slot.id,
+        doctor_id=route_context.slot.doctor_id,
+        start_time=route_context.slot.start_time,
+        end_time=route_context.slot.end_time,
+        owner_id="retell-call-789",
+    )
+    route_context.hold_repository.holds[(hold.doctor_id, hold.start_time)] = hold
+    route_context.hold_repository.holds_by_id[hold.hold_id] = hold
+
+    payload = {
+        "provider_call_id": "retell-call-789",
+        "tool_call_id": "release-call-dup",
+        "tool_name": "release_appointment_hold",
+        "arguments": {
+            "hold_id": str(hold.hold_id),
+        },
+    }
+
+    first = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body=payload,
+    )
+    second = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body=payload,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["duplicate"] is True
+    assert len(route_context.hold_repository.delete_calls) == 1
 
 
 def test_valid_hold_tool_call_creates_hold(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -7,14 +8,20 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.domain.retell_tools import RetellSupportedToolName
 from app.domain.scheduling.appointment_holds import AppointmentHold
-from app.domain.scheduling.enums import AvailabilitySlotStatus
+from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.domain.voice_calls.enums import VoiceCallStatus
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.models.voice_calls import VoiceCall
 from app.schemas.retell_tools import RetellToolCallRequest
+from app.services import retell_tool_adapter as retell_tool_adapter_module
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
+from app.services.retell_tool_registry import (
+    RETELL_TOOL_ALLOWLIST,
+    SIDE_EFFECTING_RETELL_TOOLS,
+)
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
     DoctorNotFoundError,
@@ -124,6 +131,29 @@ class AdapterBundle:
         self.doctor_id = doctor_id
 
 
+def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
+    assert RETELL_TOOL_ALLOWLIST == frozenset(
+        {
+            RetellSupportedToolName.CHECK_AVAILABILITY,
+            RetellSupportedToolName.HOLD_APPOINTMENT_SLOT,
+            RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD,
+        },
+    )
+    assert RetellSupportedToolName.CHECK_AVAILABILITY not in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.HOLD_APPOINTMENT_SLOT in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD in SIDE_EFFECTING_RETELL_TOOLS
+
+
+def test_adapter_dispatch_does_not_use_reflection() -> None:
+    dispatch_source = inspect.getsource(RetellToolCallingAdapter._dispatch)
+    module_source = inspect.getsource(retell_tool_adapter_module)
+
+    assert "getattr(" not in dispatch_source
+    assert "eval(" not in dispatch_source
+    assert "exec(" not in dispatch_source
+    assert "getattr(" not in module_source
+
+
 def test_unknown_tool_rejected(adapter_bundle: AdapterBundle) -> None:
     response = adapter_bundle.adapter.execute(
         RetellToolCallRequest.model_validate(
@@ -221,6 +251,58 @@ def test_adapter_dispatches_release_to_existing_hold_service(
     ]
 
 
+def test_duplicate_hold_tool_call_is_idempotent(adapter_bundle: AdapterBundle) -> None:
+    request = RetellToolCallRequest.model_validate(
+        {
+            "provider_call_id": "retell-call-456",
+            "tool_call_id": "hold-call-dup",
+            "tool_name": "hold_appointment_slot",
+            "arguments": {
+                "availability_slot_id": str(adapter_bundle.availability_slot.id),
+            },
+        },
+    )
+
+    first = adapter_bundle.adapter.execute(request)
+    second = adapter_bundle.adapter.execute(request)
+
+    assert first.status == "succeeded"
+    assert second.status == "succeeded"
+    assert second.duplicate is True
+    assert len(adapter_bundle.hold_repository.create_calls) == 1
+
+
+def test_duplicate_release_tool_call_is_idempotent(adapter_bundle: AdapterBundle) -> None:
+    hold = AppointmentHold.create(
+        availability_slot_id=adapter_bundle.availability_slot.id,
+        doctor_id=adapter_bundle.availability_slot.doctor_id,
+        start_time=adapter_bundle.availability_slot.start_time,
+        end_time=adapter_bundle.availability_slot.end_time,
+        owner_id="retell-call-789",
+    )
+    adapter_bundle.hold_repository.holds[(hold.doctor_id, hold.start_time)] = hold
+    adapter_bundle.hold_repository.holds_by_id[hold.hold_id] = hold
+
+    request = RetellToolCallRequest.model_validate(
+        {
+            "provider_call_id": "retell-call-789",
+            "tool_call_id": "release-call-dup",
+            "tool_name": "release_appointment_hold",
+            "arguments": {
+                "hold_id": str(hold.hold_id),
+            },
+        },
+    )
+
+    first = adapter_bundle.adapter.execute(request)
+    second = adapter_bundle.adapter.execute(request)
+
+    assert first.status == "succeeded"
+    assert second.status == "succeeded"
+    assert second.duplicate is True
+    assert len(adapter_bundle.hold_repository.delete_calls) == 1
+
+
 def test_domain_failures_return_safe_failed_response(
     adapter_bundle: AdapterBundle,
 ) -> None:
@@ -297,6 +379,92 @@ def test_no_llm_service_is_called(adapter_bundle: AdapterBundle) -> None:
     assert adapter_bundle.llm_service.calls == []
 
 
+def test_hold_appointment_slot_creates_only_hold_not_appointment(
+    adapter_bundle: AdapterBundle,
+) -> None:
+    response = adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-456",
+                "tool_name": "hold_appointment_slot",
+                "arguments": {
+                    "availability_slot_id": str(adapter_bundle.availability_slot.id),
+                },
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert len(adapter_bundle.hold_repository.create_calls) == 1
+    assert adapter_bundle.booking_service.calls == []
+    assert adapter_bundle.scheduling_service.appointments == []
+
+
+def test_release_appointment_hold_does_not_cancel_appointment(
+    adapter_bundle: AdapterBundle,
+) -> None:
+    appointment = Appointment(
+        id=uuid4(),
+        patient_id=uuid4(),
+        doctor_id=adapter_bundle.doctor_id,
+        specialty_id=adapter_bundle.scheduling_service.specialties[0].id,
+        availability_slot_id=adapter_bundle.availability_slot.id,
+        start_time=adapter_bundle.availability_slot.start_time,
+        end_time=adapter_bundle.availability_slot.end_time,
+        status=AppointmentStatus.SCHEDULED,
+        reason="Skin check",
+    )
+    adapter_bundle.scheduling_service.appointments = [appointment]
+
+    hold = AppointmentHold.create(
+        availability_slot_id=adapter_bundle.availability_slot.id,
+        doctor_id=adapter_bundle.availability_slot.doctor_id,
+        start_time=adapter_bundle.availability_slot.start_time,
+        end_time=adapter_bundle.availability_slot.end_time,
+        owner_id="retell-call-789",
+    )
+    adapter_bundle.hold_repository.holds[(hold.doctor_id, hold.start_time)] = hold
+    adapter_bundle.hold_repository.holds_by_id[hold.hold_id] = hold
+
+    response = adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-789",
+                "tool_name": "release_appointment_hold",
+                "arguments": {
+                    "hold_id": str(hold.hold_id),
+                },
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert len(adapter_bundle.scheduling_service.appointments) == 1
+    assert adapter_bundle.scheduling_service.appointments[0].status == AppointmentStatus.SCHEDULED
+    assert adapter_bundle.booking_service.calls == []
+
+
+def test_check_availability_has_no_side_effects(adapter_bundle: AdapterBundle) -> None:
+    adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-123",
+                "tool_name": "check_availability",
+                "arguments": {
+                    "doctor_id": str(adapter_bundle.doctor_id),
+                    "start_from": "2026-07-01T09:00:00Z",
+                    "start_to": "2026-07-01T12:00:00Z",
+                },
+            },
+        ),
+    )
+
+    assert adapter_bundle.hold_repository.create_calls == []
+    assert adapter_bundle.hold_repository.delete_calls == []
+    assert adapter_bundle.voice_calls.outcomes == {}
+    assert adapter_bundle.booking_service.calls == []
+
+
 class TrackingSchedulingService:
     def __init__(
         self,
@@ -308,6 +476,7 @@ class TrackingSchedulingService:
         self.specialties = specialties
         self.doctors = doctors
         self.availability_slots = availability_slots
+        self.appointments: list[Appointment] = []
         self.check_availability_calls: list[Any] = []
         self.check_availability_error: Exception | None = None
 
