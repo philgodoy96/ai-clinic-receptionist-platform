@@ -216,6 +216,12 @@ def test_verifier_receives_raw_body_bytes_unchanged() -> None:
     settings = make_secured_retell_settings()
     configure_retell_for_tests(app, settings=settings)
     verifier = install_fake_retell_verifier(app, valid_signatures={"v=1,d=test"})
+    tracking_service = TrackingSchedulingService()
+
+    def override_adapter() -> RetellSchedulingToolAdapter:
+        return RetellSchedulingToolAdapter(tracking_service)
+
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = override_adapter
 
     with TestClient(app) as client:
         response = client.post(

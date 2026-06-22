@@ -32,6 +32,7 @@ from app.repositories.sqlalchemy.scheduling import (
     SQLAlchemyPatientRepository,
     SQLAlchemySpecialtyRepository,
 )
+from app.repositories.sqlalchemy.voice_calls import SQLAlchemyVoiceCallRepository
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
@@ -48,9 +49,11 @@ from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     build_llm_receptionist_analysis_service_from_settings,
 )
+from app.services.retell_call_lifecycle import RetellCallLifecycleService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from app.services.voice_calls import VoiceCallInspectionService
 
 
 def get_scheduling_service(
@@ -258,6 +261,22 @@ def get_retell_signature_verifier(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RetellSignatureVerifier:
     return create_retell_signature_verifier(settings)
+
+
+def get_retell_call_lifecycle_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> RetellCallLifecycleService:
+    return RetellCallLifecycleService(
+        repository=SQLAlchemyVoiceCallRepository(db),
+    )
+
+
+def get_voice_call_inspection_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> VoiceCallInspectionService:
+    return VoiceCallInspectionService(
+        repository=SQLAlchemyVoiceCallRepository(db),
+    )
 
 
 def get_retell_scheduling_tool_adapter(

@@ -27,6 +27,7 @@ See also:
 
 - [Configuration](../configuration.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
+- [Retell Call Lifecycle](retell-call-lifecycle.md)
 
 ## Verification Flow
 
@@ -37,7 +38,9 @@ See also:
 5. Validate payload.
 6. Process supported callback/tool type.
 
-Protected routes live under `/api/v1/retell/tools/*`. Verification runs before demo guardrails and before any domain adapter executes.
+Protected routes live under `/api/v1/retell/tools/*` and `/api/v1/retell/webhooks/lifecycle`. Verification runs before demo guardrails and before any domain adapter executes.
+
+Verified lifecycle events flow into [Retell call lifecycle ingestion](retell-call-lifecycle.md) after signature verification succeeds.
 
 ## Local Development
 
@@ -100,9 +103,6 @@ Verification runs before guardrails on Retell tool routes, so invalid signatures
 
 Future implementation phases may add:
 
-- VoiceCall model
-- VoiceCallEvent model
-- Retell call lifecycle ingestion
 - Retell tool-calling adapter
 - voice booking/cancel/reschedule flow
 - optional IP allowlist
