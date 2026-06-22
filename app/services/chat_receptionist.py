@@ -599,6 +599,9 @@ class ChatReceptionistService:
                 "estimated_cost_micros": llm_analysis_result.estimated_cost_micros,
                 "latency_ms": llm_analysis_result.latency_ms,
                 "attempt_count": llm_analysis_result.attempt_count,
+                "primary_attempt_count": llm_analysis_result.primary_attempt_count,
+                "fallback_attempt_count": llm_analysis_result.fallback_attempt_count,
+                "used_repair": llm_analysis_result.used_repair,
             }
         if slot_filling_result is not None:
             assistant_metadata["slot_filling"] = slot_filling_result.to_metadata()

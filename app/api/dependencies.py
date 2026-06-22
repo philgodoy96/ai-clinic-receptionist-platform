@@ -154,6 +154,7 @@ def get_llm_receptionist_analysis_service(
 
     return LLMReceptionistAnalysisService(
         provider=create_llm_provider_from_settings(settings),
+        max_primary_attempts=settings.llm_max_primary_attempts,
     )
 
 

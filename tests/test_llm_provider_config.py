@@ -53,3 +53,23 @@ def test_fake_provider_does_not_require_bedrock_settings(
     settings = load_settings(monkeypatch, LLM_PROVIDER="fake")
     assert settings.llm_provider == LLMProviderName.FAKE
     assert settings.bedrock_model_id == ""
+
+
+def test_llm_max_primary_attempts_defaults_to_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_MAX_PRIMARY_ATTEMPTS", raising=False)
+    settings = load_settings(monkeypatch)
+    assert settings.llm_max_primary_attempts == 2
+
+
+def test_llm_max_primary_attempts_rejects_values_below_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError):
+        load_settings(monkeypatch, LLM_MAX_PRIMARY_ATTEMPTS="0")
+
+
+def test_llm_max_primary_attempts_rejects_values_above_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError):
+        load_settings(monkeypatch, LLM_MAX_PRIMARY_ATTEMPTS="4")
