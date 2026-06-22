@@ -12,5 +12,8 @@ class AppointmentHoldRepository(Protocol):
     def get(self, *, doctor_id: UUID, start_time: datetime) -> AppointmentHold | None:
         raise NotImplementedError
 
+    def get_by_hold_id(self, hold_id: UUID) -> AppointmentHold | None:
+        raise NotImplementedError
+
     def delete(self, *, doctor_id: UUID, start_time: datetime) -> None:
         raise NotImplementedError

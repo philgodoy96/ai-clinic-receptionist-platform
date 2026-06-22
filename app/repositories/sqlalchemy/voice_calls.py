@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, asc, desc, or_, select
@@ -92,6 +93,64 @@ class SQLAlchemyVoiceCallRepository:
         )
 
         return self.session.scalars(statement).first()
+
+    def get_tool_call_outcome_by_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        event = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+
+        if event is None:
+            return None
+
+        metadata = event.event_metadata
+
+        if not isinstance(metadata, dict):
+            return None
+
+        outcome = metadata.get("tool_call_outcome")
+
+        if not isinstance(outcome, dict):
+            return None
+
+        return outcome
+
+    def record_tool_call_outcome(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+        occurred_at: datetime,
+    ) -> bool:
+        existing = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+
+        if existing is not None:
+            return False
+
+        voice_call_event = VoiceCallEvent(
+            voice_call_id=voice_call_id,
+            provider=provider,
+            provider_call_id=provider_call_id,
+            provider_event_id=tool_call_id,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            event_metadata={"tool_call_outcome": outcome},
+            idempotency_key=idempotency_key,
+        )
+
+        try:
+            self.create_voice_call_event(voice_call_event)
+        except IntegrityError:
+            self.session.rollback()
+            return False
+
+        return True
 
     def list_voice_calls(
         self,

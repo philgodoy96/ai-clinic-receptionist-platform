@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -467,6 +468,53 @@ class FakeVoiceCallRepository:
             ]
 
         return events[:limit]
+
+    def get_tool_call_outcome_by_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        event = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+
+        if event is None:
+            return None
+
+        outcome = event.event_metadata.get("tool_call_outcome")
+
+        if not isinstance(outcome, dict):
+            return None
+
+        return outcome
+
+    def record_tool_call_outcome(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+        occurred_at: datetime,
+    ) -> bool:
+        if self.get_event_by_idempotency_key(idempotency_key=idempotency_key) is not None:
+            return False
+
+        self.create_voice_call_event(
+            VoiceCallEvent(
+                voice_call_id=voice_call_id,
+                provider=provider,
+                provider_call_id=provider_call_id,
+                provider_event_id=tool_call_id,
+                event_type=event_type,
+                occurred_at=occurred_at,
+                event_metadata={"tool_call_outcome": outcome},
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+        return True
 
 
 class RacingVoiceCallRepository(FakeVoiceCallRepository):
