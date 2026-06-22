@@ -14,6 +14,7 @@ from app.api.dependencies import (
 from app.integrations.retell.signature import (
     FakeRetellSignatureVerifier,
     HmacRetellSignatureVerifier,
+    RetellSignatureVerificationError,
 )
 from app.main import create_app
 from tests.retell_webhook_support import (
@@ -26,6 +27,9 @@ from tests.retell_webhook_support import (
     sign_retell_body,
 )
 from tests.test_api_errors import EmptySchedulingService
+
+TIMESTAMP_MS = 1_700_000_000_000
+WEBHOOK_SECRET = "test-webhook-secret"
 
 
 @pytest.fixture()
@@ -283,6 +287,130 @@ def test_verifier_exceptions_do_not_expose_secret() -> None:
     body = response.json()
     assert secret not in str(body)
     assert body["error"]["code"] == "retell_signature_invalid"
+
+
+def test_unsupported_content_type_is_rejected_safely() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+    tracking_service = TrackingSchedulingService()
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
+        lambda: RetellSchedulingToolAdapter(tracking_service)
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools/list-specialties",
+            content=b"{}",
+            headers={
+                "Content-Type": "text/plain",
+                **retell_request_headers(signature="v=1,d=test"),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
+    assert tracking_service.list_specialties_calls == 0
+
+
+def test_unknown_retell_tool_route_returns_404_without_side_effects() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            "/api/v1/retell/tools/unsupported-tool",
+            settings=settings,
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "http_404"
+
+
+def test_invalid_payload_schema_after_valid_signature_returns_400() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
+        lambda: RetellSchedulingToolAdapter(EmptySchedulingService())
+    )
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
+        secret=WEBHOOK_SECRET,
+        now_millis=lambda: TIMESTAMP_MS,
+    )
+
+    raw_body = b'{"start_from":"not-a-datetime","start_to":"also-invalid"}'
+    signature = sign_retell_body(
+        raw_body=raw_body,
+        secret=WEBHOOK_SECRET,
+        timestamp_ms=TIMESTAMP_MS,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools/check-availability",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature=signature),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
+
+
+def test_verifier_exception_returns_standardized_503() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+
+    class FailingVerifier:
+        def verify(self, *, raw_body: bytes, signature: str) -> None:
+            raise RetellSignatureVerificationError("verification backend unavailable")
+
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: FailingVerifier()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools/list-specialties",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature="v=1,d=test"),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 503
+    assert body["error"]["code"] == "retell_webhook_verification_unavailable"
+    assert WEBHOOK_SECRET not in str(body)
+    assert "verification backend unavailable" not in str(body)
+
+
+def test_non_retell_route_works_without_retell_signature() -> None:
+    app = create_app()
+    configure_retell_for_tests(app, settings=make_secured_retell_settings())
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
 
 
 class TrackingSchedulingService(EmptySchedulingService):

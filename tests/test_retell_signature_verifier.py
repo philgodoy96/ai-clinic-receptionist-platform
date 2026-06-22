@@ -17,6 +17,11 @@ from app.integrations.retell.signature import (
 )
 
 
+class RaisingRetellSignatureVerifier:
+    def verify(self, *, raw_body: bytes, signature: str) -> None:
+        raise RetellSignatureVerificationError("verification backend unavailable")
+
+
 def _sign_body(*, raw_body: bytes, secret: str, timestamp_ms: int) -> str:
     body_text = raw_body.decode("utf-8")
     timestamp_str = str(timestamp_ms)
@@ -113,3 +118,19 @@ def test_create_verifier_returns_hmac_when_verification_enabled() -> None:
 def test_verification_errors_are_safe_subclasses() -> None:
     with pytest.raises(RetellSignatureVerificationError):
         FakeRetellSignatureVerifier().verify(raw_body=b"{}", signature="")
+
+
+def test_raising_verifier_propagates_signature_verification_error() -> None:
+    verifier = RaisingRetellSignatureVerifier()
+
+    with pytest.raises(RetellSignatureVerificationError, match="verification backend unavailable"):
+        verifier.verify(raw_body=b"{}", signature="v=1,d=test")
+
+
+def test_fake_verifier_accepts_all_signatures_when_configured() -> None:
+    verifier = FakeRetellSignatureVerifier(accept_all=True)
+
+    verifier.verify(raw_body=b"{}", signature="any-signature")
+
+    assert verifier.last_raw_body == b"{}"
+    assert verifier.last_signature == "any-signature"
