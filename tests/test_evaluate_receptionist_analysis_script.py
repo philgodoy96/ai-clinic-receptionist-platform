@@ -7,8 +7,8 @@ from _pytest.capture import CaptureFixture
 from pytest import MonkeyPatch
 
 from app.ai.fake_llm_provider import FakeLLMProvider
-from app.ai.llm_provider import LLMProvider
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
+from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from scripts.evaluate_receptionist_analysis import main
 from tests.eval_report_test_helpers import (
     assert_report_excludes_secret_like_keys,
@@ -133,8 +133,8 @@ def _write_two_case_dataset(path: Path) -> None:
 
 def _patch_fake_provider(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
-        lambda: FakeLLMProvider(),
+        "scripts.evaluate_receptionist_analysis._create_llm_receptionist_analysis_service_for_evaluation",
+        lambda: LLMReceptionistAnalysisService(provider=FakeLLMProvider()),
     )
 
 
@@ -157,13 +157,13 @@ def test_script_recorded_mode_does_not_instantiate_llm_provider(
     _write_passing_dataset(dataset_path)
     provider_created = {"value": False}
 
-    def forbidden_provider_factory() -> LLMProvider:
+    def forbidden_service_factory() -> LLMReceptionistAnalysisService:
         provider_created["value"] = True
         raise AssertionError("recorded mode must not create an LLM provider")
 
     monkeypatch.setattr(
-        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
-        forbidden_provider_factory,
+        "scripts.evaluate_receptionist_analysis._create_llm_receptionist_analysis_service_for_evaluation",
+        forbidden_service_factory,
     )
 
     exit_code = main(["--dataset", str(dataset_path), "--mode", "recorded"])
@@ -485,8 +485,8 @@ def test_script_provider_mode_survives_single_case_provider_error(
             )
 
     monkeypatch.setattr(
-        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
-        SelectiveFailProvider,
+        "scripts.evaluate_receptionist_analysis._create_llm_receptionist_analysis_service_for_evaluation",
+        lambda: LLMReceptionistAnalysisService(provider=SelectiveFailProvider()),
     )
 
     exit_code = main(
@@ -527,8 +527,8 @@ def test_script_provider_mode_captures_invalid_json_as_failed_case(
             )
 
     monkeypatch.setattr(
-        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
-        InvalidJsonProvider,
+        "scripts.evaluate_receptionist_analysis._create_llm_receptionist_analysis_service_for_evaluation",
+        lambda: LLMReceptionistAnalysisService(provider=InvalidJsonProvider()),
     )
 
     exit_code = main(
@@ -555,14 +555,13 @@ def test_script_provider_mode_fail_on_errors_with_failing_stub(
     dataset_path = tmp_path / "passing.jsonl"
     _write_passing_dataset(dataset_path)
 
-    def failing_provider() -> LLMProvider:
-        return StaticContentLLMProvider(
-            build_receptionist_analysis_payload(intent="fallback"),
-        )
-
     monkeypatch.setattr(
-        "scripts.evaluate_receptionist_analysis._create_llm_provider_for_evaluation",
-        failing_provider,
+        "scripts.evaluate_receptionist_analysis._create_llm_receptionist_analysis_service_for_evaluation",
+        lambda: LLMReceptionistAnalysisService(
+            provider=StaticContentLLMProvider(
+                build_receptionist_analysis_payload(intent="fallback"),
+            ),
+        ),
     )
 
     exit_code = main(

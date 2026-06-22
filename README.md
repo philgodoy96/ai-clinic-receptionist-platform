@@ -80,6 +80,7 @@ Planned stack:
 - Docker Compose
 - Retell Web Calls
 - FakeLLMProvider by default
+- Optional Groq LLM provider adapter for hosted public demo
 - Optional Bedrock LLM provider adapter
 - FakeEmailProvider by default
 - Optional Resend email provider
@@ -140,7 +141,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -149,6 +150,7 @@ Configuration reference:
 
 Architecture docs:
 
+- `docs/architecture/groq-llm-provider.md`
 - `docs/architecture/real-llm-provider-adapter.md`
 - `docs/architecture/llm-provider-foundation.md`
 - `docs/architecture/llm-reliability-orchestration.md`
@@ -163,18 +165,31 @@ Architecture docs:
 
 - `PUBLIC_DEMO_MODE=false`
 - `PUBLIC_DEMO_GUARDRAILS_ENABLED=false`
-- `LLM_PROVIDER=fake`
+- `LLM_PROVIDER=fake` or `LLM_PRIMARY_PROVIDER=fake`
 - `LLM_MAX_PRIMARY_ATTEMPTS=2`
 - `LLM_FALLBACK_ENABLED=false`
 - `EMAIL_PROVIDER=fake`
-- no real provider API keys required
+- no Groq, Bedrock, or Resend API keys required
 - Docker Compose for PostgreSQL, Redis, and RabbitMQ
+
+**Groq public demo mode** is intended for a hosted unauthenticated demo with real LLM analysis:
+
+- `PUBLIC_DEMO_MODE=true`
+- `PUBLIC_DEMO_GUARDRAILS_ENABLED=true`
+- `LLM_PRIMARY_PROVIDER=groq`
+- `GROQ_API_KEY=...` and `GROQ_MODEL=...`
+- `GROQ_RESPONSE_FORMAT=json_schema`
+- `LLM_MAX_PRIMARY_ATTEMPTS=2`
+- `LLM_FALLBACK_ENABLED=false`
+- optional `EMAIL_PROVIDER=resend` for real confirmation emails
+
+Groq output still flows through the same parse, repair, validation, and safety checks as fake and Bedrock providers. LLM suggestions never create holds, appointments, emails, or escalations directly.
 
 **Email mode:** `EMAIL_PROVIDER=fake` records outbound messages in memory for workers and tests. No Resend API key is required. Set `EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` only for a hosted public demo that sends real mail.
 
 Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, RabbitMQ wake-up messages only trigger workers, and retry timing is controlled by `next_attempt_at`. Resend idempotency keys reduce duplicate-send risk but do not guarantee exactly-once delivery across the external provider.
 
-**Public demo mode** is intended for a hosted unauthenticated demo:
+**Public demo guardrails** apply when hosting the unauthenticated demo:
 
 - `PUBLIC_DEMO_MODE=true`
 - `PUBLIC_DEMO_GUARDRAILS_ENABLED=true`
@@ -183,4 +198,4 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-See `docs/architecture/public-demo-guardrails.md` for design details, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
+See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.

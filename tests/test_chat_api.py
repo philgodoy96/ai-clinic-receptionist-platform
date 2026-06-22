@@ -751,6 +751,66 @@ def test_chat_api_with_default_fake_llm_dependency_returns_greeting(
     assert "raw_provider_output" not in shadow
 
 
+def test_chat_with_mocked_groq_primary_does_not_create_side_effects() -> None:
+    from tests.test_groq_llm_provider import (
+        SequentialStubGroqHttpClient,
+        build_groq_provider_with_client,
+        build_valid_chat_completion_response,
+    )
+
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service()
+    hold_service = FakeAppointmentHoldService()
+    tracking_booking = TrackingAppointmentBookingService(
+        create_appointment_booking_service_for_scheduling(scheduling, hold_service),
+    )
+    groq_client = SequentialStubGroqHttpClient(
+        steps=[
+            (
+                build_valid_chat_completion_response(
+                    content=build_receptionist_analysis_payload(
+                        intent="booking_confirmation",
+                        confidence=0.99,
+                    ),
+                ),
+                None,
+            ),
+        ],
+    )
+    llm_analysis = LLMReceptionistAnalysisService(
+        primary_provider=build_groq_provider_with_client(groq_client),
+        primary_provider_name=LLMProviderName.GROQ,
+        max_primary_attempts=1,
+    )
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=hold_service,
+        appointment_booking=cast(AppointmentBookingService, tracking_booking),
+        llm_analysis=llm_analysis,
+        slot_filling=LLMChatSlotFillingService(
+            scheduling=scheduling,
+            date_parser=NaturalLanguageDateParser(),
+            time_preference_parser=TimePreferenceParser(),
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Yes, please confirm my booking now."),
+    )
+
+    assert groq_client.call_count == 1
+    assert len(tracking_booking.book_calls) == 0
+    assert len(hold_service.create_hold_calls) == 0
+    assert result.booking_confirmed is False
+    shadow = result.assistant_message.message_metadata["llm_shadow_analysis"]
+    assert shadow["primary_provider"] == LLMProviderName.GROQ.value
+    assert build_receptionist_system_prompt() not in json.dumps(
+        result.assistant_message.message_metadata,
+    )
+
+
 def test_chat_flow_with_llm_orchestration_does_not_create_side_effects() -> None:
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)

@@ -20,7 +20,8 @@ The implementation supports:
 
 - fake provider by default
 - configurable provider selection
-- Bedrock provider adapter
+- Groq provider adapter for hosted public demo
+- Bedrock provider adapter for optional enterprise/fallback use
 - structured output prompting
 - provider timeout/retry configuration
 - validation and fallback through the reliability orchestration layer
@@ -55,7 +56,22 @@ LLM_MAX_PRIMARY_ATTEMPTS=2
 LLM_FALLBACK_ENABLED=false
 ```
 
-Optional real provider:
+Optional Groq configuration for hosted public demo:
+
+```env
+LLM_PRIMARY_PROVIDER=groq
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_REQUEST_TIMEOUT_SECONDS=10
+GROQ_MAX_OUTPUT_TOKENS=800
+GROQ_TEMPERATURE=0
+GROQ_RESPONSE_FORMAT=json_schema
+LLM_MAX_PRIMARY_ATTEMPTS=2
+LLM_FALLBACK_ENABLED=false
+```
+
+Optional Bedrock configuration:
 
 ```env
 LLM_PROVIDER=bedrock
@@ -78,13 +94,15 @@ LLM_MAX_FALLBACK_ATTEMPTS=1
 
 When fallback is enabled, the fallback provider is only used after fallback-eligible retryable primary failures. See [LLM Reliability Orchestration](llm-reliability-orchestration.md).
 
+Groq API keys are not stored in the repository. Provide `GROQ_API_KEY` through environment variables or your deployment secret manager at runtime.
+
 AWS credentials are not stored in the repository.
 
 Runtime credentials should come from standard AWS environment, profile, or role mechanisms.
 
 ## Testing Boundary
 
-Automated tests do not call real Bedrock.
+Automated tests do not call real Groq or Bedrock.
 
 Provider calls are mocked/stubbed.
 
@@ -117,10 +135,8 @@ See [LLM Reliability Orchestration](llm-reliability-orchestration.md).
 
 Future implementation phases may add:
 
-- Groq primary provider
 - circuit breaker
-- rate limit handling
 - tenant-level cost tracking
 - streaming support for voice
 
-See also: [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).
+See also: [Groq LLM Provider](groq-llm-provider.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).

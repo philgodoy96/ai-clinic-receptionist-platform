@@ -114,6 +114,16 @@ def classify_provider_error(message: str) -> LLMFailureReason:
     return LLMFailureReason.PROVIDER_EXCEPTION
 
 
+def failure_reason_for_typed_provider_error(error: BaseException) -> LLMFailureReason | None:
+    from app.ai.llm_provider import LLMProviderRateLimitError, LLMProviderTimeoutError
+
+    if isinstance(error, LLMProviderTimeoutError):
+        return LLMFailureReason.PROVIDER_TIMEOUT
+    if isinstance(error, LLMProviderRateLimitError):
+        return LLMFailureReason.PROVIDER_RATE_LIMITED
+    return None
+
+
 def is_primary_provider_retryable(reason: LLMFailureReason) -> bool:
     if reason in {
         LLMFailureReason.NONE,

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 
-from app.ai.llm_provider import LLMProviderName
+from app.ai.llm_provider import LLMProviderError, LLMProviderName, LLMProviderRateLimitError
 from app.ai.llm_reliability import LLMFailureReason
 from app.ai.receptionist_output import ReceptionistLLMIntent
-from app.services.llm_receptionist import ReceptionistAnalysisRequest
+from app.services.llm_receptionist import (
+    LLMReceptionistAnalysisService,
+    ReceptionistAnalysisRequest,
+)
 from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
 from tests.llm_reliability_test_helpers import (
     CountingLLMProvider,
@@ -14,6 +17,11 @@ from tests.llm_reliability_test_helpers import (
     analysis_request,
     assert_result_reliability_metadata,
     build_orchestration_service,
+)
+from tests.test_groq_llm_provider import (
+    SequentialStubGroqHttpClient,
+    build_groq_provider_with_client,
+    build_valid_chat_completion_response,
 )
 
 
@@ -270,3 +278,102 @@ def test_success_metadata_includes_all_reliability_fields() -> None:
     assert result.failure_category.value == "none"
     assert result.failure_reason == LLMFailureReason.NONE
     assert_result_reliability_metadata(result)
+
+
+def _build_groq_orchestration_service(
+    client: SequentialStubGroqHttpClient,
+    *,
+    fallback_provider: CountingLLMProvider | None = None,
+    max_primary_attempts: int = 2,
+    max_fallback_attempts: int = 0,
+    fallback_provider_name: LLMProviderName | None = None,
+) -> tuple[LLMReceptionistAnalysisService, SequentialStubGroqHttpClient]:
+    service = LLMReceptionistAnalysisService(
+        primary_provider=build_groq_provider_with_client(client),
+        fallback_provider=fallback_provider,
+        primary_provider_name=LLMProviderName.GROQ,
+        fallback_provider_name=fallback_provider_name,
+        max_primary_attempts=max_primary_attempts,
+        max_fallback_attempts=max_fallback_attempts,
+    )
+    return service, client
+
+
+def test_groq_provider_exception_retries_via_orchestration_not_internally() -> None:
+    payload = build_receptionist_analysis_payload()
+    client = SequentialStubGroqHttpClient(
+        steps=[
+            (None, LLMProviderError("Groq server error: 503")),
+            (build_valid_chat_completion_response(content=payload), None),
+        ],
+    )
+    service, client = _build_groq_orchestration_service(client)
+
+    result = service.analyze_message(analysis_request())
+
+    assert client.call_count == 2
+    assert result.primary_attempt_count == 2
+    assert result.used_fallback is False
+    assert result.provider == LLMProviderName.GROQ.value
+    assert result.primary_provider == LLMProviderName.GROQ.value
+
+
+def test_groq_rate_limit_is_retried_by_orchestration() -> None:
+    payload = build_receptionist_analysis_payload()
+    client = SequentialStubGroqHttpClient(
+        steps=[
+            (None, LLMProviderRateLimitError("Groq rate limit exceeded")),
+            (build_valid_chat_completion_response(content=payload), None),
+        ],
+    )
+    service, client = _build_groq_orchestration_service(client)
+
+    result = service.analyze_message(analysis_request())
+
+    assert client.call_count == 2
+    assert result.primary_attempt_count == 2
+    assert result.used_fallback is False
+    assert result.failure_reason == LLMFailureReason.NONE
+
+
+def test_groq_invalid_json_uses_existing_parse_repair_retry_path() -> None:
+    payload = build_receptionist_analysis_payload()
+    client = SequentialStubGroqHttpClient(
+        steps=[
+            (build_valid_chat_completion_response(content="this is not valid json"), None),
+            (build_valid_chat_completion_response(content=payload), None),
+        ],
+    )
+    service, client = _build_groq_orchestration_service(client)
+
+    result = service.analyze_message(analysis_request())
+
+    assert client.call_count == 2
+    assert result.primary_attempt_count == 2
+    assert result.used_fallback is False
+
+
+def test_groq_safety_violation_does_not_retry_or_call_fallback() -> None:
+    payload = build_receptionist_analysis_payload(
+        intent="greeting",
+        urgency="emergency",
+    )
+    client = SequentialStubGroqHttpClient(
+        steps=[
+            (build_valid_chat_completion_response(content=payload), None),
+        ],
+    )
+    fallback = CountingLLMProvider(build_receptionist_analysis_payload(), name="fallback")
+    service, client = _build_groq_orchestration_service(
+        client,
+        fallback_provider=fallback,
+        max_fallback_attempts=1,
+        fallback_provider_name=LLMProviderName.FAKE,
+    )
+
+    result = service.analyze_message(analysis_request())
+
+    assert client.call_count == 1
+    assert fallback.call_count == 0
+    assert result.used_fallback is True
+    assert result.failure_reason == LLMFailureReason.SAFETY_VIOLATION

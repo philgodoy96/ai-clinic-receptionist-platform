@@ -12,15 +12,36 @@ class LLMProviderError(RuntimeError):
     pass
 
 
-def provider_failure_reason(error: LLMProviderError) -> LLMFailureReason:
-    from app.ai.llm_reliability import classify_provider_error
+class LLMProviderTimeoutError(LLMProviderError):
+    pass
 
+
+class LLMProviderRateLimitError(LLMProviderError):
+    pass
+
+
+def provider_failure_reason(error: LLMProviderError) -> LLMFailureReason:
+    from app.ai.llm_reliability import (
+        classify_provider_error,
+        failure_reason_for_typed_provider_error,
+    )
+
+    typed_reason = failure_reason_for_typed_provider_error(error)
+    if typed_reason is not None:
+        return typed_reason
     return classify_provider_error(str(error))
 
 
 class LLMProviderName(StrEnum):
     FAKE = "fake"
     BEDROCK = "bedrock"
+    GROQ = "groq"
+
+
+class GroqResponseFormat(StrEnum):
+    JSON_SCHEMA = "json_schema"
+    JSON_OBJECT = "json_object"
+    NONE = "none"
 
 
 class LLMFinishReason(StrEnum):
@@ -54,6 +75,7 @@ class LLMResponse:
     output_tokens: int
     estimated_cost_micros: int
     finish_reason: LLMFinishReason = LLMFinishReason.STOP
+    provider_metadata: dict[str, str | int] = field(default_factory=dict)
 
 
 class LLMProvider(Protocol):
