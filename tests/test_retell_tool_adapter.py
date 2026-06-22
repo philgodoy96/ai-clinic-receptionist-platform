@@ -147,7 +147,7 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
     assert RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.BOOK_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.CANCEL_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
-    assert RetellSupportedToolName.RESCHEDULE_APPOINTMENT not in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.RESCHEDULE_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
 
 
 def test_adapter_dispatch_does_not_use_reflection() -> None:
