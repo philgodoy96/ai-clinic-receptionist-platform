@@ -34,6 +34,11 @@ class SQLAlchemyConversationRepository:
 
         return self.session.scalars(statement).first()
 
+    def get_by_call_id(self, call_id: str) -> Conversation | None:
+        statement = select(Conversation).where(Conversation.call_id == call_id)
+
+        return self.session.scalars(statement).first()
+
     def add_message(self, message: ConversationMessage) -> ConversationMessage:
         self.session.add(message)
         self.session.flush()
