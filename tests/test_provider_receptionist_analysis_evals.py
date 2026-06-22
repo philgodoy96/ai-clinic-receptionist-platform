@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+from app.ai.fake_llm_provider import FakeLLMProvider
 from app.ai.llm_provider import LLMProviderError, LLMRequest, LLMResponse
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.evals.provider_receptionist_analysis import (
@@ -76,6 +77,21 @@ def test_perfect_provider_outputs_pass() -> None:
     assert summary.accuracy == 1.0
 
 
+def test_provider_eval_runs_with_fake_llm_provider_without_real_calls() -> None:
+    service = LLMReceptionistAnalysisService(provider=FakeLLMProvider())
+    case = _build_case(message="Hello", intent="greeting")
+    evaluator = ProviderReceptionistAnalysisEvaluator(llm_analysis_service=service)
+
+    summary = evaluator.evaluate([case])
+    case_output = evaluator.last_case_outputs[0]
+
+    assert summary.passed_cases == 1
+    assert summary.failed_cases == 0
+    assert case_output.failure_reason is None
+    assert case_output.actual["intent"] == "greeting"
+    assert case_output.prompt_version == _default_prompt_version()
+
+
 def test_wrong_provider_output_fails_metrics() -> None:
     service = LLMReceptionistAnalysisService(
         provider=StaticContentLLMProvider(
@@ -104,7 +120,7 @@ def test_provider_error_becomes_failed_case_with_fallback_result() -> None:
 
     assert summary.failed_cases == 1
     assert summary.case_results[0].passed is False
-    assert case_output.failure_reason == "provider_error"
+    assert case_output.failure_reason == "provider_exception"
     assert case_output.actual["intent"] == "fallback"
 
 
@@ -120,7 +136,7 @@ def test_invalid_json_becomes_failed_case_with_fallback_result() -> None:
 
     assert summary.failed_cases == 1
     assert summary.case_results[0].passed is False
-    assert case_output.failure_reason == "invalid_json"
+    assert case_output.failure_reason == "json_parse_failed"
     assert case_output.actual["intent"] == "fallback"
 
 
@@ -172,7 +188,7 @@ def test_provider_error_on_one_case_does_not_crash_whole_run() -> None:
     assert summary.passed_cases == 1
     assert summary.failed_cases == 1
     assert case_outputs[0].failure_reason is None
-    assert case_outputs[1].failure_reason == "provider_error"
+    assert case_outputs[1].failure_reason == "provider_exception"
     assert case_outputs[1].actual["intent"] == "fallback"
 
 

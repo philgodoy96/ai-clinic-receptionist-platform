@@ -140,7 +140,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -151,6 +151,7 @@ Architecture docs:
 
 - `docs/architecture/real-llm-provider-adapter.md`
 - `docs/architecture/llm-provider-foundation.md`
+- `docs/architecture/llm-reliability-orchestration.md`
 - `docs/architecture/llm-evaluation-dataset.md`
 - `docs/architecture/provider-run-evaluation-mode.md`
 - `docs/architecture/public-demo-guardrails.md`
@@ -162,6 +163,8 @@ Architecture docs:
 - `PUBLIC_DEMO_MODE=false`
 - `PUBLIC_DEMO_GUARDRAILS_ENABLED=false`
 - `LLM_PROVIDER=fake`
+- `LLM_MAX_PRIMARY_ATTEMPTS=2`
+- `LLM_FALLBACK_ENABLED=false`
 - `EMAIL_PROVIDER=fake`
 - no real provider API keys required
 - Docker Compose for PostgreSQL, Redis, and RabbitMQ

@@ -28,7 +28,12 @@ python -m scripts.evaluate_receptionist_analysis --mode recorded --fail-on-error
 
 ### Provider Mode
 
-Provider mode runs the dataset against the configured LLM provider.
+Provider mode runs the dataset against the configured LLM provider through the same reliability orchestration layer used in chat shadow analysis:
+
+- bounded primary attempts
+- optional fallback provider when enabled
+- deterministic fallback after exhaustion
+- `failure_reason`, `failure_category`, and attempt metadata on failed cases
 
 It requires explicit confirmation:
 
@@ -78,4 +83,4 @@ Future implementation phases may add:
 - cost estimates
 - regression report artifacts
 
-See also: [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).

@@ -1,19 +1,34 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 from pydantic import BaseModel, ValidationError
 
 
 class StructuredOutputParseError(ValueError):
-    pass
+    def __init__(self, message: str, *, repair_attempted: bool = False) -> None:
+        super().__init__(message)
+        self.repair_attempted = repair_attempted
 
 
 class StructuredOutputValidationError(ValueError):
     pass
 
 
-def parse_json_object(raw_output: str) -> dict[str, object]:
+@dataclass(frozen=True, slots=True)
+class JsonObjectParseResult:
+    payload: dict[str, object]
+    used_repair: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredOutputParseOutcome[StructuredOutputT: BaseModel]:
+    value: StructuredOutputT
+    used_repair: bool
+
+
+def parse_json_object(raw_output: str) -> JsonObjectParseResult:
     try:
         payload = json.loads(raw_output)
     except json.JSONDecodeError as exc:
@@ -24,12 +39,22 @@ def parse_json_object(raw_output: str) -> dict[str, object]:
         try:
             payload = json.loads(repaired_output)
         except json.JSONDecodeError as repair_exc:
-            raise StructuredOutputParseError("LLM output repair failed") from repair_exc
+            raise StructuredOutputParseError(
+                "LLM output repair failed",
+                repair_attempted=True,
+            ) from repair_exc
+
+        if not isinstance(payload, dict):
+            raise StructuredOutputParseError(
+                "LLM output JSON root must be an object",
+            ) from None
+
+        return JsonObjectParseResult(payload=payload, used_repair=True)
 
     if not isinstance(payload, dict):
         raise StructuredOutputParseError("LLM output JSON root must be an object")
 
-    return payload
+    return JsonObjectParseResult(payload=payload, used_repair=False)
 
 
 def extract_json_object(raw_output: str) -> str | None:
@@ -47,11 +72,27 @@ def parse_structured_output[StructuredOutputT: BaseModel](
     raw_output: str,
     model_type: type[StructuredOutputT],
 ) -> StructuredOutputT:
-    payload = parse_json_object(raw_output)
+    return parse_structured_output_with_repair_flag(
+        raw_output=raw_output,
+        model_type=model_type,
+    ).value
+
+
+def parse_structured_output_with_repair_flag[StructuredOutputT: BaseModel](
+    *,
+    raw_output: str,
+    model_type: type[StructuredOutputT],
+) -> StructuredOutputParseOutcome[StructuredOutputT]:
+    parse_result = parse_json_object(raw_output)
 
     try:
-        return model_type.model_validate(payload)
+        value = model_type.model_validate(parse_result.payload)
     except ValidationError as exc:
         raise StructuredOutputValidationError(
             "LLM output failed schema validation",
         ) from exc
+
+    return StructuredOutputParseOutcome(
+        value=value,
+        used_repair=parse_result.used_repair,
+    )

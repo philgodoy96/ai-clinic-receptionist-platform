@@ -8,7 +8,8 @@ from pydantic import ValidationError
 
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
-from app.ai.provider_factory import build_llm_provider
+from app.ai.llm_provider import LLMProviderName
+from app.ai.provider_factory import build_llm_provider, create_llm_provider_from_settings
 from app.api.dependencies import get_llm_provider, get_llm_receptionist_analysis_service
 from app.core.config import Settings, get_settings
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
@@ -125,7 +126,7 @@ def test_get_llm_receptionist_analysis_service_uses_fake_by_default(
     service = get_llm_receptionist_analysis_service(settings=settings)
 
     assert isinstance(service, LLMReceptionistAnalysisService)
-    assert isinstance(service.provider, FakeLLMProvider)
+    assert isinstance(service.primary_provider, FakeLLMProvider)
 
 
 def test_llm_disabled_does_not_create_bedrock_client(
@@ -164,3 +165,45 @@ def test_build_llm_provider_logs_provider_name_without_secrets(
     assert len(provider_records) == 1
     assert getattr(provider_records[0], "provider", None) == "fake"
     assert "BEDROCK_MODEL_ID" not in caplog.text
+
+
+def test_create_llm_provider_from_settings_uses_explicit_provider_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PROVIDER="fake",
+        BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0",
+    )
+    stub_client = MagicMock()
+
+    with patch(
+        "app.ai.bedrock_llm_provider.BedrockLLMProvider._create_client",
+        return_value=stub_client,
+    ) as create_client:
+        provider = create_llm_provider_from_settings(settings, LLMProviderName.BEDROCK)
+
+    create_client.assert_called_once()
+    assert isinstance(provider, BedrockLLMProvider)
+    assert provider._model_id == "anthropic.claude-3-haiku-20240307-v1:0"
+
+
+def test_fallback_enabled_instantiates_primary_and_fallback_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PROVIDER="fake",
+        LLM_FALLBACK_ENABLED="true",
+        LLM_FALLBACK_PROVIDER="fake",
+    )
+
+    with patch(
+        "app.api.dependencies.create_llm_provider_from_settings",
+        wraps=create_llm_provider_from_settings,
+    ) as create_provider:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    assert service is not None
+    assert create_provider.call_count == 2
+    assert service.fallback_provider is not None
