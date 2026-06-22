@@ -40,6 +40,7 @@ from app.services.conversations import ConversationCreate, ConversationService
 from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
+    AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
 from app.services.human_escalations import HumanEscalationService
@@ -106,20 +107,35 @@ def chat_client() -> Generator[ChatApiContext, None, None]:
 
 class FakeEmailJobService:
     def __init__(self) -> None:
-        self.jobs: list[AppointmentConfirmationEmailJobCreate] = []
+        self.repository = FakeEmailJobRepository()
+        self._service = EmailJobService(repository=self.repository)
+
+    @property
+    def jobs(self) -> list[EmailJob]:
+        return self.repository.email_jobs
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return self._service.get_by_idempotency_key(
+            job_type=job_type,
+            idempotency_key=idempotency_key,
+        )
+
+    def get_or_create_appointment_confirmation_email_job(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> AppointmentConfirmationEmailJobResult:
+        return self._service.get_or_create_appointment_confirmation_email_job(payload)
 
     def enqueue_appointment_confirmation(
         self,
         payload: AppointmentConfirmationEmailJobCreate,
     ) -> EmailJob:
-        self.jobs.append(payload)
-        return EmailJob(
-            id=uuid4(),
-            appointment_id=payload.appointment_id,
-            patient_id=payload.patient_id,
-            subject="Appointment confirmation",
-            body="test",
-        )
+        return self._service.enqueue_appointment_confirmation(payload)
 
 
 class FailingEmailJobDispatchPublisher:

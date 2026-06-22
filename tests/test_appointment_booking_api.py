@@ -31,6 +31,7 @@ from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogCreate, AuditLogService
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
+    AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
 
@@ -306,19 +307,25 @@ class FakeAuditLogService:
 
 class FakeEmailJobService:
     def __init__(self) -> None:
+        from tests.test_email_jobs import FakeEmailJobRepository
+
+        self.repository = FakeEmailJobRepository()
+        self._service = EmailJobService(repository=self.repository)
         self.jobs: list[AppointmentConfirmationEmailJobCreate] = []
+
+    def get_or_create_appointment_confirmation_email_job(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> AppointmentConfirmationEmailJobResult:
+        self.jobs.append(payload)
+        return self._service.get_or_create_appointment_confirmation_email_job(payload)
 
     def enqueue_appointment_confirmation(
         self,
         payload: AppointmentConfirmationEmailJobCreate,
     ) -> EmailJob:
         self.jobs.append(payload)
-        return EmailJob(
-            appointment_id=payload.appointment_id,
-            patient_id=payload.patient_id,
-            subject="Appointment confirmation",
-            body="test",
-        )
+        return self._service.enqueue_appointment_confirmation(payload)
 
 
 class FakePatientRepository:

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
@@ -45,6 +46,7 @@ def test_enqueue_appointment_confirmation_creates_pending_email_job() -> None:
     assert email_job.recipient_email == "patient@example.test"
     assert email_job.attempt_count == 0
     assert email_job.max_attempts == 3
+    assert email_job.idempotency_key == f"appointment_confirmation:{appointment_id}"
     assert email_job.payload["source"] == "retell_tool"
     assert "John Miller" in email_job.body
     assert "Dr. Emily Carter" in email_job.body
@@ -345,6 +347,18 @@ class FakeEmailJobRepository:
     def add(self, email_job: EmailJob) -> EmailJob:
         if email_job.id is None:
             email_job.id = uuid4()
+
+        if email_job.idempotency_key is not None:
+            existing = self.get_by_idempotency_key(
+                job_type=email_job.job_type,
+                idempotency_key=email_job.idempotency_key,
+            )
+            if existing is not None:
+                raise IntegrityError(
+                    "duplicate idempotency key",
+                    {},
+                    Exception("duplicate idempotency key"),
+                )
 
         self.email_jobs.append(email_job)
 

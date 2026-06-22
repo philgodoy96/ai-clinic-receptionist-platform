@@ -367,7 +367,7 @@ def book_appointment(
             ),
         )
 
-        email_job = email_jobs.enqueue_appointment_confirmation(
+        email_job_result = email_jobs.get_or_create_appointment_confirmation_email_job(
             AppointmentConfirmationEmailJobCreate(
                 appointment_id=appointment.id,
                 patient_id=payload.patient_id,
@@ -378,6 +378,7 @@ def book_appointment(
                 },
             )
         )
+        email_job = email_job_result.email_job
 
         db.commit()
         db.refresh(appointment)

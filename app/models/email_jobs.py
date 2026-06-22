@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -84,5 +84,10 @@ class EmailJob(Base):
         Index("ix_email_jobs_locked_until", "locked_until"),
         Index("ix_email_jobs_appointment_id", "appointment_id"),
         Index("ix_email_jobs_patient_id", "patient_id"),
-        Index("ix_email_jobs_idempotency_key", "idempotency_key"),
+        Index(
+            "uq_email_jobs_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
