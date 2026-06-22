@@ -19,14 +19,23 @@ def load_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
     return Settings(_env_file=None)
 
 
-def test_public_demo_defaults_are_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_local_defaults_keep_public_demo_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
     monkeypatch.delenv("PUBLIC_DEMO_GUARDRAILS_ENABLED", raising=False)
     monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+
     settings = load_settings(monkeypatch)
+
     assert settings.public_demo_mode is False
     assert settings.public_demo_guardrails_enabled is False
     assert settings.trust_proxy_headers is False
+
+
+def test_settings_without_env_file_default_to_local_demo_disabled() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.public_demo_mode is False
+    assert settings.public_demo_guardrails_enabled is False
 
 
 @pytest.mark.parametrize(
@@ -59,6 +68,7 @@ def test_public_demo_mode_can_be_enabled_via_env(monkeypatch: pytest.MonkeyPatch
         PUBLIC_DEMO_GUARDRAILS_ENABLED="true",
         TRUST_PROXY_HEADERS="true",
     )
+
     assert settings.public_demo_mode is True
     assert settings.public_demo_guardrails_enabled is True
     assert settings.trust_proxy_headers is True
