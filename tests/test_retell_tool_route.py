@@ -1,0 +1,568 @@
+from __future__ import annotations
+
+from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api.dependencies import (
+    get_appointment_booking_service,
+    get_email_job_service,
+    get_retell_tool_calling_adapter,
+    get_scheduling_service,
+)
+from app.db.session import get_db
+from app.domain.scheduling.appointment_holds import AppointmentHold
+from app.domain.scheduling.enums import AvailabilitySlotStatus
+from app.domain.voice_calls.enums import VoiceCallStatus
+from app.main import create_app
+from app.models.scheduling import AvailabilitySlot, Doctor, Specialty
+from app.models.voice_calls import VoiceCall
+from app.schemas.retell_tools import RetellToolCallRequest, RetellToolCallResponse
+from app.services.appointment_holds import AppointmentHoldService
+from app.services.retell_tool_adapter import RetellToolCallingAdapter
+from app.services.scheduling import SchedulingService
+from tests.demo_guardrail_support import (
+    create_guarded_retell_app,
+    make_guardrail_settings,
+)
+from tests.retell_webhook_support import (
+    configure_retell_for_tests,
+    install_fake_retell_verifier,
+    make_secured_retell_settings,
+    post_retell_tool,
+    retell_request_headers,
+)
+from tests.test_appointment_hold_api import FakeDatabaseSession
+from tests.test_retell_read_tools import FakeSchedulingService
+
+
+@pytest.fixture()
+def route_context() -> RouteContext:
+    specialty_id = uuid4()
+    doctor_id = uuid4()
+    slot_id = uuid4()
+    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+
+    specialty = Specialty(
+        id=specialty_id,
+        name="Dermatology",
+        description="Skin care",
+        is_active=True,
+    )
+    doctor = Doctor(
+        id=doctor_id,
+        specialty_id=specialty_id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    slot = AvailabilitySlot(
+        id=slot_id,
+        doctor_id=doctor_id,
+        start_time=start_time,
+        end_time=start_time + timedelta(minutes=30),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+    scheduling_service = FakeSchedulingService(
+        specialties=[specialty],
+        doctors=[doctor],
+        patients=[],
+        availability_slots=[slot],
+        appointments=[],
+    )
+    hold_repository = RouteAppointmentHoldRepository()
+    hold_service = AppointmentHoldService(repository=hold_repository, ttl_seconds=300)
+    voice_calls = RouteVoiceCallRepository()
+    adapter = RetellToolCallingAdapter(
+        scheduling_service=cast(SchedulingService, scheduling_service),
+        hold_service=hold_service,
+        voice_calls=voice_calls,
+    )
+    booking_service = NeverCalledBookingService()
+    email_service = NeverCalledEmailService()
+
+    return RouteContext(
+        specialty=specialty,
+        doctor=doctor,
+        slot=slot,
+        scheduling_service=scheduling_service,
+        hold_repository=hold_repository,
+        hold_service=hold_service,
+        voice_calls=voice_calls,
+        adapter=adapter,
+        booking_service=booking_service,
+        email_service=email_service,
+    )
+
+
+@pytest.fixture()
+def secured_client(
+    route_context: RouteContext,
+) -> Generator[tuple[TestClient, TrackingRetellToolCallingAdapter], None, None]:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+    tracking_adapter = TrackingRetellToolCallingAdapter(route_context.adapter)
+    db = FakeDatabaseSession()
+
+    def override_scheduling_service() -> FakeSchedulingService:
+        return route_context.scheduling_service
+
+    def override_adapter() -> TrackingRetellToolCallingAdapter:
+        return tracking_adapter
+
+    def override_booking_service() -> NeverCalledBookingService:
+        return route_context.booking_service
+
+    def override_email_service() -> NeverCalledEmailService:
+        return route_context.email_service
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    app.dependency_overrides[get_scheduling_service] = override_scheduling_service
+    app.dependency_overrides[get_retell_tool_calling_adapter] = override_adapter
+    app.dependency_overrides[get_appointment_booking_service] = override_booking_service
+    app.dependency_overrides[get_email_job_service] = override_email_service
+    app.dependency_overrides[get_db] = override_db
+
+    with TestClient(app) as client:
+        yield client, tracking_adapter
+
+    app.dependency_overrides.clear()
+
+
+class RouteContext:
+    def __init__(
+        self,
+        *,
+        specialty: Specialty,
+        doctor: Doctor,
+        slot: AvailabilitySlot,
+        scheduling_service: FakeSchedulingService,
+        hold_repository: RouteAppointmentHoldRepository,
+        hold_service: AppointmentHoldService,
+        voice_calls: RouteVoiceCallRepository,
+        adapter: RetellToolCallingAdapter,
+        booking_service: NeverCalledBookingService,
+        email_service: NeverCalledEmailService,
+    ) -> None:
+        self.specialty = specialty
+        self.doctor = doctor
+        self.slot = slot
+        self.scheduling_service = scheduling_service
+        self.hold_repository = hold_repository
+        self.hold_service = hold_service
+        self.voice_calls = voice_calls
+        self.adapter = adapter
+        self.booking_service = booking_service
+        self.email_service = email_service
+
+
+def test_valid_check_availability_tool_call_returns_slots(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, tracking_adapter = secured_client
+    settings = make_secured_retell_settings()
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-123",
+            "tool_name": "check_availability",
+            "arguments": {
+                "doctor_id": str(route_context.doctor.id),
+                "start_from": "2026-07-01T09:00:00Z",
+                "start_to": "2026-07-01T12:00:00Z",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert len(body["result"]["available_slots"]) == 1
+    assert len(tracking_adapter.execute_calls) == 1
+
+
+def test_valid_hold_tool_call_creates_hold(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-456",
+            "tool_name": "hold_appointment_slot",
+            "arguments": {
+                "availability_slot_id": str(route_context.slot.id),
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert len(route_context.hold_repository.create_calls) == 1
+    assert "hold_id" in body["result"]
+
+
+def test_duplicate_hold_tool_call_does_not_duplicate_hold(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+    payload = {
+        "provider_call_id": "retell-call-456",
+        "tool_call_id": "hold-call-dup",
+        "tool_name": "hold_appointment_slot",
+        "arguments": {
+            "availability_slot_id": str(route_context.slot.id),
+        },
+    }
+
+    first = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body=payload,
+    )
+    second = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body=payload,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["duplicate"] is True
+    assert len(route_context.hold_repository.create_calls) == 1
+
+
+def test_valid_release_tool_call_releases_hold(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+    hold = AppointmentHold.create(
+        availability_slot_id=route_context.slot.id,
+        doctor_id=route_context.slot.doctor_id,
+        start_time=route_context.slot.start_time,
+        end_time=route_context.slot.end_time,
+        owner_id="retell-call-789",
+    )
+    route_context.hold_repository.holds[(hold.doctor_id, hold.start_time)] = hold
+    route_context.hold_repository.holds_by_id[hold.hold_id] = hold
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-789",
+            "tool_name": "release_appointment_hold",
+            "arguments": {
+                "hold_id": str(hold.hold_id),
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert route_context.hold_repository.delete_calls == [
+        (hold.doctor_id, hold.start_time),
+    ]
+
+
+def test_invalid_signature_prevents_adapter_call(
+    route_context: RouteContext,
+) -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app)
+    tracking_adapter = NeverCalledRetellToolCallingAdapter()
+
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools",
+            content=(
+                b'{"provider_call_id":"retell-call-123","tool_name":"check_availability",'
+                b'"arguments":{"doctor_id":"'
+                + str(route_context.doctor.id).encode()
+                + b'","start_from":"2026-07-01T09:00:00Z","start_to":"2026-07-01T12:00:00Z"}}'
+            ),
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature="v=1,d=invalid"),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "retell_signature_invalid"
+    assert tracking_adapter.execute_calls == []
+
+
+def test_unknown_tool_rejected(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, tracking_adapter = secured_client
+    settings = make_secured_retell_settings()
+
+    response = post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-123",
+            "tool_name": "book_appointment",
+            "arguments": {},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "rejected"
+    assert body["error_code"] == "unsupported_retell_tool"
+    assert route_context.hold_repository.create_calls == []
+    assert len(tracking_adapter.execute_calls) == 1
+
+
+def test_booking_service_is_not_called(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+
+    post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-123",
+            "tool_name": "check_availability",
+            "arguments": {
+                "doctor_id": str(route_context.doctor.id),
+                "start_from": "2026-07-01T09:00:00Z",
+                "start_to": "2026-07-01T12:00:00Z",
+            },
+        },
+    )
+
+    assert route_context.booking_service.calls == []
+
+
+def test_email_service_is_not_called(
+    secured_client: tuple[TestClient, TrackingRetellToolCallingAdapter],
+    route_context: RouteContext,
+) -> None:
+    client, _ = secured_client
+    settings = make_secured_retell_settings()
+
+    post_retell_tool(
+        client,
+        "/api/v1/retell/tools",
+        settings=settings,
+        json_body={
+            "provider_call_id": "retell-call-456",
+            "tool_name": "hold_appointment_slot",
+            "arguments": {
+                "availability_slot_id": str(route_context.slot.id),
+            },
+        },
+    )
+
+    assert route_context.email_service.calls == []
+
+
+def test_public_demo_guardrails_still_apply() -> None:
+    app, redis_client = create_guarded_retell_app(
+        make_guardrail_settings(DEMO_RETELL_TOOL_CALLS_PER_MINUTE_PER_IP=1),
+    )
+
+    with TestClient(app) as client:
+        payload = {
+            "provider_call_id": "retell-call-guardrail",
+            "tool_name": "check_availability",
+            "arguments": {
+                "start_from": "2026-07-01T09:00:00Z",
+                "start_to": "2026-07-01T12:00:00Z",
+            },
+        }
+        first = client.post("/api/v1/retell/tools", json=payload)
+        second = client.post("/api/v1/retell/tools", json=payload)
+
+    app.dependency_overrides.clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "demo_guardrail_limit_exceeded"
+    assert len(redis_client.values) == 2
+
+
+class TrackingRetellToolCallingAdapter:
+    def __init__(self, adapter: RetellToolCallingAdapter) -> None:
+        self.adapter = adapter
+        self.execute_calls: list[RetellToolCallRequest] = []
+
+    def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
+        self.execute_calls.append(request)
+        return self.adapter.execute(request)
+
+
+class NeverCalledRetellToolCallingAdapter:
+    def __init__(self) -> None:
+        self.execute_calls: list[RetellToolCallRequest] = []
+
+    def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
+        self.execute_calls.append(request)
+        raise AssertionError("adapter must not be called")
+
+
+class RouteAppointmentHoldRepository:
+    def __init__(self) -> None:
+        self.holds: dict[tuple[UUID, datetime], AppointmentHold] = {}
+        self.holds_by_id: dict[UUID, AppointmentHold] = {}
+        self.create_calls: list[AppointmentHold] = []
+        self.delete_calls: list[tuple[UUID, datetime]] = []
+
+    def create(self, hold: AppointmentHold, ttl_seconds: int) -> bool:
+        _ = ttl_seconds
+        key = (hold.doctor_id, hold.start_time)
+
+        if key in self.holds:
+            return False
+
+        self.holds[key] = hold
+        self.holds_by_id[hold.hold_id] = hold
+        self.create_calls.append(hold)
+
+        return True
+
+    def get(self, *, doctor_id: UUID, start_time: datetime) -> AppointmentHold | None:
+        return self.holds.get((doctor_id, start_time))
+
+    def get_by_hold_id(self, hold_id: UUID) -> AppointmentHold | None:
+        return self.holds_by_id.get(hold_id)
+
+    def delete(self, *, doctor_id: UUID, start_time: datetime) -> None:
+        hold = self.holds.pop((doctor_id, start_time), None)
+        self.delete_calls.append((doctor_id, start_time))
+
+        if hold is not None:
+            self.holds_by_id.pop(hold.hold_id, None)
+
+
+class RouteVoiceCallRepository:
+    def __init__(self) -> None:
+        self.voice_calls: dict[str, VoiceCall] = {}
+        self.outcomes: dict[str, dict[str, Any]] = {}
+
+    def get_by_provider_call_id(
+        self,
+        *,
+        provider: str,
+        provider_call_id: str,
+    ) -> VoiceCall | None:
+        _ = provider
+        return self.voice_calls.get(provider_call_id)
+
+    def get_or_create_voice_call(
+        self,
+        *,
+        provider: str,
+        provider_call_id: str,
+    ) -> tuple[VoiceCall, bool]:
+        existing = self.get_by_provider_call_id(
+            provider=provider,
+            provider_call_id=provider_call_id,
+        )
+
+        if existing is not None:
+            return existing, False
+
+        voice_call = VoiceCall(
+            id=uuid4(),
+            provider=provider,
+            provider_call_id=provider_call_id,
+            status=VoiceCallStatus.CREATED,
+        )
+        self.voice_calls[provider_call_id] = voice_call
+
+        return voice_call, True
+
+    def get_tool_call_outcome_by_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        return self.outcomes.get(idempotency_key)
+
+    def record_tool_call_outcome(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+        occurred_at: datetime,
+    ) -> bool:
+        _ = (
+            voice_call_id,
+            provider,
+            provider_call_id,
+            event_type,
+            tool_call_id,
+            occurred_at,
+        )
+
+        if idempotency_key in self.outcomes:
+            return False
+
+        self.outcomes[idempotency_key] = outcome
+
+        return True
+
+
+class NeverCalledBookingService:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def book_appointment(self, *_args: Any, **_kwargs: Any) -> None:
+        self.calls.append("book_appointment")
+        raise AssertionError("booking service must not be called")
+
+
+class NeverCalledEmailService:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get_by_idempotency_key(self, *_args: Any, **_kwargs: Any) -> None:
+        self.calls.append("get_by_idempotency_key")
+        raise AssertionError("email service must not be called")

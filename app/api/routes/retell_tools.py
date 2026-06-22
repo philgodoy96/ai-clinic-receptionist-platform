@@ -12,6 +12,7 @@ from app.api.dependencies import (
     get_retell_appointment_booking_tool_adapter,
     get_retell_appointment_hold_tool_adapter,
     get_retell_scheduling_tool_adapter,
+    get_retell_tool_calling_adapter,
 )
 from app.api.retell_webhook_security import require_retell_webhook_security, retell_tool_payload
 from app.schemas.retell_tools import (
@@ -21,9 +22,12 @@ from app.schemas.retell_tools import (
     RetellListDoctorsRequest,
     RetellListSpecialtiesRequest,
     RetellPatientLookupRequest,
+    RetellToolCallRequest,
+    RetellToolCallResponse,
     RetellToolResponse,
     RetellUpcomingAppointmentsRequest,
 )
+from app.services.retell_tool_adapter import RetellToolCallingAdapter
 
 router = APIRouter(
     prefix="/api/v1/retell/tools",
@@ -33,6 +37,20 @@ router = APIRouter(
         Depends(require_retell_tool_guardrail),
     ],
 )
+
+
+@router.post("", response_model=RetellToolCallResponse)
+def execute_retell_tool(
+    payload: Annotated[
+        RetellToolCallRequest,
+        Depends(retell_tool_payload(RetellToolCallRequest)),
+    ],
+    adapter: Annotated[
+        RetellToolCallingAdapter,
+        Depends(get_retell_tool_calling_adapter),
+    ],
+) -> RetellToolCallResponse:
+    return adapter.execute(payload)
 
 
 @router.post("/list-specialties", response_model=RetellToolResponse)

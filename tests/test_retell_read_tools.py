@@ -13,6 +13,8 @@ from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatu
 from app.main import create_app
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.scheduling import (
+    AvailabilitySlotNotFoundError,
+    AvailabilitySlotUnavailableError,
     DoctorNotFoundError,
     InsufficientPatientIdentityError,
     InvalidAvailabilityWindowError,
@@ -289,6 +291,18 @@ class FakeSchedulingService:
             and slot.start_time >= start_from
             and slot.start_time < start_to
         ]
+
+    def get_available_slot_for_hold(self, availability_slot_id: UUID) -> AvailabilitySlot:
+        for slot in self.availability_slots:
+            if slot.id != availability_slot_id:
+                continue
+
+            if slot.status != AvailabilitySlotStatus.AVAILABLE:
+                raise AvailabilitySlotUnavailableError("availability slot is not available")
+
+            return slot
+
+        raise AvailabilitySlotNotFoundError("availability slot was not found")
 
     def lookup_patient(self, criteria: PatientLookupCriteria) -> Patient | None:
         if not criteria.has_sufficient_identifiers():

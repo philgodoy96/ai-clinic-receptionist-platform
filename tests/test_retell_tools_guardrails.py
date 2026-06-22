@@ -91,6 +91,27 @@ def test_retell_tool_over_limit_returns_429(
     assert body["error"]["request_id"] is not None
 
 
+def test_unified_retell_tool_route_respects_guardrails(
+    guarded_retell_client: tuple[TestClient, FakeRedisClient],
+) -> None:
+    client, _ = guarded_retell_client
+    payload = {
+        "provider_call_id": "retell-call-guardrail",
+        "tool_name": "check_availability",
+        "arguments": {
+            "start_from": "2026-07-01T09:00:00Z",
+            "start_to": "2026-07-01T12:00:00Z",
+        },
+    }
+
+    first = client.post("/api/v1/retell/tools", json=payload)
+    second = client.post("/api/v1/retell/tools", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "demo_guardrail_limit_exceeded"
+
+
 def test_local_retell_tools_pass_without_redis_guardrail_enforcement() -> None:
     redis_client = TrackingRedisClient()
     app, _ = create_guarded_retell_app(
