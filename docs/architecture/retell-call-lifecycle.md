@@ -16,6 +16,7 @@ The implementation includes:
 
 - VoiceCall persistence
 - VoiceCallEvent persistence
+- durable `VoiceCall` to `Conversation` linkage
 - Retell lifecycle ingestion service
 - idempotent event ingestion
 - conservative call status transitions
@@ -26,6 +27,7 @@ See also:
 
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
+- [Voice Conversation Bridge](voice-conversation-bridge.md)
 - [Configuration](../configuration.md)
 
 ## Entity Model
@@ -33,6 +35,8 @@ See also:
 `VoiceCall` represents the provider call.
 
 `VoiceCallEvent` represents an individual provider event for that call.
+
+A `VoiceCall` may be linked to a `Conversation` through `conversation_id`. Lifecycle ingestion creates or updates call records; the [voice conversation bridge](voice-conversation-bridge.md) links those records to the shared conversation domain when tools or bridge services need conversational state.
 
 Events are idempotent through stable idempotency keys.
 
@@ -54,6 +58,7 @@ Internal inspection APIs are available at:
 - `GET /api/v1/internal/voice-calls`
 - `GET /api/v1/internal/voice-calls/{voice_call_id}`
 - `GET /api/v1/internal/voice-calls/{voice_call_id}/events`
+- `GET /api/v1/internal/voice-calls/{voice_call_id}/conversation-context`
 
 ## Safety Boundary
 
@@ -88,7 +93,6 @@ Terminal statuses such as `ended` or `failed` are not downgraded by older out-of
 
 Future implementation phases may add:
 
-- voice conversation bridge
 - voice booking/cancel/reschedule flow
 - transcript summary persistence
 - recording/object storage

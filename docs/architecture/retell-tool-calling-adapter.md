@@ -19,12 +19,14 @@ The implementation includes:
 - RetellToolCallingAdapter
 - provider-safe response serialization
 - integration with existing scheduling and hold services
+- voice conversation context resolution via `VoiceConversationBridgeService`
 - tests for route verification, adapter dispatch, idempotency, and safety
 
 See also:
 
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
+- [Voice Conversation Bridge](voice-conversation-bridge.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
 - [Appointment Slot Holds](appointment-holds.md)
 
@@ -64,8 +66,10 @@ The adapter delegates only to existing scheduling and hold services. Booking, ca
 3. The backend parses and validates the tool request.
 4. The adapter checks the explicit tool allowlist.
 5. The adapter validates tool-specific arguments.
-6. The adapter delegates to existing backend services.
-7. The adapter returns a provider-safe response.
+6. The adapter resolves or links the related voice `Conversation` through `VoiceConversationBridgeService`.
+7. The adapter delegates to existing backend services using safe voice conversation context when needed.
+8. The adapter merges safe scheduling context back into `conversation_metadata["voice_context"]` when appropriate.
+9. The adapter returns a provider-safe response.
 
 Public demo guardrails run after signature verification and before adapter execution on protected Retell tool routes.
 
@@ -83,6 +87,8 @@ Chat and voice use different channel adapters, but share the same business servi
 
 The voice adapter must not create a parallel scheduling implementation.
 
+Retell tools now resolve safe voice conversation context from the shared `Conversation` domain instead of maintaining a separate voice-only state store.
+
 ## Future Work
 
 Future implementation phases may add:
@@ -90,6 +96,5 @@ Future implementation phases may add:
 - `book_appointment` via voice after explicit confirmation
 - cancel appointment via voice
 - reschedule appointment via voice
-- conversation bridge between Retell and Conversation domain
 - transcript summary persistence
 - voice-specific operational metrics
