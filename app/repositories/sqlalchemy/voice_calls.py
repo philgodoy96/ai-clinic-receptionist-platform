@@ -1,17 +1,22 @@
 from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import desc, select
+from sqlalchemy import and_, asc, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.voice_calls.enums import VoiceCallStatus
 from app.models.voice_calls import VoiceCall, VoiceCallEvent
+from app.services.voice_call_pagination import VoiceCallCursor, VoiceCallEventCursor
 
 
 class SQLAlchemyVoiceCallRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def get_by_id(self, voice_call_id: UUID) -> VoiceCall | None:
+        return self.session.get(VoiceCall, voice_call_id)
 
     def get_by_provider_call_id(
         self,
@@ -92,16 +97,36 @@ class SQLAlchemyVoiceCallRepository:
         self,
         *,
         limit: int,
+        cursor: VoiceCallCursor | None = None,
         status: VoiceCallStatus | None = None,
         provider: str | None = None,
+        provider_call_id: str | None = None,
+        created_after: datetime | None = None,
     ) -> Sequence[VoiceCall]:
         statement = select(VoiceCall)
+
+        if cursor is not None:
+            statement = statement.where(
+                or_(
+                    VoiceCall.created_at < cursor.created_at,
+                    and_(
+                        VoiceCall.created_at == cursor.created_at,
+                        VoiceCall.id < cursor.id,
+                    ),
+                ),
+            )
 
         if status is not None:
             statement = statement.where(VoiceCall.status == status)
 
         if provider is not None:
             statement = statement.where(VoiceCall.provider == provider)
+
+        if provider_call_id is not None:
+            statement = statement.where(VoiceCall.provider_call_id == provider_call_id)
+
+        if created_after is not None:
+            statement = statement.where(VoiceCall.created_at >= created_after)
 
         statement = statement.order_by(
             desc(VoiceCall.created_at),
@@ -115,15 +140,26 @@ class SQLAlchemyVoiceCallRepository:
         *,
         voice_call_id: UUID,
         limit: int,
+        cursor: VoiceCallEventCursor | None = None,
     ) -> Sequence[VoiceCallEvent]:
-        statement = (
-            select(VoiceCallEvent)
-            .where(VoiceCallEvent.voice_call_id == voice_call_id)
-            .order_by(
-                desc(VoiceCallEvent.occurred_at),
-                desc(VoiceCallEvent.id),
-            )
-            .limit(limit)
+        statement = select(VoiceCallEvent).where(
+            VoiceCallEvent.voice_call_id == voice_call_id,
         )
+
+        if cursor is not None:
+            statement = statement.where(
+                or_(
+                    VoiceCallEvent.occurred_at > cursor.occurred_at,
+                    and_(
+                        VoiceCallEvent.occurred_at == cursor.occurred_at,
+                        VoiceCallEvent.id > cursor.id,
+                    ),
+                ),
+            )
+
+        statement = statement.order_by(
+            asc(VoiceCallEvent.occurred_at),
+            asc(VoiceCallEvent.id),
+        ).limit(limit)
 
         return list(self.session.scalars(statement).all())

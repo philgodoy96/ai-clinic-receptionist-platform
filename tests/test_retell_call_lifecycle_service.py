@@ -14,6 +14,7 @@ from app.services.retell_call_lifecycle import (
     RetellCallLifecycleService,
     RetellLifecyclePayload,
 )
+from app.services.voice_call_pagination import VoiceCallCursor, VoiceCallEventCursor
 
 
 def _payload(
@@ -218,6 +219,12 @@ class FakeVoiceCallRepository:
         self.voice_calls: list[VoiceCall] = []
         self.voice_call_events: list[VoiceCallEvent] = []
 
+    def get_by_id(self, voice_call_id: UUID) -> VoiceCall | None:
+        return next(
+            (voice_call for voice_call in self.voice_calls if voice_call.id == voice_call_id),
+            None,
+        )
+
     def get_by_provider_call_id(
         self,
         *,
@@ -311,10 +318,18 @@ class FakeVoiceCallRepository:
         self,
         *,
         limit: int,
+        cursor: VoiceCallCursor | None = None,
         status: VoiceCallStatus | None = None,
         provider: str | None = None,
+        provider_call_id: str | None = None,
+        created_after: datetime | None = None,
     ) -> Sequence[VoiceCall]:
-        voice_calls = self.voice_calls
+        voice_calls = sorted(
+            self.voice_calls,
+            key=lambda voice_call: (voice_call.created_at, voice_call.id),
+            reverse=True,
+        )
+
         if status is not None:
             voice_calls = [
                 voice_call for voice_call in voice_calls if voice_call.status == status
@@ -322,6 +337,30 @@ class FakeVoiceCallRepository:
         if provider is not None:
             voice_calls = [
                 voice_call for voice_call in voice_calls if voice_call.provider == provider
+            ]
+        if provider_call_id is not None:
+            voice_calls = [
+                voice_call
+                for voice_call in voice_calls
+                if voice_call.provider_call_id == provider_call_id
+            ]
+        if created_after is not None:
+            voice_calls = [
+                voice_call
+                for voice_call in voice_calls
+                if voice_call.created_at >= created_after
+            ]
+        if cursor is not None:
+            voice_calls = [
+                voice_call
+                for voice_call in voice_calls
+                if (
+                    voice_call.created_at < cursor.created_at
+                    or (
+                        voice_call.created_at == cursor.created_at
+                        and voice_call.id < cursor.id
+                    )
+                )
             ]
 
         return voice_calls[:limit]
@@ -331,12 +370,34 @@ class FakeVoiceCallRepository:
         *,
         voice_call_id: UUID,
         limit: int,
+        cursor: VoiceCallEventCursor | None = None,
     ) -> Sequence[VoiceCallEvent]:
-        return [
-            voice_call_event
-            for voice_call_event in self.voice_call_events
-            if voice_call_event.voice_call_id == voice_call_id
-        ][:limit]
+        events = sorted(
+            [
+                voice_call_event
+                for voice_call_event in self.voice_call_events
+                if voice_call_event.voice_call_id == voice_call_id
+            ],
+            key=lambda voice_call_event: (
+                voice_call_event.occurred_at,
+                voice_call_event.id,
+            ),
+        )
+
+        if cursor is not None:
+            events = [
+                voice_call_event
+                for voice_call_event in events
+                if (
+                    voice_call_event.occurred_at > cursor.occurred_at
+                    or (
+                        voice_call_event.occurred_at == cursor.occurred_at
+                        and voice_call_event.id > cursor.id
+                    )
+                )
+            ]
+
+        return events[:limit]
 
 
 class RacingVoiceCallRepository(FakeVoiceCallRepository):

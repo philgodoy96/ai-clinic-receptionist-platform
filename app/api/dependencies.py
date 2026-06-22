@@ -53,6 +53,7 @@ from app.services.retell_call_lifecycle import RetellCallLifecycleService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from app.services.voice_calls import VoiceCallInspectionService
 
 
 def get_scheduling_service(
@@ -266,6 +267,14 @@ def get_retell_call_lifecycle_service(
     db: Annotated[Session, Depends(get_db)],
 ) -> RetellCallLifecycleService:
     return RetellCallLifecycleService(
+        repository=SQLAlchemyVoiceCallRepository(db),
+    )
+
+
+def get_voice_call_inspection_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> VoiceCallInspectionService:
+    return VoiceCallInspectionService(
         repository=SQLAlchemyVoiceCallRepository(db),
     )
 

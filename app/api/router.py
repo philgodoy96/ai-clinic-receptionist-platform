@@ -6,6 +6,7 @@ from app.api.routes import (
     email_jobs,
     health,
     human_escalations,
+    internal_voice_calls,
     retell_lifecycle,
     retell_tools,
     scheduling,
@@ -17,6 +18,7 @@ api_router.include_router(scheduling.router)
 api_router.include_router(chat.router)
 api_router.include_router(retell_tools.router)
 api_router.include_router(retell_lifecycle.router)
+api_router.include_router(internal_voice_calls.router)
 api_router.include_router(audit_logs.router)
 api_router.include_router(email_jobs.router)
 api_router.include_router(human_escalations.router)
