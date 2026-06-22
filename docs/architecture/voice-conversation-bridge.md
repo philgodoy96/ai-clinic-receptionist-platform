@@ -21,9 +21,8 @@ The implementation includes:
 - Retell tool adapter integration with conversation context
 - voice booking context resolution for `book_appointment`
 - voice cancellation context resolution for `cancel_appointment`
+- voice rescheduling context resolution for `reschedule_appointment`
 - internal/debug context endpoint
-
-Rescheduling is not wired through Retell tools yet. The shared backend foundation lives in `AppointmentReschedulingService`. See [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md).
 
 See also:
 
@@ -31,6 +30,7 @@ See also:
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
 - [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
+- [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md)
 - [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md)
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Conversation Domain](conversation-domain.md)
@@ -92,7 +92,9 @@ Safe context may include scheduling-related fields such as:
 - `requested_time_window`
 - `selected_availability_slot_id`
 - active hold fields (`hold_id`, `availability_slot_id`, `start_time`, `end_time`)
-- `appointment_id` and `appointment_status` after booking or cancellation
+- `appointment_id` and `appointment_status` after booking, cancellation, or rescheduling
+- `rescheduled_from_appointment_id` after a successful reschedule
+- `last_reschedule_summary` — latest voice reschedule outcome
 
 `VoiceConversationBridgeService` and the Retell tool adapter read and merge only allowlisted keys. Blocked keys include transcripts, raw provider payloads, secrets, and raw phone numbers.
 
@@ -110,7 +112,7 @@ Before executing supported scheduling tools, the Retell tool adapter ensures the
 
 `cancel_appointment` resolves the target appointment from tool arguments or linked `voice_context`, requires explicit cancellation confirmation, and on success updates `appointment_status` to `cancelled` while clearing active hold fields when present.
 
-After a successful reschedule through a future channel adapter, `voice_context` should store the new `appointment_id`, `appointment_status`, slot timing fields, and cleared hold fields using the same safe merge rules as booking and cancellation.
+`reschedule_appointment` resolves the original appointment from tool arguments or linked `voice_context`, validates the target hold or new slot, requires explicit reschedule confirmation, and on success updates `voice_context` with the new successor appointment reference, `rescheduled_from_appointment_id`, and cleared hold fields. On recoverable reschedule failure, useful hold context is preserved so the caller can retry without re-holding.
 
 ## Internal Debug Endpoint
 
@@ -142,7 +144,6 @@ The two context namespaces are separate so chat and voice adapters do not overwr
 
 Future implementation phases may add:
 
-- Retell voice reschedule tool delegating to `AppointmentReschedulingService`
 - transcript summary persistence
 - deployment runbook
 - Retell dashboard setup

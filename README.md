@@ -22,7 +22,7 @@ This project focuses on:
 - Voice AI architecture
 - Retell web voice integration
 - Retell voice call lifecycle persistence
-- Retell voice tool-calling adapter (availability, hold, release, booking with explicit confirmation, cancellation with explicit confirmation)
+- Retell voice tool-calling adapter (availability, hold, release, booking with explicit confirmation, cancellation with explicit confirmation, rescheduling with explicit confirmation)
 - Voice conversation bridge linking Retell calls to shared `Conversation` state
 - Chat receptionist flow
 - Tool calling
@@ -105,7 +105,7 @@ The receptionist will support:
 - Specialty information
 - Availability lookup
 - Temporary appointment slot holding
-- Retell voice tools: availability check, slot hold, hold release, booking with explicit confirmation, and cancellation with explicit confirmation (via verified `POST /api/v1/retell/tools`)
+- Retell voice tools: availability check, slot hold, hold release, booking with explicit confirmation, cancellation with explicit confirmation, and rescheduling with explicit confirmation (via verified `POST /api/v1/retell/tools`)
 - Voice conversation bridge: link Retell calls to shared `Conversation` state with safe `voice_context`
 - Human escalation case creation
 - Confirmation email jobs
@@ -169,6 +169,7 @@ Architecture docs:
 - `docs/architecture/voice-conversation-bridge.md`
 - `docs/architecture/retell-voice-booking-confirmation.md`
 - `docs/architecture/retell-voice-cancellation.md`
+- `docs/architecture/retell-voice-rescheduling.md`
 - `docs/architecture/appointment-rescheduling-foundation.md`
 
 ## Local Mode vs Public Demo Mode
@@ -211,6 +212,6 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, and `cancel_appointment` via `POST /api/v1/retell/tools`. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Appointment rescheduling is implemented as a shared backend foundation in `AppointmentReschedulingService`; Retell and chat reschedule adapters are not wired yet. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency, and `docs/architecture/appointment-rescheduling-foundation.md` for the shared rescheduling service boundary.
+**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, `cancel_appointment`, and `reschedule_appointment` via `POST /api/v1/retell/tools`. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Voice rescheduling requires explicit reschedule confirmation, original appointment reference, and target hold or new slot before delegating to `AppointmentReschedulingService`. Written chat reschedule is not wired yet. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency, `docs/architecture/retell-voice-rescheduling.md` for voice rescheduling validation and idempotency, and `docs/architecture/appointment-rescheduling-foundation.md` for the shared rescheduling service boundary.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
