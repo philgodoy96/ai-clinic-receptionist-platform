@@ -186,6 +186,14 @@ Important principle:
 
     Provider prompt guides behavior. Backend enforces policy.
 
+Public demo guardrails add a third operational layer for unauthenticated hosted demos:
+
+- Redis-backed per-IP and global quotas
+- Protected chat and Retell tool routes
+- Standardized `429` responses when limits are exceeded
+
+See: [Public Demo Guardrails](public-demo-guardrails.md)
+
 ## Observability
 
 Observability is part of the system design.

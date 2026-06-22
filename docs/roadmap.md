@@ -122,6 +122,7 @@ Implemented:
 - Time-of-day preference parsing with deterministic `TimePreferenceParser` for chat availability filtering and LLM slot filling
 - LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, offline evaluation runner, metrics grouped by prompt version, and optional provider-run evaluation mode
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
+- Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
 
 Upcoming:
 
@@ -134,6 +135,11 @@ Upcoming:
 - Staff notification provider adapter
 - Cost tracking aggregation
 - Hold expiration handling in chat
+- LLM reliability orchestration
+- Groq provider adapter
+- Resend email provider
+- Retell webhook security
+- Demo reset strategy
 
 ## Stage 7 — Retell Tool Integration
 
