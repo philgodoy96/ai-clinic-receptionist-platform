@@ -6,7 +6,9 @@ from pydantic import BaseModel, ValidationError
 
 
 class StructuredOutputParseError(ValueError):
-    pass
+    def __init__(self, message: str, *, repair_attempted: bool = False) -> None:
+        super().__init__(message)
+        self.repair_attempted = repair_attempted
 
 
 class StructuredOutputValidationError(ValueError):
@@ -24,7 +26,10 @@ def parse_json_object(raw_output: str) -> dict[str, object]:
         try:
             payload = json.loads(repaired_output)
         except json.JSONDecodeError as repair_exc:
-            raise StructuredOutputParseError("LLM output repair failed") from repair_exc
+            raise StructuredOutputParseError(
+                "LLM output repair failed",
+                repair_attempted=True,
+            ) from repair_exc
 
     if not isinstance(payload, dict):
         raise StructuredOutputParseError("LLM output JSON root must be an object")

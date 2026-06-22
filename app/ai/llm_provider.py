@@ -2,11 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from app.ai.llm_reliability import LLMFailureReason
 
 
 class LLMProviderError(RuntimeError):
     pass
+
+
+def provider_failure_reason(error: LLMProviderError) -> LLMFailureReason:
+    from app.ai.llm_reliability import classify_provider_error
+
+    return classify_provider_error(str(error))
 
 
 class LLMProviderName(StrEnum):

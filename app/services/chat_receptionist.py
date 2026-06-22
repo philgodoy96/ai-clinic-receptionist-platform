@@ -591,6 +591,7 @@ class ChatReceptionistService:
                 "safety_flags": analysis.safety_flags,
                 "used_fallback": llm_analysis_result.used_fallback,
                 "failure_reason": llm_analysis_result.failure_reason.value,
+                "failure_category": llm_analysis_result.failure_category.value,
                 "prompt_version": llm_analysis_result.prompt_version,
                 "model": llm_analysis_result.model,
                 "input_tokens": llm_analysis_result.input_tokens,

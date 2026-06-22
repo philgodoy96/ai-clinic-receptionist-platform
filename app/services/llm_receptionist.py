@@ -4,7 +4,21 @@ import logging
 from dataclasses import dataclass
 from time import perf_counter
 
-from app.ai.llm_provider import LLMMessage, LLMProvider, LLMProviderError, LLMRequest
+from app.ai.llm_provider import (
+    LLMMessage,
+    LLMProvider,
+    LLMProviderError,
+    LLMRequest,
+    provider_failure_reason,
+)
+from app.ai.llm_reliability import (
+    MIN_ACCEPTED_CONFIDENCE,
+    LLMFailureCategory,
+    LLMFailureReason,
+    LLMOutputSafetyViolation,
+    failure_category_for_reason,
+    parse_failure_reason_from_parse_error,
+)
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.ai.receptionist_output import (
     ReceptionistLLMAnalysis,
@@ -13,11 +27,6 @@ from app.ai.receptionist_output import (
     fallback_receptionist_analysis,
 )
 from app.ai.receptionist_prompt import build_receptionist_system_prompt
-from app.ai.reliability import (
-    MIN_ACCEPTED_CONFIDENCE,
-    LLMFailureReason,
-    LLMOutputSafetyViolation,
-)
 from app.ai.structured_output import (
     StructuredOutputParseError,
     StructuredOutputValidationError,
@@ -44,6 +53,7 @@ class ReceptionistAnalysisResult:
     attempt_count: int
     used_fallback: bool
     failure_reason: LLMFailureReason
+    failure_category: LLMFailureCategory
     prompt_version: str
     error: str | None = None
 
@@ -91,7 +101,7 @@ class LLMReceptionistAnalysisService:
             return self._fallback_result(
                 started_at=started_at,
                 attempt_count=attempt_count,
-                failure_reason=LLMFailureReason.PROVIDER_ERROR,
+                failure_reason=provider_failure_reason(exc),
                 prompt_version=prompt_version,
                 error=str(exc),
             )
@@ -99,7 +109,9 @@ class LLMReceptionistAnalysisService:
             return self._fallback_result(
                 started_at=started_at,
                 attempt_count=attempt_count,
-                failure_reason=LLMFailureReason.INVALID_JSON,
+                failure_reason=parse_failure_reason_from_parse_error(
+                    repair_attempted=exc.repair_attempted,
+                ),
                 prompt_version=prompt_version,
                 error=str(exc),
             )
@@ -107,7 +119,7 @@ class LLMReceptionistAnalysisService:
             return self._fallback_result(
                 started_at=started_at,
                 attempt_count=attempt_count,
-                failure_reason=LLMFailureReason.SCHEMA_VALIDATION_ERROR,
+                failure_reason=LLMFailureReason.SCHEMA_VALIDATION_FAILED,
                 prompt_version=prompt_version,
                 error=str(exc),
             )
@@ -129,11 +141,12 @@ class LLMReceptionistAnalysisService:
             return self._fallback_result(
                 started_at=started_at,
                 attempt_count=attempt_count,
-                failure_reason=LLMFailureReason.UNKNOWN_ERROR,
+                failure_reason=LLMFailureReason.PROVIDER_EXCEPTION,
                 prompt_version=prompt_version,
                 error=str(exc),
             )
 
+        failure_category = failure_category_for_reason(failure_reason)
         return ReceptionistAnalysisResult(
             analysis=analysis,
             model=response.model,
@@ -144,6 +157,7 @@ class LLMReceptionistAnalysisService:
             attempt_count=attempt_count,
             used_fallback=False,
             failure_reason=failure_reason,
+            failure_category=failure_category,
             prompt_version=prompt_version,
             error=None,
         )
@@ -180,6 +194,7 @@ class LLMReceptionistAnalysisService:
             extra={
                 "event": "llm_receptionist_analysis_fallback",
                 "failure_reason": failure_reason.value,
+                "failure_category": failure_category_for_reason(failure_reason).value,
                 "error": error,
             },
         )
@@ -193,6 +208,7 @@ class LLMReceptionistAnalysisService:
             attempt_count=attempt_count,
             used_fallback=True,
             failure_reason=failure_reason,
+            failure_category=failure_category_for_reason(failure_reason),
             prompt_version=prompt_version,
             error=error,
         )
