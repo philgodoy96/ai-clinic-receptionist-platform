@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.llm_provider import LLMProviderName
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.ai.receptionist_prompt import build_receptionist_system_prompt
 from app.api.dependencies import (
@@ -28,7 +29,12 @@ from app.messaging.email_job_dispatch import (
     InMemoryEmailJobDispatchPublisher,
 )
 from app.models.email_jobs import EmailJob
-from app.services.chat_receptionist import ChatReceptionistService
+from app.services.appointment_booking import AppointmentBookingService
+from app.services.chat_receptionist import (
+    ChatMessageInput,
+    ChatReceptionistIntent,
+    ChatReceptionistService,
+)
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.date_parsing import NaturalLanguageDateParser
@@ -41,12 +47,20 @@ from app.services.human_handoff_notifications import HumanHandoffNotificationSer
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
+from tests.llm_reliability_test_helpers import (
+    AlwaysFailingLLMProvider,
+    CountingLLMProvider,
+    assert_shadow_reliability_metadata,
+)
 from tests.test_chat_booking_confirmation_flow import (
     FULL_IDENTITY_WITH_CONFIRM,
     create_jane_doe_patient,
 )
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
+    TrackingAppointmentBookingService,
+    create_appointment_booking_service_for_scheduling,
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
@@ -714,10 +728,62 @@ def test_chat_api_with_default_fake_llm_dependency_returns_greeting(
     shadow = assistant_message.message_metadata["llm_shadow_analysis"]
     assert shadow["used_fallback"] is False
     assert shadow["prompt_version"] == get_current_receptionist_analysis_prompt_metadata().version
+    assert_shadow_reliability_metadata(shadow)
     assert build_receptionist_system_prompt() not in json.dumps(
         assistant_message.message_metadata,
     )
     assert "raw_provider_output" not in shadow
+
+
+def test_chat_flow_with_llm_orchestration_does_not_create_side_effects() -> None:
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service()
+    hold_service = FakeAppointmentHoldService()
+    inner_booking = create_appointment_booking_service_for_scheduling(
+        scheduling,
+        hold_service,
+    )
+    tracking_booking = TrackingAppointmentBookingService(inner_booking)
+    primary = AlwaysFailingLLMProvider()
+    fallback = CountingLLMProvider(
+        content=build_receptionist_analysis_payload(intent="booking_confirmation", confidence=0.99),
+        name="fallback",
+    )
+    llm_analysis = LLMReceptionistAnalysisService(
+        primary_provider=primary,
+        fallback_provider=fallback,
+        primary_provider_name=LLMProviderName.FAKE,
+        fallback_provider_name=LLMProviderName.FAKE,
+        max_primary_attempts=1,
+        max_fallback_attempts=1,
+    )
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=hold_service,
+        appointment_booking=cast(AppointmentBookingService, tracking_booking),
+        llm_analysis=llm_analysis,
+        slot_filling=LLMChatSlotFillingService(
+            scheduling=scheduling,
+            date_parser=NaturalLanguageDateParser(),
+            time_preference_parser=TimePreferenceParser(),
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Yes, please confirm my booking now."),
+    )
+
+    assert primary.call_count == 1
+    assert fallback.call_count == 1
+    assert len(tracking_booking.book_calls) == 0
+    assert len(hold_service.create_hold_calls) == 0
+    assert result.booking_confirmed is False
+    assert result.intent != ChatReceptionistIntent.BOOKING_CONFIRMED
+    shadow = result.assistant_message.message_metadata["llm_shadow_analysis"]
+    assert shadow["used_fallback_provider"] is True
+    assert_shadow_reliability_metadata(shadow)
 
 
 class ChatApiContext:
