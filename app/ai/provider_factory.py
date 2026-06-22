@@ -14,20 +14,22 @@ class LLMProviderConfigurationError(RuntimeError):
     pass
 
 
-def build_llm_provider(settings: Settings) -> LLMProvider:
-    provider_name = settings.llm_provider.value
+def create_llm_provider_from_settings(
+    settings: Settings,
+    provider_name: LLMProviderName,
+) -> LLMProvider:
     logger.info(
         "llm_provider_selected",
         extra={
             "event": "llm_provider_selected",
-            "provider": provider_name,
+            "provider": provider_name.value,
         },
     )
 
-    if settings.llm_provider == LLMProviderName.FAKE:
+    if provider_name == LLMProviderName.FAKE:
         return FakeLLMProvider()
 
-    if settings.llm_provider == LLMProviderName.BEDROCK:
+    if provider_name == LLMProviderName.BEDROCK:
         return BedrockLLMProvider(
             model_id=settings.bedrock_model_id,
             region_name=settings.aws_region,
@@ -38,5 +40,12 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
         )
 
     raise LLMProviderConfigurationError(
-        f"Unsupported LLM provider: {provider_name}",
+        f"Unsupported LLM provider: {provider_name.value}",
+    )
+
+
+def build_llm_provider(settings: Settings) -> LLMProvider:
+    return create_llm_provider_from_settings(
+        settings,
+        settings.resolved_llm_primary_provider,
     )

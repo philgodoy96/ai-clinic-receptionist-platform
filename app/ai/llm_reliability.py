@@ -132,6 +132,10 @@ def is_primary_provider_retryable(reason: LLMFailureReason) -> bool:
     return failure_category_for_reason(reason) == LLMFailureCategory.REPAIRABLE
 
 
+def is_fallback_provider_eligible(reason: LLMFailureReason) -> bool:
+    return is_fallback_eligible(reason) and is_retryable_failure(reason)
+
+
 def parse_failure_reason_from_parse_error(
     *,
     repair_attempted: bool,

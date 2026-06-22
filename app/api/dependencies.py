@@ -7,7 +7,7 @@ from app.adapters.retell.appointment_booking_tools import RetellAppointmentBooki
 from app.adapters.retell.appointment_hold_tools import RetellAppointmentHoldToolAdapter
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.ai.llm_provider import LLMProvider
-from app.ai.provider_factory import build_llm_provider
+from app.ai.provider_factory import build_llm_provider, create_llm_provider_from_settings
 from app.cache.redis import get_redis_client
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
@@ -139,10 +139,6 @@ def get_conversation_health_service() -> ConversationHealthService:
 def get_llm_provider(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> LLMProvider:
-    return create_llm_provider_from_settings(settings)
-
-
-def create_llm_provider_from_settings(settings: Settings) -> LLMProvider:
     return build_llm_provider(settings)
 
 
@@ -152,9 +148,30 @@ def get_llm_receptionist_analysis_service(
     if not settings.llm_enabled:
         return None
 
+    primary_provider = create_llm_provider_from_settings(
+        settings,
+        settings.resolved_llm_primary_provider,
+    )
+    fallback_provider = None
+    fallback_provider_name = None
+    max_fallback_attempts = 0
+
+    if settings.llm_fallback_enabled:
+        assert settings.llm_fallback_provider is not None
+        fallback_provider_name = settings.llm_fallback_provider
+        fallback_provider = create_llm_provider_from_settings(
+            settings,
+            settings.llm_fallback_provider,
+        )
+        max_fallback_attempts = settings.llm_max_fallback_attempts
+
     return LLMReceptionistAnalysisService(
-        provider=create_llm_provider_from_settings(settings),
+        primary_provider=primary_provider,
+        fallback_provider=fallback_provider,
+        primary_provider_name=settings.resolved_llm_primary_provider,
+        fallback_provider_name=fallback_provider_name,
         max_primary_attempts=settings.llm_max_primary_attempts,
+        max_fallback_attempts=max_fallback_attempts,
     )
 
 
