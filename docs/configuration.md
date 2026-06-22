@@ -64,13 +64,20 @@ See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.m
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `fake` | LLM provider selection: `fake` or `bedrock`. Kept for backward compatibility; see `LLM_PRIMARY_PROVIDER`. |
+| `LLM_PROVIDER` | `fake` | LLM provider selection: `fake`, `groq`, or `bedrock`. Kept for backward compatibility; see `LLM_PRIMARY_PROVIDER`. |
 | `LLM_PRIMARY_PROVIDER` | empty | Optional explicit primary provider. When unset, `LLM_PROVIDER` is used. |
 | `LLM_ENABLED` | `true` | Enable LLM shadow analysis and slot-filling assistance |
 | `LLM_MAX_PRIMARY_ATTEMPTS` | `2` | Bounded primary provider attempts per analysis (`1`–`3`) |
 | `LLM_FALLBACK_ENABLED` | `false` | Enable optional fallback LLM provider after primary exhaustion |
-| `LLM_FALLBACK_PROVIDER` | empty | Required when `LLM_FALLBACK_ENABLED=true` (`fake` or `bedrock`) |
+| `LLM_FALLBACK_PROVIDER` | empty | Required when `LLM_FALLBACK_ENABLED=true` (`fake`, `groq`, or `bedrock`) |
 | `LLM_MAX_FALLBACK_ATTEMPTS` | `1` | Bounded fallback provider attempts per analysis (`1`–`2`) |
+| `GROQ_API_KEY` | empty | Required when primary or fallback provider is `groq` |
+| `GROQ_MODEL` | empty | Required when primary or fallback provider is `groq` |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq OpenAI-compatible API base URL |
+| `GROQ_REQUEST_TIMEOUT_SECONDS` | `10` | Groq HTTP request timeout (`>= 1`) |
+| `GROQ_MAX_OUTPUT_TOKENS` | `800` | Default Groq max output tokens (`>= 1`) |
+| `GROQ_TEMPERATURE` | `0` | Default Groq inference temperature (`0`–`2`) |
+| `GROQ_RESPONSE_FORMAT` | `json_schema` | Groq structured output mode: `json_schema`, `json_object`, or `none` |
 | `BEDROCK_MODEL_ID` | empty | Required when primary or fallback provider is `bedrock` |
 | `AWS_REGION` | `us-east-1` | AWS region for Bedrock runtime client |
 | `BEDROCK_REQUEST_TIMEOUT_SECONDS` | `10` | Bedrock request timeout |
@@ -78,7 +85,7 @@ See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.m
 | `BEDROCK_TEMPERATURE` | `0` | Default Bedrock inference temperature |
 | `BEDROCK_MAX_TOKENS` | `800` | Default Bedrock max output tokens |
 
-AWS credentials are not stored in the repository. When using Bedrock, provide credentials through standard AWS environment variables, shared config/profile, or an IAM role at runtime.
+Groq and AWS credentials are not stored in the repository. When using Groq or Bedrock, provide credentials through environment variables, shared config/profile, or your deployment secret manager at runtime.
 
 For local development and CI, keep:
 
@@ -88,7 +95,20 @@ LLM_MAX_PRIMARY_ATTEMPTS=2
 LLM_FALLBACK_ENABLED=false
 ```
 
-See also: [Real LLM Provider Adapter Boundary](architecture/real-llm-provider-adapter.md), [LLM Reliability Orchestration](architecture/llm-reliability-orchestration.md).
+Optional Groq configuration for a hosted public demo:
+
+```env
+LLM_PRIMARY_PROVIDER=groq
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_RESPONSE_FORMAT=json_schema
+LLM_MAX_PRIMARY_ATTEMPTS=2
+LLM_FALLBACK_ENABLED=false
+```
+
+Groq API keys are not stored in the repository. Provide credentials through environment variables or your deployment secret manager at runtime.
+
+See also: [Groq LLM Provider](architecture/groq-llm-provider.md), [Real LLM Provider Adapter Boundary](architecture/real-llm-provider-adapter.md), [LLM Reliability Orchestration](architecture/llm-reliability-orchestration.md).
 
 ## Retell
 

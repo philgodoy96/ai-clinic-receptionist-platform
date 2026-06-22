@@ -2,7 +2,9 @@
 
 ## Context
 
-The public demo will eventually use real LLM providers.
+The platform supports real LLM providers for receptionist analysis.
+
+Groq is the primary provider for the hosted public demo. Bedrock remains available for optional enterprise or fallback use.
 
 Real providers can fail, timeout, return invalid JSON, produce low-confidence outputs, or violate safety expectations.
 
@@ -58,7 +60,17 @@ LLM_FALLBACK_ENABLED=false
 
 When enabled, fallback provider is only used after fallback-eligible retryable failures.
 
-Example future configuration:
+Example public demo configuration with Groq primary:
+
+```env
+LLM_PRIMARY_PROVIDER=groq
+GROQ_API_KEY=...
+GROQ_MODEL=...
+LLM_FALLBACK_ENABLED=false
+LLM_MAX_PRIMARY_ATTEMPTS=2
+```
+
+Example optional enterprise fallback configuration:
 
 ```env
 LLM_PRIMARY_PROVIDER=groq
@@ -103,11 +115,10 @@ LLM retry/fallback cannot:
 
 Future implementation phases may add:
 
-- Groq primary provider
 - Bedrock fallback in hosted mode
 - provider-specific rate limit classification
 - circuit breaker
 - per-provider cost budgets
 - prompt regression reports
 
-See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Provider Foundation](llm-provider-foundation.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [Groq LLM Provider](groq-llm-provider.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Provider Foundation](llm-provider-foundation.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
