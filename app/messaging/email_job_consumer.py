@@ -28,6 +28,19 @@ class EmailJobRabbitMQAcknowledger(Protocol):
         raise NotImplementedError
 
 
+def apply_email_job_delivery_ack(
+    result: EmailJobConsumerHandleResult,
+    *,
+    delivery_tag: int,
+    acknowledger: EmailJobRabbitMQAcknowledger,
+) -> None:
+    if result.ack:
+        acknowledger.ack(delivery_tag=delivery_tag)
+        return
+
+    acknowledger.nack(delivery_tag=delivery_tag, requeue=result.requeue)
+
+
 class EmailJobRabbitMQConsumer:
     def __init__(self, *, worker: EmailJobWorkerService) -> None:
         self.worker = worker
@@ -37,7 +50,6 @@ class EmailJobRabbitMQConsumer:
         *,
         body: bytes,
         delivery_tag: int,
-        acknowledger: EmailJobRabbitMQAcknowledger,
     ) -> EmailJobConsumerHandleResult:
         try:
             message = decode_email_job_dispatch_message(body)
@@ -49,7 +61,6 @@ class EmailJobRabbitMQConsumer:
                     "error": str(exc),
                 },
             )
-            acknowledger.ack(delivery_tag=delivery_tag)
             return EmailJobConsumerHandleResult(ack=True)
 
         logger.info(
@@ -70,11 +81,9 @@ class EmailJobRabbitMQConsumer:
                     "email_job_id": str(message.email_job_id),
                 },
             )
-            acknowledger.ack(delivery_tag=delivery_tag)
-            return EmailJobConsumerHandleResult(ack=True)
+            return EmailJobConsumerHandleResult(ack=False, requeue=True)
 
         self._log_processing_result(message.email_job_id, result)
-        acknowledger.ack(delivery_tag=delivery_tag)
         return EmailJobConsumerHandleResult(ack=True)
 
     def _log_processing_result(

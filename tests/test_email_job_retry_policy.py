@@ -240,6 +240,12 @@ class RetryPolicyEmailJobWorkerRepository:
     def __init__(self, email_jobs: list[EmailJob]) -> None:
         self.email_jobs = email_jobs
 
+    def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
+        return next(
+            (email_job for email_job in self.email_jobs if email_job.id == email_job_id),
+            None,
+        )
+
     def claim_next_available(
         self,
         *,
