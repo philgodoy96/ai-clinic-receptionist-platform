@@ -23,10 +23,22 @@ def load_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
 def test_fake_default_does_not_require_groq_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = load_settings(monkeypatch, LLM_PROVIDER="fake")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+    monkeypatch.delenv("LLM_PRIMARY_PROVIDER", raising=False)
+
+    settings = load_settings(monkeypatch)
+
     assert settings.llm_provider == LLMProviderName.FAKE
     assert settings.groq_api_key == ""
     assert settings.groq_model == ""
+
+
+def test_llm_provider_groq_requires_api_key_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError, match="GROQ_API_KEY"):
+        load_settings(monkeypatch, LLM_PROVIDER="groq")
 
 
 def test_llm_primary_provider_groq_requires_api_key_and_model(
