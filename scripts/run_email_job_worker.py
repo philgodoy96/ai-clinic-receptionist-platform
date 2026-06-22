@@ -11,7 +11,7 @@ from app.core.logging import configure_logging
 from app.db.session import SessionLocal
 from app.email.factory import create_email_provider_from_settings
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
-from app.services.email_job_worker import EmailJobWorkerService
+from app.services.email_job_worker import EmailJobWorkerResult, EmailJobWorkerService
 
 logger = logging.getLogger("app.email_job_worker")
 
@@ -49,8 +49,10 @@ def main() -> None:
                 backoff_base_seconds=settings.email_job_backoff_base_seconds,
                 backoff_max_seconds=settings.email_job_backoff_max_seconds,
             )
-            result = worker.process_one()
+            results = worker.process_due_email_jobs(limit=1)
             session.commit()
+
+        result = results[0] if results else EmailJobWorkerResult(processed=False)
 
         logger.info(
             "email_worker_iteration_completed",

@@ -70,6 +70,16 @@ class EmailJobWorkerRepository(Protocol):
     ) -> EmailJob | None:
         raise NotImplementedError
 
+    def claim_by_id(
+        self,
+        *,
+        email_job_id: UUID,
+        worker_id: str,
+        now: datetime,
+        lock_duration: timedelta,
+    ) -> EmailJob | None:
+        raise NotImplementedError
+
     def mark_sent(
         self,
         *,

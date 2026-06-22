@@ -14,6 +14,10 @@ class EmailJobDispatchPublisherError(Exception):
     """Raised when an email job dispatch message cannot be published."""
 
 
+class EmailJobDispatchDecodeError(ValueError):
+    """Raised when an email job dispatch message cannot be decoded."""
+
+
 @dataclass(frozen=True, slots=True)
 class EmailJobDispatchMessage:
     email_job_id: UUID
@@ -77,7 +81,6 @@ class RabbitMQEmailJobDispatchPublisher:
 
 def encode_email_job_dispatch_message(message: EmailJobDispatchMessage) -> bytes:
     payload = {
-        "type": message.message_type,
         "email_job_id": str(message.email_job_id),
     }
 
@@ -85,9 +88,28 @@ def encode_email_job_dispatch_message(message: EmailJobDispatchMessage) -> bytes
 
 
 def decode_email_job_dispatch_message(body: bytes) -> EmailJobDispatchMessage:
-    payload = json.loads(body.decode("utf-8"))
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise EmailJobDispatchDecodeError("email job dispatch payload is not valid json") from exc
+
+    if not isinstance(payload, dict):
+        raise EmailJobDispatchDecodeError("email job dispatch payload must be a json object")
+
+    raw_email_job_id = payload.get("email_job_id")
+    if not isinstance(raw_email_job_id, str) or not raw_email_job_id.strip():
+        raise EmailJobDispatchDecodeError("email_job_id is required")
+
+    try:
+        email_job_id = UUID(raw_email_job_id)
+    except ValueError as exc:
+        raise EmailJobDispatchDecodeError("email_job_id must be a valid uuid") from exc
+
+    message_type = payload.get("type", "email_job_ready")
+    if not isinstance(message_type, str):
+        raise EmailJobDispatchDecodeError("type must be a string when provided")
 
     return EmailJobDispatchMessage(
-        email_job_id=UUID(payload["email_job_id"]),
-        message_type=payload["type"],
+        email_job_id=email_job_id,
+        message_type=message_type,
     )
