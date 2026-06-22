@@ -4,15 +4,23 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.dependencies import get_voice_call_inspection_service
+from app.api.dependencies import (
+    get_voice_call_inspection_service,
+    get_voice_conversation_bridge_service,
+)
 from app.api.errors import APIError
 from app.domain.voice_calls.enums import VoiceCallStatus
+from app.domain.voice_conversation import VoiceCallNotFoundForBridgeError
 from app.schemas.voice_calls import (
     VoiceCallEventListResponse,
     VoiceCallListResponse,
     VoiceCallResponse,
     voice_call_event_to_response,
     voice_call_to_response,
+)
+from app.schemas.voice_conversation import (
+    VoiceConversationContextResponse,
+    voice_conversation_context_to_response,
 )
 from app.services.voice_call_pagination import (
     InvalidVoiceCallCursorError,
@@ -24,6 +32,7 @@ from app.services.voice_calls import (
     VoiceCallListFilters,
     VoiceCallNotFoundError,
 )
+from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 
 router = APIRouter(
     prefix="/api/v1/internal/voice-calls",
@@ -107,6 +116,29 @@ def list_voice_call_events(
         items=[voice_call_event_to_response(item) for item in result.items],
         next_cursor=result.next_cursor,
     )
+
+
+@router.get(
+    "/{voice_call_id}/conversation-context",
+    response_model=VoiceConversationContextResponse,
+)
+def get_voice_call_conversation_context(
+    voice_call_id: UUID,
+    bridge: Annotated[
+        VoiceConversationBridgeService,
+        Depends(get_voice_conversation_bridge_service),
+    ],
+) -> VoiceConversationContextResponse:
+    try:
+        context = bridge.get_debug_context_for_voice_call(voice_call_id)
+    except VoiceCallNotFoundForBridgeError as exc:
+        raise APIError(
+            status_code=404,
+            code="voice_call_not_found",
+            message="Voice call was not found.",
+        ) from exc
+
+    return voice_conversation_context_to_response(context)
 
 
 @router.get("/{voice_call_id}", response_model=VoiceCallResponse)

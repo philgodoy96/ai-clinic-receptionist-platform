@@ -91,6 +91,21 @@ class VoiceConversationContext:
     scheduling_preference: SchedulingPreferenceSummary | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class VoiceConversationDebugContext:
+    voice_call_id: UUID
+    provider: str
+    provider_call_id: str
+    call_status: VoiceCallStatus
+    conversation_id: UUID | None
+    conversation_channel: ConversationChannel | None
+    active_hold: ActiveHoldSummary | None = None
+    requested_specialty: str | None = None
+    requested_date: str | None = None
+    requested_time_window: dict[str, str] | None = None
+    last_selected_slot_id: str | None = None
+
+
 def _safe_string(value: Any) -> str | None:
     if value is None:
         return None
