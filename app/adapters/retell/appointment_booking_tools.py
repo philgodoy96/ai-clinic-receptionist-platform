@@ -105,7 +105,7 @@ class RetellAppointmentBookingToolAdapter:
                 ),
             )
 
-            email_job = self.email_jobs.enqueue_appointment_confirmation(
+            email_job_result = self.email_jobs.get_or_create_appointment_confirmation_email_job(
                 AppointmentConfirmationEmailJobCreate(
                     appointment_id=appointment.id,
                     patient_id=payload.patient_id,
@@ -118,6 +118,7 @@ class RetellAppointmentBookingToolAdapter:
                     },
                 )
             )
+            email_job = email_job_result.email_job
 
             self.db.commit()
             self.db.refresh(appointment)

@@ -20,6 +20,10 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
 )
 from app.services.conversations import ConversationService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
 from app.services.scheduling import SchedulingService
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
@@ -29,6 +33,7 @@ from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
+from tests.test_email_jobs import FakeEmailJobRepository
 from tests.test_scheduling_services import (
     EMILY_JULY_SLOT_1_ID,
     FakeAppointmentRepository,
@@ -256,6 +261,46 @@ def test_hold_expired_when_booking_service_raises_hold_not_found(
     assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_EXPIRED
     assert len(tracking_booking.book_calls) == 1
     assert "expired" in result.reply.lower() or "not found" in result.reply.lower()
+
+
+def test_complete_identity_with_confirmation_creates_one_idempotent_email_job(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, _tracking_booking, _hold_service, _scheduling = booking_flow_context
+    email_job_repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=email_job_repository)
+    conversation = _conversation_with_active_hold(service)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=FULL_IDENTITY_WITH_CONFIRM,
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.booking_confirmed is True
+    assert result.appointment_id is not None
+    assert result.booked_patient_id is not None
+    assert result.booked_appointment_start_time is not None
+
+    payload = AppointmentConfirmationEmailJobCreate(
+        appointment_id=result.appointment_id,
+        patient_id=result.booked_patient_id,
+        appointment_start_time=result.booked_appointment_start_time.isoformat(),
+        payload={"source": "chat_booking"},
+    )
+    first = email_jobs.get_or_create_appointment_confirmation_email_job(payload)
+    second = email_jobs.get_or_create_appointment_confirmation_email_job(payload)
+
+    assert first.created is True
+    assert second.created is False
+    assert second.email_job.id == first.email_job.id
+    assert len(email_job_repository.email_jobs) == 1
 
 
 def test_emergency_takes_priority_over_booking_confirmation(

@@ -16,6 +16,7 @@ from app.api.dependencies import (
 from app.api.errors import APIError
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.domain.jobs.enums import EmailJobType
 from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisher,
     EmailJobDispatchPublisherError,
@@ -35,6 +36,7 @@ from app.services.demo_guardrails import (
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
+    build_appointment_confirmation_idempotency_key,
 )
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -200,6 +202,14 @@ def _enqueue_confirmation_email_if_allowed(
     conversation_id: UUID,
     hold_id: str | None,
 ) -> tuple[UUID | None, bool]:
+    idempotency_key = build_appointment_confirmation_idempotency_key(appointment_id)
+    existing = email_jobs.get_by_idempotency_key(
+        job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
+        idempotency_key=idempotency_key,
+    )
+    if existing is not None:
+        return existing.id, True
+
     try:
         guardrails.check_confirmation_email_allowed(client_ip)
     except DemoGuardrailLimitExceeded as exc:
@@ -226,7 +236,7 @@ def _enqueue_confirmation_email_if_allowed(
         )
         return None, False
 
-    email_job = email_jobs.enqueue_appointment_confirmation(
+    result = email_jobs.get_or_create_appointment_confirmation_email_job(
         AppointmentConfirmationEmailJobCreate(
             appointment_id=appointment_id,
             patient_id=patient_id,
@@ -238,5 +248,6 @@ def _enqueue_confirmation_email_if_allowed(
             },
         ),
     )
-    guardrails.record_confirmation_email_created(client_ip)
-    return email_job.id, True
+    if result.created:
+        guardrails.record_confirmation_email_created(client_ip)
+    return result.email_job.id, True

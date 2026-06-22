@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
+
 from app.core.config import get_settings
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
@@ -16,6 +18,12 @@ from app.services.email_job_pagination import (
     decode_email_job_cursor,
     encode_email_job_cursor,
 )
+
+APPOINTMENT_CONFIRMATION_IDEMPOTENCY_PREFIX = "appointment_confirmation"
+
+
+def build_appointment_confirmation_idempotency_key(appointment_id: UUID) -> str:
+    return f"{APPOINTMENT_CONFIRMATION_IDEMPOTENCY_PREFIX}:{appointment_id}"
 
 
 class EmailJobNotFoundError(LookupError):
@@ -60,6 +68,12 @@ class AppointmentConfirmationEmailJobCreate:
 
 
 @dataclass(frozen=True, slots=True)
+class AppointmentConfirmationEmailJobResult:
+    email_job: EmailJob
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
 class HumanEscalationNotificationEmailJobCreate:
     escalation_id: UUID
     conversation_id: UUID
@@ -85,6 +99,26 @@ class EmailJobService:
         self,
         payload: AppointmentConfirmationEmailJobCreate,
     ) -> EmailJob:
+        return self.get_or_create_appointment_confirmation_email_job(payload).email_job
+
+    def get_or_create_appointment_confirmation_email_job(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> AppointmentConfirmationEmailJobResult:
+        idempotency_key = build_appointment_confirmation_idempotency_key(
+            payload.appointment_id,
+        )
+        existing = self.get_by_idempotency_key(
+            job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
+            idempotency_key=idempotency_key,
+        )
+
+        if existing is not None:
+            return AppointmentConfirmationEmailJobResult(
+                email_job=existing,
+                created=False,
+            )
+
         subject = "Appointment confirmation"
         body = self._build_confirmation_body(payload)
         settings = get_settings()
@@ -98,7 +132,9 @@ class EmailJobService:
             body=body,
             attempt_count=0,
             max_attempts=settings.email_job_max_attempts,
+            idempotency_key=idempotency_key,
             payload={
+                "idempotency_key": idempotency_key,
                 "patient_name": payload.patient_name,
                 "doctor_name": payload.doctor_name,
                 "appointment_start_time": payload.appointment_start_time,
@@ -106,7 +142,25 @@ class EmailJobService:
             },
         )
 
-        return self.repository.add(email_job)
+        try:
+            created_job = self.repository.add(email_job)
+        except IntegrityError:
+            raced_existing = self.get_by_idempotency_key(
+                job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
+                idempotency_key=idempotency_key,
+            )
+            if raced_existing is None:
+                raise
+
+            return AppointmentConfirmationEmailJobResult(
+                email_job=raced_existing,
+                created=False,
+            )
+
+        return AppointmentConfirmationEmailJobResult(
+            email_job=created_job,
+            created=True,
+        )
 
     def enqueue_human_escalation_notification(
         self,
