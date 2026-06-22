@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -11,6 +13,7 @@ from app.api.dependencies import (
     get_retell_appointment_hold_tool_adapter,
     get_retell_scheduling_tool_adapter,
 )
+from app.api.retell_webhook_security import require_retell_webhook_security, retell_tool_payload
 from app.schemas.retell_tools import (
     RetellBookAppointmentRequest,
     RetellCheckAvailabilityRequest,
@@ -25,13 +28,19 @@ from app.schemas.retell_tools import (
 router = APIRouter(
     prefix="/api/v1/retell/tools",
     tags=["retell-tools"],
-    dependencies=[Depends(require_retell_tool_guardrail)],
+    dependencies=[
+        Depends(require_retell_webhook_security),
+        Depends(require_retell_tool_guardrail),
+    ],
 )
 
 
 @router.post("/list-specialties", response_model=RetellToolResponse)
 def list_specialties(
-    payload: RetellListSpecialtiesRequest,
+    payload: Annotated[
+        RetellListSpecialtiesRequest,
+        Depends(retell_tool_payload(RetellListSpecialtiesRequest)),
+    ],
     adapter: Annotated[
         RetellSchedulingToolAdapter,
         Depends(get_retell_scheduling_tool_adapter),
@@ -42,7 +51,10 @@ def list_specialties(
 
 @router.post("/list-doctors", response_model=RetellToolResponse)
 def list_doctors(
-    payload: RetellListDoctorsRequest,
+    payload: Annotated[
+        RetellListDoctorsRequest,
+        Depends(retell_tool_payload(RetellListDoctorsRequest)),
+    ],
     adapter: Annotated[
         RetellSchedulingToolAdapter,
         Depends(get_retell_scheduling_tool_adapter),
@@ -53,7 +65,10 @@ def list_doctors(
 
 @router.post("/check-availability", response_model=RetellToolResponse)
 def check_availability(
-    payload: RetellCheckAvailabilityRequest,
+    payload: Annotated[
+        RetellCheckAvailabilityRequest,
+        Depends(retell_tool_payload(RetellCheckAvailabilityRequest)),
+    ],
     adapter: Annotated[
         RetellSchedulingToolAdapter,
         Depends(get_retell_scheduling_tool_adapter),
@@ -64,7 +79,10 @@ def check_availability(
 
 @router.post("/lookup-patient", response_model=RetellToolResponse)
 def lookup_patient(
-    payload: RetellPatientLookupRequest,
+    payload: Annotated[
+        RetellPatientLookupRequest,
+        Depends(retell_tool_payload(RetellPatientLookupRequest)),
+    ],
     adapter: Annotated[
         RetellSchedulingToolAdapter,
         Depends(get_retell_scheduling_tool_adapter),
@@ -75,7 +93,10 @@ def lookup_patient(
 
 @router.post("/list-upcoming-appointments", response_model=RetellToolResponse)
 def list_upcoming_appointments(
-    payload: RetellUpcomingAppointmentsRequest,
+    payload: Annotated[
+        RetellUpcomingAppointmentsRequest,
+        Depends(retell_tool_payload(RetellUpcomingAppointmentsRequest)),
+    ],
     adapter: Annotated[
         RetellSchedulingToolAdapter,
         Depends(get_retell_scheduling_tool_adapter),
@@ -86,7 +107,10 @@ def list_upcoming_appointments(
 
 @router.post("/hold-appointment-slot", response_model=RetellToolResponse)
 def hold_appointment_slot(
-    payload: RetellHoldAppointmentSlotRequest,
+    payload: Annotated[
+        RetellHoldAppointmentSlotRequest,
+        Depends(retell_tool_payload(RetellHoldAppointmentSlotRequest)),
+    ],
     adapter: Annotated[
         RetellAppointmentHoldToolAdapter,
         Depends(get_retell_appointment_hold_tool_adapter),
@@ -97,7 +121,10 @@ def hold_appointment_slot(
 
 @router.post("/book-appointment", response_model=RetellToolResponse)
 def book_appointment(
-    payload: RetellBookAppointmentRequest,
+    payload: Annotated[
+        RetellBookAppointmentRequest,
+        Depends(retell_tool_payload(RetellBookAppointmentRequest)),
+    ],
     adapter: Annotated[
         RetellAppointmentBookingToolAdapter,
         Depends(get_retell_appointment_booking_tool_adapter),
