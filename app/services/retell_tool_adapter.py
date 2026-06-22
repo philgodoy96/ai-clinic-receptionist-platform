@@ -30,6 +30,19 @@ from app.domain.retell_tools import (
     serialize_tool_call_outcome,
 )
 from app.domain.scheduling.appointment_holds import AppointmentHold
+from app.domain.voice_booking import (
+    VoiceBookingConfirmationRequest,
+    VoiceBookingExpiredHoldError,
+    VoiceBookingHoldOwnershipError,
+    VoiceBookingMissingConfirmationError,
+    VoiceBookingMissingContextError,
+    VoiceBookingMissingHoldError,
+    VoiceBookingMissingIdentityError,
+    VoiceBookingPatientNotFoundError,
+    VoiceBookingQuotaExceededError,
+    VoiceBookingTemporaryFailureError,
+    is_book_appointment_executable,
+)
 from app.domain.voice_conversation import (
     read_voice_context,
     resolve_check_availability_arguments,
@@ -38,6 +51,7 @@ from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.models.voice_calls import VoiceCall
 from app.schemas.retell_tools import (
+    BookAppointmentToolArguments,
     CheckAvailabilityToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
@@ -46,6 +60,7 @@ from app.schemas.retell_tools import (
     RetellToolCallResponse,
     RetellToolResponse,
 )
+from app.schemas.scheduling import AppointmentResponse
 from app.services.appointment_holds import (
     AppointmentHoldOwnershipError,
     AppointmentSlotAlreadyHeldError,
@@ -171,6 +186,22 @@ class ConversationServiceForRetellToolCalling(Protocol):
         raise NotImplementedError
 
 
+class VoiceBookingConfirmationServiceForRetellToolCalling(Protocol):
+    def confirm_and_book(
+        self,
+        request: VoiceBookingConfirmationRequest,
+    ) -> Any:
+        raise NotImplementedError
+
+
+VoiceBookingConfirmationForRetell = VoiceBookingConfirmationServiceForRetellToolCalling
+
+
+class AppointmentRepositoryForRetellToolCalling(Protocol):
+    def get_by_id(self, appointment_id: UUID) -> Appointment | None:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True, slots=True)
 class _VoiceConversationSession:
     conversation: Conversation
@@ -187,6 +218,8 @@ class RetellToolCallingAdapter:
         scheduling_tools: RetellSchedulingToolAdapter | None = None,
         voice_conversation_bridge: VoiceConversationBridgeService | None = None,
         conversations: ConversationServiceForRetellToolCalling | None = None,
+        voice_booking_confirmation: VoiceBookingConfirmationForRetell | None = None,
+        appointments: AppointmentRepositoryForRetellToolCalling | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
         self.scheduling_service = scheduling_service
@@ -197,6 +230,8 @@ class RetellToolCallingAdapter:
         )
         self.voice_conversation_bridge = voice_conversation_bridge
         self.conversations = conversations
+        self.voice_booking_confirmation = voice_booking_confirmation
+        self.appointments = appointments
         self.provider = provider
 
     def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
@@ -264,6 +299,9 @@ class RetellToolCallingAdapter:
 
         if parsed.tool_name is RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD:
             return self._execute_release_appointment_hold(parsed)
+
+        if parsed.tool_name is RetellSupportedToolName.BOOK_APPOINTMENT:
+            return self._execute_book_appointment(parsed)
 
         return build_rejected_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -447,6 +485,165 @@ class RetellToolCallingAdapter:
             tool_call_id=parsed.tool_call_id,
             result={"released": True, "hold_id": str(arguments.hold_id)},
         )
+
+    def _execute_book_appointment(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        if self.voice_booking_confirmation is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="voice_booking_unavailable",
+            )
+
+        arguments = _as_book_appointment_arguments(parsed.arguments)
+
+        if not is_book_appointment_executable(arguments):
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="booking_confirmation_required",
+            )
+
+        voice_session = self._ensure_voice_conversation(parsed)
+        if voice_session is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="missing_voice_conversation_context",
+            )
+
+        voice_call = self.voice_calls.get_by_provider_call_id(
+            provider=self.provider,
+            provider_call_id=parsed.provider_call_id,
+        )
+        if voice_call is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="missing_voice_conversation_context",
+            )
+
+        idempotency_key = self._build_book_appointment_idempotency_key(parsed)
+
+        try:
+            booking_result = self.voice_booking_confirmation.confirm_and_book(
+                VoiceBookingConfirmationRequest(
+                    provider=self.provider,
+                    provider_call_id=parsed.provider_call_id,
+                    tool_call_id=parsed.tool_call_id,
+                    voice_call_id=voice_call.id,
+                    conversation_id=voice_session.conversation.id,
+                    hold_id=arguments.hold_id,
+                    slot_id=arguments.slot_id,
+                    patient_name=arguments.patient_name,
+                    patient_date_of_birth=arguments.patient_date_of_birth,
+                    patient_email=arguments.patient_email,
+                    patient_phone=arguments.patient_phone,
+                    explicit_confirmation=arguments.explicit_confirmation,
+                    confirmation_text=arguments.confirmation_text,
+                    notes=arguments.notes,
+                    idempotency_key=idempotency_key,
+                ),
+            )
+        except VoiceBookingMissingConfirmationError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="booking_confirmation_required",
+            )
+        except VoiceBookingMissingIdentityError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="booking_identity_missing",
+            )
+        except VoiceBookingMissingHoldError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="booking_hold_missing",
+            )
+        except VoiceBookingExpiredHoldError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_hold_expired",
+            )
+        except VoiceBookingHoldOwnershipError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_hold_owner_mismatch",
+            )
+        except VoiceBookingPatientNotFoundError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="patient_not_found",
+            )
+        except VoiceBookingQuotaExceededError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="demo_guardrail_limit_exceeded",
+            )
+        except VoiceBookingMissingContextError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="missing_voice_conversation_context",
+            )
+        except VoiceBookingTemporaryFailureError as exc:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=exc.error_code,
+            )
+
+        return build_succeeded_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            result=self._build_book_appointment_result(booking_result),
+            duplicate=booking_result.duplicate,
+        )
+
+    def _build_book_appointment_idempotency_key(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> str:
+        if parsed.tool_call_id is not None:
+            return build_retell_tool_call_idempotency_key(
+                provider=self.provider,
+                provider_call_id=parsed.provider_call_id,
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+            )
+
+        return f"{self.provider}:{parsed.provider_call_id}:book_appointment"
+
+    def _build_book_appointment_result(self, booking_result: Any) -> dict[str, Any]:
+        appointment_summary: dict[str, Any] = {
+            "appointment_id": str(booking_result.appointment_id),
+            "patient_id": str(booking_result.patient_id),
+            "availability_slot_id": str(booking_result.availability_slot_id),
+            "hold_id": booking_result.hold_id,
+        }
+
+        if self.appointments is not None:
+            appointment = self.appointments.get_by_id(booking_result.appointment_id)
+            if appointment is not None:
+                appointment_summary = AppointmentResponse.model_validate(
+                    appointment,
+                ).model_dump(mode="json")
+
+        return {
+            "appointment_id": str(booking_result.appointment_id),
+            "status": "scheduled",
+            "appointment": appointment_summary,
+            "email_confirmation_queued": booking_result.confirmation_email_created,
+        }
 
     def _ensure_voice_conversation(
         self,
@@ -671,6 +868,16 @@ def _as_release_arguments(
 ) -> ReleaseAppointmentHoldToolArguments:
     if not isinstance(arguments, ReleaseAppointmentHoldToolArguments):
         msg = "expected release appointment hold tool arguments"
+        raise TypeError(msg)
+
+    return arguments
+
+
+def _as_book_appointment_arguments(
+    arguments: Any,
+) -> BookAppointmentToolArguments:
+    if not isinstance(arguments, BookAppointmentToolArguments):
+        msg = "expected book appointment tool arguments"
         raise TypeError(msg)
 
     return arguments
