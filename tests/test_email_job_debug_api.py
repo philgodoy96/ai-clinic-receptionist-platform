@@ -83,9 +83,9 @@ def retry_replay_client() -> Generator[tuple[TestClient, dict[str, EmailJob]], N
     jobs = {
         "failed": create_email_job(status=EmailJobStatus.FAILED),
         "sent": create_email_job(status=EmailJobStatus.SENT, last_error=None, locked_by=None),
-        "dead_letter": create_email_job(
-            status=EmailJobStatus.DEAD_LETTER,
-            attempts=3,
+        "exhausted_failed": create_email_job(
+            status=EmailJobStatus.FAILED,
+            attempt_count=3,
             last_error="max attempts exceeded",
         ),
     }
@@ -140,33 +140,32 @@ def test_retry_email_job_endpoint_returns_409_for_sent(
     assert body["error"]["code"] == "invalid_email_job_retry_state"
 
 
-def test_replay_email_job_endpoint_returns_200_for_dead_letter(
+def test_replay_email_job_endpoint_returns_200_for_failed(
     retry_replay_client: tuple[TestClient, dict[str, EmailJob]],
 ) -> None:
     client, jobs = retry_replay_client
-    dead_letter_job = jobs["dead_letter"]
-    response = client.post(f"/api/v1/email-jobs/{dead_letter_job.id}/replay")
+    failed_job = jobs["exhausted_failed"]
+    response = client.post(f"/api/v1/email-jobs/{failed_job.id}/replay")
 
     assert response.status_code == 200
 
     body = response.json()
 
-    assert body["id"] != str(dead_letter_job.id)
+    assert body["id"] == str(failed_job.id)
     assert body["status"] == "pending"
-    assert body["attempts"] == 0
-    assert body["payload"]["replayed_from_email_job_id"] == str(dead_letter_job.id)
+    assert body["attempt_count"] == 0
     assert body["last_error"] is None
 
 
-def test_replay_email_job_endpoint_returns_409_for_failed(
+def test_replay_email_job_endpoint_returns_409_for_sent(
     retry_replay_client: tuple[TestClient, dict[str, EmailJob]],
 ) -> None:
     client, jobs = retry_replay_client
-    response = client.post(f"/api/v1/email-jobs/{jobs['failed'].id}/replay")
+    response = client.post(f"/api/v1/email-jobs/{jobs['sent'].id}/replay")
 
     assert response.status_code == 409
     body = response.json()
-    assert body["error"]["message"] == "Only dead-letter email jobs can be replayed."
+    assert body["error"]["message"] == "Only failed email jobs can be replayed."
     assert body["error"]["code"] == "invalid_email_job_replay_state"
 
 
@@ -269,7 +268,7 @@ def metrics_client() -> Generator[TestClient, None, None]:
         create_email_job(
             status=EmailJobStatus.PENDING,
             locked_by=None,
-            scheduled_for=METRICS_NOW - timedelta(hours=1),
+            next_attempt_at=METRICS_NOW - timedelta(hours=1),
         ),
     ]
     repository = FakeEmailJobRepository(jobs)
@@ -312,7 +311,7 @@ def test_get_email_job_operational_metrics_endpoint_returns_metrics(
     assert body["counts_by_status"]["dead_letter"] == 1
     assert body["locked_count"] == 1
     assert body["expired_lock_count"] == 1
-    assert body["overdue_pending_count"] == 3
+    assert body["overdue_pending_count"] == 2
     assert "oldest_pending_created_at" in body
     assert "oldest_failed_created_at" in body
     assert "newest_dead_letter_created_at" in body
@@ -356,7 +355,7 @@ class FakeEmailJobRepository:
                 email_job
                 for email_job in self.email_jobs
                 if email_job.job_type == job_type
-                and email_job.payload.get("idempotency_key") == idempotency_key
+                and email_job.idempotency_key == idempotency_key
             ),
             None,
         )
@@ -405,46 +404,28 @@ class FakeEmailJobRepository:
         now: datetime,
     ) -> EmailJob:
         email_job.status = EmailJobStatus.PENDING
-        email_job.scheduled_for = now
+        email_job.next_attempt_at = now
         email_job.locked_by = None
         email_job.locked_until = None
         email_job.updated_at = now
 
         return email_job
 
-    def create_replay(
+    def reset_for_replay(
         self,
         *,
-        original_email_job: EmailJob,
+        email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
-        replay_job = EmailJob(
-            id=uuid4(),
-            job_type=original_email_job.job_type,
-            status=EmailJobStatus.PENDING,
-            appointment_id=original_email_job.appointment_id,
-            patient_id=original_email_job.patient_id,
-            recipient_email=original_email_job.recipient_email,
-            subject=original_email_job.subject,
-            body=original_email_job.body,
-            attempts=0,
-            max_attempts=original_email_job.max_attempts,
-            locked_by=None,
-            locked_until=None,
-            last_error=None,
-            payload={
-                **original_email_job.payload,
-                "replayed_from_email_job_id": str(original_email_job.id),
-                "replayed_from_attempts": original_email_job.attempts,
-                "replayed_from_status": original_email_job.status.value,
-            },
-            scheduled_for=now,
-            sent_at=None,
-            created_at=now,
-            updated_at=now,
-        )
+        email_job.status = EmailJobStatus.PENDING
+        email_job.attempt_count = 0
+        email_job.next_attempt_at = now
+        email_job.last_error = None
+        email_job.locked_by = None
+        email_job.locked_until = None
+        email_job.updated_at = now
 
-        return self.add(replay_job)
+        return email_job
 
     def get_operational_metrics(
         self,
@@ -482,8 +463,11 @@ class FakeEmailJobRepository:
             overdue_pending_count=sum(
                 1
                 for job in jobs
-                if job.status in (EmailJobStatus.PENDING, EmailJobStatus.FAILED)
-                and job.scheduled_for <= now
+                if job.status == EmailJobStatus.PENDING
+                and (
+                    job.next_attempt_at is None
+                    or job.next_attempt_at <= now
+                )
             ),
             oldest_pending_created_at=(
                 min((job.created_at for job in pending_jobs), default=None)
@@ -511,16 +495,16 @@ class FakeDatabaseSession:
 def create_email_job(
     *,
     status: EmailJobStatus,
-    attempts: int = 1,
+    attempt_count: int = 1,
     last_error: str | None = "smtp failure",
     locked_by: str | None = "worker-1",
     locked_until: datetime | None = None,
     payload: dict[str, str] | None = None,
     created_at: datetime | None = None,
-    scheduled_for: datetime | None = None,
+    next_attempt_at: datetime | None = None,
 ) -> EmailJob:
     effective_created_at = created_at or datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
-    effective_scheduled_for = scheduled_for or effective_created_at
+    effective_next_attempt_at = next_attempt_at
     effective_locked_until = locked_until
     if effective_locked_until is None and locked_by is not None:
         effective_locked_until = effective_created_at + timedelta(minutes=5)
@@ -534,13 +518,13 @@ def create_email_job(
         recipient_email="patient@example.test",
         subject="Appointment confirmation",
         body="Your appointment is confirmed.",
-        attempts=attempts,
+        attempt_count=attempt_count,
         max_attempts=3,
         locked_by=locked_by,
         locked_until=effective_locked_until,
         last_error=last_error,
         payload=payload or {"source": "test"},
-        scheduled_for=effective_scheduled_for,
+        next_attempt_at=effective_next_attempt_at,
         created_at=effective_created_at,
         updated_at=effective_created_at,
     )
@@ -571,7 +555,7 @@ def create_email_jobs(*, count: int) -> list[EmailJob]:
                 recipient_email="patient@example.test",
                 subject="Appointment confirmation",
                 body="Your appointment is confirmed.",
-                attempts=1 if status == EmailJobStatus.FAILED else 0,
+                attempt_count=1 if status == EmailJobStatus.FAILED else 0,
                 max_attempts=3,
                 locked_by=locked_by,
                 locked_until=locked_until,
@@ -581,7 +565,7 @@ def create_email_jobs(*, count: int) -> list[EmailJob]:
                     else None
                 ),
                 payload={"source": "test"},
-                scheduled_for=created_at,
+                next_attempt_at=created_at,
                 created_at=created_at,
                 updated_at=created_at,
             ),

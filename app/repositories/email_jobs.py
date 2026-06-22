@@ -44,10 +44,10 @@ class EmailJobRepository(Protocol):
     ) -> EmailJob:
         raise NotImplementedError
 
-    def create_replay(
+    def reset_for_replay(
         self,
         *,
-        original_email_job: EmailJob,
+        email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
         raise NotImplementedError
@@ -70,11 +70,22 @@ class EmailJobWorkerRepository(Protocol):
     ) -> EmailJob | None:
         raise NotImplementedError
 
+    def claim_by_id(
+        self,
+        *,
+        email_job_id: UUID,
+        worker_id: str,
+        now: datetime,
+        lock_duration: timedelta,
+    ) -> EmailJob | None:
+        raise NotImplementedError
+
     def mark_sent(
         self,
         *,
         email_job: EmailJob,
         now: datetime,
+        provider_message_id: str | None = None,
     ) -> EmailJob:
         raise NotImplementedError
 
@@ -84,6 +95,7 @@ class EmailJobWorkerRepository(Protocol):
         email_job: EmailJob,
         error: str,
         now: datetime,
-        retry_delay: timedelta,
+        backoff_base_seconds: int,
+        backoff_max_seconds: int,
     ) -> EmailJob:
         raise NotImplementedError

@@ -180,7 +180,7 @@ class FakeEmailJobRepository:
                 email_job
                 for email_job in self.email_jobs
                 if email_job.job_type == job_type
-                and email_job.payload.get("idempotency_key") == idempotency_key
+                and email_job.idempotency_key == idempotency_key
             ),
             None,
         )
@@ -205,13 +205,13 @@ class FakeEmailJobRepository:
     ) -> EmailJob:
         return email_job
 
-    def create_replay(
+    def reset_for_replay(
         self,
         *,
-        original_email_job: EmailJob,
+        email_job: EmailJob,
         now: datetime,
     ) -> EmailJob:
-        return original_email_job
+        return email_job
 
     def get_operational_metrics(
         self,

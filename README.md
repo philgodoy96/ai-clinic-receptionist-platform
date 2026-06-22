@@ -81,8 +81,8 @@ Planned stack:
 - Retell Web Calls
 - FakeLLMProvider by default
 - Optional Bedrock LLM provider adapter
-- FakeEmailProvider first
-- ResendProvider later
+- FakeEmailProvider by default
+- Optional Resend email provider
 - Prometheus
 - Grafana
 - OpenTelemetry
@@ -140,7 +140,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -155,6 +155,7 @@ Architecture docs:
 - `docs/architecture/llm-evaluation-dataset.md`
 - `docs/architecture/provider-run-evaluation-mode.md`
 - `docs/architecture/public-demo-guardrails.md`
+- `docs/architecture/email-dispatch-reliability.md`
 
 ## Local Mode vs Public Demo Mode
 
@@ -169,6 +170,8 @@ Architecture docs:
 - no real provider API keys required
 - Docker Compose for PostgreSQL, Redis, and RabbitMQ
 
+**Email mode:** `EMAIL_PROVIDER=fake` records outbound messages in memory for workers and tests. No Resend API key is required. Set `EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` only for a hosted public demo that sends real mail.
+
 **Public demo mode** is intended for a hosted unauthenticated demo:
 
 - `PUBLIC_DEMO_MODE=true`
@@ -176,5 +179,6 @@ Architecture docs:
 - Redis-backed per-IP and global quotas on chat, Retell tools, appointments, and confirmation emails
 - standardized `429` responses when limits are exceeded
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
+- use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-See `docs/architecture/public-demo-guardrails.md` for design details and `docs/configuration.md` for all guardrail environment variables.
+See `docs/architecture/public-demo-guardrails.md` for design details, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.

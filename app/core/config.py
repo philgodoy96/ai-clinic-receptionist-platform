@@ -27,12 +27,38 @@ class Settings(BaseSettings):
     )
     email_job_queue_name: str = Field(default="email_jobs", alias="EMAIL_JOB_QUEUE_NAME")
     email_job_dispatch_enabled: bool = Field(default=False, alias="EMAIL_JOB_DISPATCH_ENABLED")
+    email_job_max_attempts: int = Field(default=3, ge=1, alias="EMAIL_JOB_MAX_ATTEMPTS")
+    email_job_backoff_base_seconds: int = Field(
+        default=30,
+        ge=1,
+        alias="EMAIL_JOB_BACKOFF_BASE_SECONDS",
+    )
+    email_job_backoff_max_seconds: int = Field(
+        default=900,
+        ge=1,
+        alias="EMAIL_JOB_BACKOFF_MAX_SECONDS",
+    )
+    email_job_lock_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        alias="EMAIL_JOB_LOCK_TTL_SECONDS",
+    )
 
     retell_api_key: str = Field(default="", alias="RETELL_API_KEY")
     retell_webhook_secret: str = Field(default="", alias="RETELL_WEBHOOK_SECRET")
 
     email_provider: str = Field(default="fake", alias="EMAIL_PROVIDER")
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
+    email_from_address: str = Field(
+        default="clinic-demo@example.test",
+        alias="EMAIL_FROM_ADDRESS",
+    )
+    email_reply_to: str = Field(default="", alias="EMAIL_REPLY_TO")
+    email_provider_request_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        alias="EMAIL_PROVIDER_REQUEST_TIMEOUT_SECONDS",
+    )
     human_escalation_notification_email: str = Field(
         default="clinic-staff@example.test",
         alias="HUMAN_ESCALATION_NOTIFICATION_EMAIL",
@@ -149,7 +175,21 @@ class Settings(BaseSettings):
                 )
             self._validate_bedrock_provider_config(self.llm_fallback_provider)
 
+        self._validate_email_provider_settings()
+
         return self
+
+    def _validate_email_provider_settings(self) -> None:
+        provider_name = self.email_provider.strip().lower()
+
+        if provider_name != "resend":
+            return
+
+        if not self.resend_api_key.strip():
+            raise ValueError("RESEND_API_KEY is required when EMAIL_PROVIDER is resend")
+
+        if not self.email_from_address.strip():
+            raise ValueError("EMAIL_FROM_ADDRESS is required when EMAIL_PROVIDER is resend")
 
     def _validate_bedrock_provider_config(self, provider: LLMProviderName) -> None:
         if provider == LLMProviderName.BEDROCK and not self.bedrock_model_id.strip():

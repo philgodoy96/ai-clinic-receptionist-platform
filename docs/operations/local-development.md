@@ -58,6 +58,26 @@ Queue name:
 
     EMAIL_JOB_QUEUE_NAME=email_jobs
 
+## Email Provider Configuration
+
+Email settings are documented in `docs/configuration.md`.
+
+Local development and CI should keep:
+
+    EMAIL_PROVIDER=fake
+
+The fake provider records outbound messages in memory. No Resend API key is required.
+
+Optional Resend configuration for a hosted public demo:
+
+    EMAIL_PROVIDER=resend
+    RESEND_API_KEY=re_...
+    EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
+
+Enable public demo guardrails before using a real email provider.
+
+See `docs/architecture/email-dispatch-reliability.md` for the full reliability model.
+
 ## LLM Provider Configuration
 
 LLM settings are documented in `docs/configuration.md`.

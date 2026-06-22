@@ -26,11 +26,35 @@ See `.env.example` for a safe local template.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EMAIL_PROVIDER` | `fake` | Email provider selection |
+| `EMAIL_PROVIDER` | `fake` | Email provider selection: `fake` or `resend` |
+| `EMAIL_FROM_ADDRESS` | `clinic-demo@example.test` | Sender address required when `EMAIL_PROVIDER=resend` |
+| `EMAIL_REPLY_TO` | empty | Optional reply-to address for Resend |
+| `EMAIL_PROVIDER_REQUEST_TIMEOUT_SECONDS` | `10` | HTTP timeout for the Resend client |
 | `EMAIL_JOB_DISPATCH_ENABLED` | `false` | Enable RabbitMQ dispatch after durable email jobs are created |
 | `EMAIL_JOB_QUEUE_NAME` | `email_jobs` | RabbitMQ queue name for email jobs |
-| `RESEND_API_KEY` | empty | Resend API key when using a real email provider |
+| `EMAIL_JOB_MAX_ATTEMPTS` | `3` | Maximum delivery attempts before a job becomes `failed` |
+| `EMAIL_JOB_BACKOFF_BASE_SECONDS` | `30` | Base delay for exponential retry backoff |
+| `EMAIL_JOB_BACKOFF_MAX_SECONDS` | `900` | Maximum retry backoff delay in seconds |
+| `EMAIL_JOB_LOCK_TTL_SECONDS` | `300` | Worker lock duration while a job is `processing` |
+| `RESEND_API_KEY` | empty | Resend API key when `EMAIL_PROVIDER=resend` |
 | `HUMAN_ESCALATION_NOTIFICATION_EMAIL` | demo staff email | Default staff notification recipient |
+
+For local development and CI, keep:
+
+```env
+EMAIL_PROVIDER=fake
+EMAIL_JOB_DISPATCH_ENABLED=false
+```
+
+Optional Resend configuration for a hosted public demo:
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_...
+EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
+```
+
+See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.md).
 
 ## LLM Provider
 
