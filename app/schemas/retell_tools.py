@@ -12,6 +12,8 @@ MIN_HOLD_TTL_SECONDS = 60
 MAX_HOLD_TTL_SECONDS = 900
 MAX_BOOK_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_BOOK_APPOINTMENT_NOTES_LENGTH = 500
+MAX_CANCEL_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
+MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH = 500
 _PATIENT_EMAIL_PATTERN = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
@@ -172,3 +174,38 @@ class BookAppointmentToolArguments(BaseModel):
             msg = "either hold_id or slot_id is required"
             raise ValueError(msg)
         return self
+
+
+class CancelAppointmentToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    appointment_id: UUID | str | None = None
+    explicit_confirmation: bool
+    confirmation_text: str | None = Field(
+        default=None,
+        max_length=MAX_CANCEL_APPOINTMENT_CONFIRMATION_TEXT_LENGTH,
+    )
+    cancellation_reason: str | None = Field(
+        default=None,
+        max_length=MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH,
+    )
+    patient_name: str | None = Field(default=None, max_length=160)
+    patient_date_of_birth: date | None = None
+    patient_email: str | None = Field(
+        default=None,
+        max_length=255,
+        pattern=_PATIENT_EMAIL_PATTERN,
+    )
+
+    @field_validator("patient_name")
+    @classmethod
+    def validate_patient_name_not_blank_if_present(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_name cannot be blank"
+            raise ValueError(msg)
+
+        return stripped

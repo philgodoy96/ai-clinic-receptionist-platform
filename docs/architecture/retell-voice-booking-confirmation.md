@@ -28,6 +28,7 @@ See also:
 
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Voice Conversation Bridge](voice-conversation-bridge.md)
+- [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
 - [Appointment Slot Holds](appointment-holds.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
 
@@ -40,6 +41,8 @@ See also:
 5. The backend delegates booking to `AppointmentBookingService`.
 6. The existing booking flow persists the appointment and queues confirmation email.
 7. The backend clears active hold context and returns a provider-safe response.
+
+Booked appointments can later be canceled through a separate `cancel_appointment` voice flow that requires explicit cancellation confirmation and delegates to `AppointmentCancellationService`. See [Retell Voice Appointment Cancellation](retell-voice-cancellation.md).
 
 ## Safety Boundary
 
@@ -78,7 +81,6 @@ The voice path is a channel adapter around the same business core.
 
 Future implementation phases may add:
 
-- cancel appointment via voice
 - reschedule appointment via voice
 - transcript summary persistence
 - Retell dashboard setup runbook

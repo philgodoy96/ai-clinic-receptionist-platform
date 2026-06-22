@@ -6,6 +6,8 @@ class AuditEventType(StrEnum):
     APPOINTMENT_HOLD_FAILED = "appointment_hold_failed"
     APPOINTMENT_BOOKING_CONFIRMED = "appointment_booking_confirmed"
     APPOINTMENT_BOOKING_FAILED = "appointment_booking_failed"
+    APPOINTMENT_CANCELLATION_CONFIRMED = "appointment_cancellation_confirmed"
+    APPOINTMENT_CANCELLATION_FAILED = "appointment_cancellation_failed"
 
 
 class AuditActorType(StrEnum):

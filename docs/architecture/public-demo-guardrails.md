@@ -30,7 +30,7 @@ When confirmation email quotas are exceeded, booking can still succeed but the c
 
 Signature verification runs before guardrails on Retell tool routes. Invalid signatures are rejected without consuming Redis rate-limit counters or executing domain logic.
 
-See also: [Email Dispatch Reliability](email-dispatch-reliability.md), [Retell Webhook Security](retell-webhook-security.md), [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md), [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md).
+See also: [Email Dispatch Reliability](email-dispatch-reliability.md), [Retell Webhook Security](retell-webhook-security.md), [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md), [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md), [Retell Voice Appointment Cancellation](retell-voice-cancellation.md).
 
 ## Local Development
 
@@ -77,6 +77,8 @@ The following surfaces are protected:
 Retell tools are subject to the same public demo limits as chat. Per-IP Retell tool rate limits apply after signature verification succeeds. Unsupported or invalid tool requests are rejected without bypassing scheduling or hold invariants.
 
 Voice booking via `book_appointment` must respect the same appointment creation quotas and confirmation email quotas as chat booking. A successful voice booking counts toward daily appointment limits. Confirmation email jobs created by voice booking count toward per-IP and global confirmation email quotas; when email quotas are exceeded, booking may still succeed but the confirmation email job is skipped.
+
+Voice cancellation via `cancel_appointment` remains protected by the same Retell signature verification and per-IP Retell tool rate limits. Cancellation does not bypass appointment lookup, cancelable status validation, explicit confirmation, idempotency, or audit logging.
 
 ## Failure Behavior
 

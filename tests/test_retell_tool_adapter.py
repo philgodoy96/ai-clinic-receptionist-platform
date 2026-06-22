@@ -138,12 +138,14 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
             RetellSupportedToolName.HOLD_APPOINTMENT_SLOT,
             RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD,
             RetellSupportedToolName.BOOK_APPOINTMENT,
+            RetellSupportedToolName.CANCEL_APPOINTMENT,
         },
     )
     assert RetellSupportedToolName.CHECK_AVAILABILITY not in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.HOLD_APPOINTMENT_SLOT in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.BOOK_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.CANCEL_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
 
 
 def test_adapter_dispatch_does_not_use_reflection() -> None:
@@ -161,7 +163,7 @@ def test_unknown_tool_rejected(adapter_bundle: AdapterBundle) -> None:
         RetellToolCallRequest.model_validate(
             {
                 "provider_call_id": "retell-call-123",
-                "tool_name": "cancel_appointment",
+                "tool_name": "reschedule_appointment",
                 "arguments": {},
             },
         ),

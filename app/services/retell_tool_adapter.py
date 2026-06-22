@@ -14,6 +14,14 @@ from app.api.errors import (
     RETELL_TOOL_PROVIDER_CALL_ID_REQUIRED_CODE,
     UNSUPPORTED_RETELL_TOOL_CODE,
 )
+from app.domain.appointments import (
+    AppointmentCancellationMissingConfirmationError,
+    AppointmentCancellationRequest,
+    AppointmentCancellationResult,
+    AppointmentNotCancelableError,
+    AppointmentNotFoundError,
+)
+from app.domain.audit.enums import AuditActorType
 from app.domain.retell_tools import (
     MissingProviderCallIdError,
     ParsedRetellToolCall,
@@ -30,6 +38,7 @@ from app.domain.retell_tools import (
     serialize_tool_call_outcome,
 )
 from app.domain.scheduling.appointment_holds import AppointmentHold
+from app.domain.scheduling.enums import AppointmentStatus
 from app.domain.voice_booking import (
     VoiceBookingConfirmationRequest,
     VoiceBookingExpiredHoldError,
@@ -43,6 +52,14 @@ from app.domain.voice_booking import (
     VoiceBookingTemporaryFailureError,
     is_book_appointment_executable,
 )
+from app.domain.voice_cancellation import (
+    VOICE_CANCELLATION_SOURCE,
+    build_cancel_appointment_success_context_updates,
+    is_cancel_appointment_executable,
+    is_cancel_appointment_reference_ambiguous,
+    resolve_cancel_appointment_id,
+    validate_cancel_appointment_conversation_context,
+)
 from app.domain.voice_conversation import (
     read_voice_context,
     resolve_check_availability_arguments,
@@ -52,6 +69,7 @@ from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient
 from app.models.voice_calls import VoiceCall
 from app.schemas.retell_tools import (
     BookAppointmentToolArguments,
+    CancelAppointmentToolArguments,
     CheckAvailabilityToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
@@ -197,6 +215,17 @@ class VoiceBookingConfirmationServiceForRetellToolCalling(Protocol):
 VoiceBookingConfirmationForRetell = VoiceBookingConfirmationServiceForRetellToolCalling
 
 
+class AppointmentCancellationServiceForRetellToolCalling(Protocol):
+    def cancel_appointment(
+        self,
+        request: AppointmentCancellationRequest,
+    ) -> AppointmentCancellationResult:
+        raise NotImplementedError
+
+
+AppointmentCancellationForRetell = AppointmentCancellationServiceForRetellToolCalling
+
+
 class AppointmentRepositoryForRetellToolCalling(Protocol):
     def get_by_id(self, appointment_id: UUID) -> Appointment | None:
         raise NotImplementedError
@@ -219,6 +248,7 @@ class RetellToolCallingAdapter:
         voice_conversation_bridge: VoiceConversationBridgeService | None = None,
         conversations: ConversationServiceForRetellToolCalling | None = None,
         voice_booking_confirmation: VoiceBookingConfirmationForRetell | None = None,
+        appointment_cancellation: AppointmentCancellationForRetell | None = None,
         appointments: AppointmentRepositoryForRetellToolCalling | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
@@ -231,6 +261,7 @@ class RetellToolCallingAdapter:
         self.voice_conversation_bridge = voice_conversation_bridge
         self.conversations = conversations
         self.voice_booking_confirmation = voice_booking_confirmation
+        self.appointment_cancellation = appointment_cancellation
         self.appointments = appointments
         self.provider = provider
 
@@ -302,6 +333,9 @@ class RetellToolCallingAdapter:
 
         if parsed.tool_name is RetellSupportedToolName.BOOK_APPOINTMENT:
             return self._execute_book_appointment(parsed)
+
+        if parsed.tool_name is RetellSupportedToolName.CANCEL_APPOINTMENT:
+            return self._execute_cancel_appointment(parsed)
 
         return build_rejected_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -609,6 +643,185 @@ class RetellToolCallingAdapter:
             duplicate=booking_result.duplicate,
         )
 
+    def _execute_cancel_appointment(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        if self.appointment_cancellation is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="voice_cancellation_unavailable",
+            )
+
+        arguments = _as_cancel_appointment_arguments(parsed.arguments)
+
+        if not arguments.explicit_confirmation:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="cancellation_confirmation_required",
+            )
+
+        voice_session = self._ensure_voice_conversation(parsed)
+        if voice_session is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="missing_voice_conversation_context",
+            )
+
+        conversation = voice_session.conversation
+        voice_context = voice_session.voice_context
+
+        if is_cancel_appointment_reference_ambiguous(
+            arguments,
+            voice_context,
+            conversation_appointment_id=conversation.appointment_id,
+        ):
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_reference_required",
+            )
+
+        appointment_id = resolve_cancel_appointment_id(
+            arguments,
+            voice_context,
+            conversation_appointment_id=conversation.appointment_id,
+        )
+        if appointment_id is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_reference_required",
+            )
+
+        if not validate_cancel_appointment_conversation_context(
+            appointment_id,
+            arguments=arguments,
+            voice_context=voice_context,
+            conversation_appointment_id=conversation.appointment_id,
+        ):
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_context_mismatch",
+            )
+
+        if not is_cancel_appointment_executable(
+            arguments,
+            voice_context=voice_context,
+            conversation_appointment_id=conversation.appointment_id,
+        ):
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_reference_required",
+            )
+
+        idempotency_key = self._build_cancel_appointment_idempotency_key(parsed)
+
+        try:
+            cancellation_result = self.appointment_cancellation.cancel_appointment(
+                AppointmentCancellationRequest(
+                    appointment_id=appointment_id,
+                    explicit_confirmation=arguments.explicit_confirmation,
+                    idempotency_key=idempotency_key,
+                    cancellation_reason=arguments.cancellation_reason,
+                    source=VOICE_CANCELLATION_SOURCE,
+                    actor_type=AuditActorType.RETELL,
+                    actor_id=parsed.provider_call_id,
+                    call_id=parsed.provider_call_id,
+                    conversation_id=str(conversation.id),
+                ),
+            )
+        except AppointmentCancellationMissingConfirmationError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="cancellation_confirmation_required",
+            )
+        except AppointmentNotFoundError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_not_found",
+            )
+        except AppointmentNotCancelableError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_not_cancelable",
+            )
+
+        self._update_voice_context_after_cancellation(
+            conversation_id=conversation.id,
+            appointment_id=cancellation_result.appointment_id,
+        )
+
+        return build_succeeded_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            result=self._build_cancel_appointment_result(cancellation_result),
+            duplicate=cancellation_result.duplicate,
+        )
+
+    def _build_cancel_appointment_idempotency_key(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> str:
+        if parsed.tool_call_id is not None:
+            return build_retell_tool_call_idempotency_key(
+                provider=self.provider,
+                provider_call_id=parsed.provider_call_id,
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+            )
+
+        return f"{self.provider}:{parsed.provider_call_id}:cancel_appointment"
+
+    def _build_cancel_appointment_result(
+        self,
+        cancellation_result: AppointmentCancellationResult,
+    ) -> dict[str, Any]:
+        appointment_summary: dict[str, Any] = {
+            "appointment_id": str(cancellation_result.appointment_id),
+            "patient_id": str(cancellation_result.patient_id),
+            "status": AppointmentStatus.CANCELLED.value,
+        }
+
+        if self.appointments is not None:
+            appointment = self.appointments.get_by_id(cancellation_result.appointment_id)
+            if appointment is not None:
+                appointment_summary = AppointmentResponse.model_validate(
+                    appointment,
+                ).model_dump(mode="json")
+
+        return {
+            "appointment_id": str(cancellation_result.appointment_id),
+            "status": AppointmentStatus.CANCELLED.value,
+            "already_cancelled": cancellation_result.already_cancelled,
+            "appointment": appointment_summary,
+        }
+
+    def _update_voice_context_after_cancellation(
+        self,
+        *,
+        conversation_id: UUID,
+        appointment_id: UUID,
+    ) -> None:
+        if self.conversations is None:
+            return
+
+        self.conversations.clear_voice_active_hold(conversation_id=conversation_id)
+        self.conversations.merge_voice_context(
+            conversation_id=conversation_id,
+            voice_context=build_cancel_appointment_success_context_updates(
+                appointment_id=appointment_id,
+            ),
+        )
+
     def _build_book_appointment_idempotency_key(
         self,
         parsed: ParsedRetellToolCall,
@@ -878,6 +1091,16 @@ def _as_book_appointment_arguments(
 ) -> BookAppointmentToolArguments:
     if not isinstance(arguments, BookAppointmentToolArguments):
         msg = "expected book appointment tool arguments"
+        raise TypeError(msg)
+
+    return arguments
+
+
+def _as_cancel_appointment_arguments(
+    arguments: Any,
+) -> CancelAppointmentToolArguments:
+    if not isinstance(arguments, CancelAppointmentToolArguments):
+        msg = "expected cancel appointment tool arguments"
         raise TypeError(msg)
 
     return arguments
