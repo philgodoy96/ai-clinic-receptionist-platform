@@ -10,13 +10,16 @@ from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.api.dependencies import (
     get_retell_scheduling_tool_adapter,
     get_retell_signature_verifier,
+    get_retell_tool_calling_adapter,
 )
+from app.domain.retell_tools import build_rejected_tool_call_response
 from app.integrations.retell.signature import (
     FakeRetellSignatureVerifier,
     HmacRetellSignatureVerifier,
     RetellSignatureVerificationError,
 )
 from app.main import create_app
+from app.schemas.retell_tools import RetellToolCallRequest
 from tests.retell_webhook_support import (
     configure_retell_for_tests,
     install_fake_retell_verifier,
@@ -406,6 +409,133 @@ def test_verifier_exception_returns_standardized_503() -> None:
     assert "verification backend unavailable" not in str(body)
 
 
+def test_disabled_retell_rejects_unified_tool_route() -> None:
+    app = create_app()
+    settings = make_retell_enabled_settings(RETELL_ENABLED=False)
+    configure_retell_for_tests(app, settings=settings)
+    tracking_adapter = TrackingRetellToolCallingAdapter()
+
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            "/api/v1/retell/tools",
+            settings=settings,
+            json_body={
+                "provider_call_id": "retell-call-123",
+                "tool_name": "check_availability",
+                "arguments": {
+                    "start_from": "2026-07-01T09:00:00Z",
+                    "start_to": "2026-07-01T12:00:00Z",
+                },
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "retell_disabled"
+    assert tracking_adapter.execute_calls == 0
+
+
+def test_malformed_json_on_unified_tool_route_returns_400() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    tracking_adapter = TrackingRetellToolCallingAdapter()
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
+        secret=WEBHOOK_SECRET,
+        now_millis=lambda: TIMESTAMP_MS,
+    )
+
+    raw_body = b"{not-json"
+    signature = sign_retell_body(
+        raw_body=raw_body,
+        secret=WEBHOOK_SECRET,
+        timestamp_ms=TIMESTAMP_MS,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature=signature),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
+    assert tracking_adapter.execute_calls == 0
+
+
+def test_valid_signature_reaches_unified_tool_adapter() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    tracking_adapter = TrackingRetellToolCallingAdapter()
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
+        secret=WEBHOOK_SECRET,
+        now_millis=lambda: TIMESTAMP_MS,
+    )
+
+    raw_body = (
+        b'{"provider_call_id":"retell-call-123","tool_name":"check_availability",'
+        b'"arguments":{"start_from":"2026-07-01T09:00:00Z","start_to":"2026-07-01T12:00:00Z"}}'
+    )
+    signature = sign_retell_body(
+        raw_body=raw_body,
+        secret=WEBHOOK_SECRET,
+        timestamp_ms=TIMESTAMP_MS,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature=signature),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    assert tracking_adapter.execute_calls == 1
+
+
+def test_adapter_not_called_when_verification_fails_on_unified_route() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app)
+    tracking_adapter = TrackingRetellToolCallingAdapter()
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature="v=1,d=bad"),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert tracking_adapter.execute_calls == 0
+
+
 def test_non_retell_route_works_without_retell_signature() -> None:
     app = create_app()
     configure_retell_for_tests(app, settings=make_secured_retell_settings())
@@ -427,3 +557,16 @@ class TrackingSchedulingService(EmptySchedulingService):
     def list_specialties(self) -> list[Any]:
         self.list_specialties_calls += 1
         return list(super().list_specialties())
+
+
+class TrackingRetellToolCallingAdapter:
+    def __init__(self) -> None:
+        self.execute_calls = 0
+
+    def execute(self, request: RetellToolCallRequest) -> Any:
+        self.execute_calls += 1
+        return build_rejected_tool_call_response(
+            tool_name=request.tool_name,
+            tool_call_id=request.tool_call_id,
+            error_code="unsupported_retell_tool",
+        )

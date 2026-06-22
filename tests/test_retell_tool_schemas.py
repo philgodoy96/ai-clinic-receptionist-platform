@@ -20,6 +20,7 @@ from app.schemas.retell_tools import (
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
     RetellProviderToolCallRequest,
+    RetellToolCallRequest,
 )
 
 
@@ -176,3 +177,7 @@ def test_schema_does_not_require_phone_numbers() -> None:
 
     assert arguments.doctor_name is None
     assert arguments.specialty_name is None
+
+
+def test_retell_tool_call_request_is_provider_request_alias() -> None:
+    assert RetellToolCallRequest is RetellProviderToolCallRequest
