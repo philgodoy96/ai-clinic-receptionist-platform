@@ -13,6 +13,7 @@ class OutboundEmailMessage:
     to: str
     subject: str
     body: str
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

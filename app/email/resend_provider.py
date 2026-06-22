@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.email.idempotency import normalize_resend_idempotency_key
 from app.email.resend_client import ResendEmailClient, ResendEmailClientError
 from app.email.types import EmailProviderError, EmailSendResult, OutboundEmailMessage
 
@@ -27,8 +28,17 @@ class ResendEmailProvider:
         if self._reply_to is not None:
             payload["reply_to"] = self._reply_to
 
+        idempotency_key = (
+            normalize_resend_idempotency_key(message.idempotency_key)
+            if message.idempotency_key is not None
+            else None
+        )
+
         try:
-            response = self._client.send_email(payload=payload)
+            response = self._client.send_email(
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
         except ResendEmailClientError as exc:
             raise EmailProviderError("resend email delivery failed") from exc
 
