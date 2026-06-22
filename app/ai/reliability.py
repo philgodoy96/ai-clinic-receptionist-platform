@@ -7,6 +7,7 @@ from app.ai.llm_reliability import (
     failure_category_for_reason,
     is_fallback_eligible,
     is_non_retryable_failure,
+    is_primary_provider_retryable,
     is_retryable_failure,
     parse_failure_reason_from_parse_error,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "failure_category_for_reason",
     "is_fallback_eligible",
     "is_non_retryable_failure",
+    "is_primary_provider_retryable",
     "is_retryable_failure",
     "parse_failure_reason_from_parse_error",
 ]

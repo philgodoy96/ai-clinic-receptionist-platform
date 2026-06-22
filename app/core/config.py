@@ -40,6 +40,12 @@ class Settings(BaseSettings):
 
     llm_provider: LLMProviderName = Field(default=LLMProviderName.FAKE, alias="LLM_PROVIDER")
     llm_enabled: bool = Field(default=True, alias="LLM_ENABLED")
+    llm_max_primary_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        alias="LLM_MAX_PRIMARY_ATTEMPTS",
+    )
     bedrock_model_id: str = Field(default="", alias="BEDROCK_MODEL_ID")
     aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
     bedrock_request_timeout_seconds: int = Field(

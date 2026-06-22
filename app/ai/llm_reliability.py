@@ -114,6 +114,24 @@ def classify_provider_error(message: str) -> LLMFailureReason:
     return LLMFailureReason.PROVIDER_EXCEPTION
 
 
+def is_primary_provider_retryable(reason: LLMFailureReason) -> bool:
+    if reason in {
+        LLMFailureReason.NONE,
+        LLMFailureReason.SAFETY_VIOLATION,
+        LLMFailureReason.LOW_CONFIDENCE,
+        LLMFailureReason.HUMAN_ESCALATION_REQUEST,
+        LLMFailureReason.MEDICAL_EMERGENCY,
+        LLMFailureReason.POLICY_VIOLATION,
+        LLMFailureReason.SCHEMA_VALIDATION_FAILED,
+        LLMFailureReason.FALLBACK_PROVIDER_UNAVAILABLE,
+        LLMFailureReason.FALLBACK_EXHAUSTED,
+    }:
+        return False
+    if is_retryable_failure(reason):
+        return True
+    return failure_category_for_reason(reason) == LLMFailureCategory.REPAIRABLE
+
+
 def parse_failure_reason_from_parse_error(
     *,
     repair_attempted: bool,

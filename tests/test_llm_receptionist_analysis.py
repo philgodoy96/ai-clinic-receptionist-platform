@@ -139,7 +139,8 @@ def test_llm_receptionist_analysis_service_records_fallback_on_provider_error() 
     assert result.failure_reason == LLMFailureReason.PROVIDER_EXCEPTION
     assert result.prompt_version == expected_prompt_version()
     assert result.latency_ms >= 0
-    assert result.attempt_count == 1
+    assert result.attempt_count == 2
+    assert result.primary_attempt_count == 2
 
 
 def test_llm_receptionist_analysis_service_records_schema_validation_failure() -> None:
