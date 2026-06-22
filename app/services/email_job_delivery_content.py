@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.jobs.enums import EmailJobType
+from app.email.idempotency import build_email_delivery_idempotency_key
 from app.models.email_jobs import EmailJob
 from app.providers.email import EmailMessage
 
@@ -27,6 +28,7 @@ def build_email_delivery_message(email_job: EmailJob) -> EmailMessage:
             to=email_job.recipient_email,
             subject=email_job.subject,
             body=email_job.body,
+            idempotency_key=build_email_delivery_idempotency_key(email_job),
         )
 
     if email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION:
@@ -35,6 +37,7 @@ def build_email_delivery_message(email_job: EmailJob) -> EmailMessage:
             to=email_job.recipient_email,
             subject=subject,
             body=body,
+            idempotency_key=build_email_delivery_idempotency_key(email_job),
         )
 
     raise UnsupportedEmailJobTypeError(

@@ -11,7 +11,12 @@ class ResendEmailClientError(Exception):
 
 
 class ResendEmailClient(Protocol):
-    def send_email(self, *, payload: dict[str, Any]) -> dict[str, Any]:
+    def send_email(
+        self,
+        *,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -20,14 +25,23 @@ class HttpResendEmailClient:
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
 
-    def send_email(self, *, payload: dict[str, Any]) -> dict[str, Any]:
+    def send_email(
+        self,
+        *,
+        payload: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+
         request = Request(
             "https://api.resend.com/emails",
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
 

@@ -103,13 +103,17 @@ def test_worker_stores_provider_message_id_on_success() -> None:
 
 def test_worker_stores_resend_provider_message_id_on_success() -> None:
     from app.email.resend_provider import ResendEmailProvider
+    from app.services.email_jobs import build_appointment_confirmation_idempotency_key
     from tests.test_resend_email_provider import FakeResendEmailClient
 
     now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
     email_job = create_email_job()
+    appointment_id = email_job.appointment_id
+    email_job.idempotency_key = build_appointment_confirmation_idempotency_key(appointment_id)
+    client = FakeResendEmailClient(response={"id": "resend-msg-456"})
     repository = FakeEmailJobWorkerRepository([email_job])
     provider = ResendEmailProvider(
-        client=FakeResendEmailClient(response={"id": "resend-msg-456"}),
+        client=client,
         from_address="sender@example.test",
     )
     worker = EmailJobWorkerService(
@@ -122,3 +126,6 @@ def test_worker_stores_resend_provider_message_id_on_success() -> None:
 
     assert result.processed is True
     assert email_job.provider_message_id == "resend-msg-456"
+    assert client.sent_idempotency_keys == [
+        f"appointment_confirmation:{appointment_id}",
+    ]
