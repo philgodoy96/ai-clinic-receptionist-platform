@@ -124,6 +124,7 @@ Implemented:
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
 - LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
+- Retell webhook security with configuration validation, centralized signature verification, protected callback/tool routes, and standardized rejection for missing or invalid signatures
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 
 Upcoming:
@@ -136,7 +137,6 @@ Upcoming:
 - Staff notification provider adapter
 - Cost tracking aggregation
 - Hold expiration handling in chat
-- Retell webhook security
 - Demo reset strategy
 
 ## Stage 7 — Retell Tool Integration
@@ -207,7 +207,6 @@ Potential work:
 
 - Admin authentication
 - X-Admin-Token for demo admin endpoints
-- Retell webhook signature validation
 - Provider budget limits
 - DLQ support
 - OpenAI provider adapter
