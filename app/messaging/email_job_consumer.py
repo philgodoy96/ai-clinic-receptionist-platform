@@ -37,7 +37,6 @@ class EmailJobRabbitMQConsumer:
         *,
         body: bytes,
         delivery_tag: int,
-        acknowledger: EmailJobRabbitMQAcknowledger,
     ) -> EmailJobConsumerHandleResult:
         try:
             message = decode_email_job_dispatch_message(body)
@@ -49,7 +48,6 @@ class EmailJobRabbitMQConsumer:
                     "error": str(exc),
                 },
             )
-            acknowledger.ack(delivery_tag=delivery_tag)
             return EmailJobConsumerHandleResult(ack=True)
 
         logger.info(
@@ -70,11 +68,9 @@ class EmailJobRabbitMQConsumer:
                     "email_job_id": str(message.email_job_id),
                 },
             )
-            acknowledger.ack(delivery_tag=delivery_tag)
             return EmailJobConsumerHandleResult(ack=True)
 
         self._log_processing_result(message.email_job_id, result)
-        acknowledger.ack(delivery_tag=delivery_tag)
         return EmailJobConsumerHandleResult(ack=True)
 
     def _log_processing_result(

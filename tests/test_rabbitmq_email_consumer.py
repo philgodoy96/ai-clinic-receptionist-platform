@@ -18,18 +18,6 @@ from app.services.email_job_worker import EmailJobWorkerResult, EmailJobWorkerSe
 from tests.test_email_job_worker import FakeEmailJobWorkerRepository, create_email_job
 
 
-class FakeAcknowledger:
-    def __init__(self) -> None:
-        self.acked: list[int] = []
-        self.nacked: list[tuple[int, bool]] = []
-
-    def ack(self, *, delivery_tag: int) -> None:
-        self.acked.append(delivery_tag)
-
-    def nack(self, *, delivery_tag: int, requeue: bool = False) -> None:
-        self.nacked.append((delivery_tag, requeue))
-
-
 class TrackingEmailJobWorkerService(EmailJobWorkerService):
     def __init__(
         self,
@@ -70,7 +58,6 @@ def test_valid_rabbitmq_message_invokes_process_email_job() -> None:
         worker_id="worker-1",
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
     body = encode_email_job_dispatch_message(
         EmailJobDispatchMessage(email_job_id=email_job_id),
     )
@@ -78,11 +65,9 @@ def test_valid_rabbitmq_message_invokes_process_email_job() -> None:
     result = consumer.handle_delivery(
         body=body,
         delivery_tag=1,
-        acknowledger=acknowledger,
     )
 
     assert result.ack is True
-    assert acknowledger.acked == [1]
     assert worker.processed_job_ids == [email_job_id]
 
 
@@ -113,16 +98,13 @@ def test_invalid_payload_is_acked_without_crashing_consumer() -> None:
         worker_id="worker-1",
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
 
     result = consumer.handle_delivery(
         body=b"not-json",
         delivery_tag=7,
-        acknowledger=acknowledger,
     )
 
     assert result.ack is True
-    assert acknowledger.acked == [7]
     assert worker.processed_job_ids == []
 
 
@@ -135,7 +117,6 @@ def test_missing_job_is_acked_safely() -> None:
         worker_id="worker-1",
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
     body = encode_email_job_dispatch_message(
         EmailJobDispatchMessage(email_job_id=missing_job_id),
     )
@@ -143,11 +124,9 @@ def test_missing_job_is_acked_safely() -> None:
     result = consumer.handle_delivery(
         body=body,
         delivery_tag=3,
-        acknowledger=acknowledger,
     )
 
     assert result.ack is True
-    assert acknowledger.acked == [3]
 
 
 def test_provider_failure_updates_job_retry_state_and_consumer_acks() -> None:
@@ -162,7 +141,6 @@ def test_provider_failure_updates_job_retry_state_and_consumer_acks() -> None:
         backoff_max_seconds=900,
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
     body = encode_email_job_dispatch_message(
         EmailJobDispatchMessage(email_job_id=email_job.id),
     )
@@ -170,11 +148,9 @@ def test_provider_failure_updates_job_retry_state_and_consumer_acks() -> None:
     result = consumer.handle_delivery(
         body=body,
         delivery_tag=5,
-        acknowledger=acknowledger,
     )
 
     assert result.ack is True
-    assert acknowledger.nacked == []
     assert email_job.status == EmailJobStatus.PENDING
     assert email_job.attempt_count == 1
     assert email_job.next_attempt_at is not None
@@ -224,17 +200,15 @@ def test_duplicate_rabbitmq_delivery_sends_email_only_once() -> None:
         worker_id="worker-1",
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
     body = encode_email_job_dispatch_message(
         EmailJobDispatchMessage(email_job_id=email_job.id),
     )
 
-    first = consumer.handle_delivery(body=body, delivery_tag=1, acknowledger=acknowledger)
-    second = consumer.handle_delivery(body=body, delivery_tag=2, acknowledger=acknowledger)
+    first = consumer.handle_delivery(body=body, delivery_tag=1)
+    second = consumer.handle_delivery(body=body, delivery_tag=2)
 
     assert first.ack is True
     assert second.ack is True
-    assert acknowledger.acked == [1, 2]
     assert len(provider.sent_messages) == 1
     assert email_job.status == EmailJobStatus.SENT
 
@@ -251,16 +225,14 @@ def test_already_sent_job_delivery_via_consumer_is_ignored() -> None:
         worker_id="worker-1",
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
     body = encode_email_job_dispatch_message(
         EmailJobDispatchMessage(email_job_id=email_job.id),
     )
 
-    result = consumer.handle_delivery(body=body, delivery_tag=4, acknowledger=acknowledger)
+    result = consumer.handle_delivery(body=body, delivery_tag=4)
 
     assert result.ack is True
     assert provider.sent_messages == []
-    assert acknowledger.acked == [4]
 
 
 @pytest.mark.parametrize(
@@ -280,10 +252,8 @@ def test_invalid_rabbitmq_payloads_are_acked_safely(body: bytes) -> None:
         worker_id="worker-1",
     )
     consumer = EmailJobRabbitMQConsumer(worker=worker)
-    acknowledger = FakeAcknowledger()
 
-    result = consumer.handle_delivery(body=body, delivery_tag=9, acknowledger=acknowledger)
+    result = consumer.handle_delivery(body=body, delivery_tag=9)
 
     assert result.ack is True
-    assert acknowledger.acked == [9]
     assert worker.processed_job_ids == []
