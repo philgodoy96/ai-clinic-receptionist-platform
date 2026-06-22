@@ -4,12 +4,15 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MIN_CHECK_AVAILABILITY_LIMIT = 1
 MAX_CHECK_AVAILABILITY_LIMIT = 50
 MIN_HOLD_TTL_SECONDS = 60
 MAX_HOLD_TTL_SECONDS = 900
+MAX_BOOK_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
+MAX_BOOK_APPOINTMENT_NOTES_LENGTH = 500
+_PATIENT_EMAIL_PATTERN = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
 class RetellToolRequestContext(BaseModel):
@@ -131,3 +134,41 @@ class ReleaseAppointmentHoldToolArguments(BaseModel):
 
     hold_id: UUID
     owner_id: str | None = Field(default=None, max_length=120)
+
+
+class BookAppointmentToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hold_id: str | None = Field(default=None, max_length=120)
+    slot_id: UUID | str | None = None
+    patient_name: str = Field(min_length=1, max_length=160)
+    patient_date_of_birth: date
+    patient_email: str = Field(min_length=1, max_length=255, pattern=_PATIENT_EMAIL_PATTERN)
+    patient_phone: str | None = Field(default=None, max_length=40)
+    explicit_confirmation: bool
+    confirmation_text: str | None = Field(
+        default=None,
+        max_length=MAX_BOOK_APPOINTMENT_CONFIRMATION_TEXT_LENGTH,
+    )
+    notes: str | None = Field(
+        default=None,
+        max_length=MAX_BOOK_APPOINTMENT_NOTES_LENGTH,
+    )
+
+    @field_validator("patient_name")
+    @classmethod
+    def validate_patient_name_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_name cannot be blank"
+            raise ValueError(msg)
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_slot_reference(self) -> BookAppointmentToolArguments:
+        has_hold = self.hold_id is not None and self.hold_id.strip() != ""
+        has_slot = self.slot_id is not None and str(self.slot_id).strip() != ""
+        if not has_hold and not has_slot:
+            msg = "either hold_id or slot_id is required"
+            raise ValueError(msg)
+        return self

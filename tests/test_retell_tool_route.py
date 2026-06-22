@@ -617,7 +617,7 @@ def test_unknown_tool_rejected(
         settings=settings,
         json_body={
             "provider_call_id": "retell-call-123",
-            "tool_name": "book_appointment",
+            "tool_name": "cancel_appointment",
             "arguments": {},
         },
     )
