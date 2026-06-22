@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -29,6 +30,11 @@ from app.domain.retell_tools import (
     serialize_tool_call_outcome,
 )
 from app.domain.scheduling.appointment_holds import AppointmentHold
+from app.domain.voice_conversation import (
+    read_voice_context,
+    resolve_check_availability_arguments,
+)
+from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.models.voice_calls import VoiceCall
 from app.schemas.retell_tools import (
@@ -53,6 +59,7 @@ from app.services.scheduling import (
     AvailabilitySlotUnavailableError,
     PatientLookupCriteria,
 )
+from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 
 logger = logging.getLogger("app.retell_tool_adapter")
 
@@ -147,6 +154,29 @@ class AppointmentHoldServiceForRetellToolCalling(Protocol):
         raise NotImplementedError
 
 
+class ConversationServiceForRetellToolCalling(Protocol):
+    def merge_voice_context(
+        self,
+        *,
+        conversation_id: UUID,
+        voice_context: dict[str, Any],
+    ) -> Conversation:
+        raise NotImplementedError
+
+    def clear_voice_active_hold(
+        self,
+        *,
+        conversation_id: UUID,
+    ) -> Conversation:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class _VoiceConversationSession:
+    conversation: Conversation
+    voice_context: dict[str, Any]
+
+
 class RetellToolCallingAdapter:
     def __init__(
         self,
@@ -155,6 +185,8 @@ class RetellToolCallingAdapter:
         hold_service: AppointmentHoldServiceForRetellToolCalling,
         voice_calls: VoiceCallRepositoryForRetellToolCalling,
         scheduling_tools: RetellSchedulingToolAdapter | None = None,
+        voice_conversation_bridge: VoiceConversationBridgeService | None = None,
+        conversations: ConversationServiceForRetellToolCalling | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
         self.scheduling_service = scheduling_service
@@ -163,6 +195,8 @@ class RetellToolCallingAdapter:
         self.scheduling_tools = scheduling_tools or RetellSchedulingToolAdapter(
             scheduling_service,
         )
+        self.voice_conversation_bridge = voice_conversation_bridge
+        self.conversations = conversations
         self.provider = provider
 
     def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
@@ -242,13 +276,24 @@ class RetellToolCallingAdapter:
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
         arguments = _as_check_availability_arguments(parsed.arguments)
+        voice_session = self._ensure_voice_conversation(parsed)
+        voice_context = voice_session.voice_context if voice_session is not None else {}
+
+        resolved_arguments = resolve_check_availability_arguments(arguments, voice_context)
+        if resolved_arguments is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=RETELL_TOOL_ARGUMENTS_INVALID_CODE,
+            )
+
         payload = RetellCheckAvailabilityRequest(
             call_id=parsed.provider_call_id,
-            doctor_id=arguments.doctor_id,
-            doctor_name=arguments.doctor_name,
-            specialty_name=arguments.specialty_name,
-            start_from=arguments.start_from,
-            start_to=arguments.start_to,
+            doctor_id=resolved_arguments.doctor_id,
+            doctor_name=resolved_arguments.doctor_name,
+            specialty_name=resolved_arguments.specialty_name,
+            start_from=resolved_arguments.start_from,
+            start_to=resolved_arguments.start_to,
         )
         legacy_response = self.scheduling_tools.check_availability(payload)
 
@@ -260,8 +305,15 @@ class RetellToolCallingAdapter:
         result = dict(response.result)
         slots = result.get("available_slots")
 
-        if isinstance(slots, list) and arguments.limit is not None:
-            result["available_slots"] = slots[: arguments.limit]
+        if isinstance(slots, list) and resolved_arguments.limit is not None:
+            result["available_slots"] = slots[: resolved_arguments.limit]
+
+        if voice_session is not None:
+            self._update_voice_context_after_check_availability(
+                conversation_id=voice_session.conversation.id,
+                arguments=resolved_arguments,
+                result=result,
+            )
 
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -273,10 +325,14 @@ class RetellToolCallingAdapter:
         self,
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
+        voice_session = self._ensure_voice_conversation(parsed)
         arguments = _as_hold_arguments(parsed.arguments)
         owner_id = self._resolve_hold_owner_id(
             provider_call_id=parsed.provider_call_id,
             owner_id=arguments.owner_id,
+            conversation_id=(
+                voice_session.conversation.id if voice_session is not None else None
+            ),
         )
 
         if owner_id is None:
@@ -331,6 +387,12 @@ class RetellToolCallingAdapter:
                 error_code="appointment_hold_ownership_error",
             )
 
+        if voice_session is not None:
+            self._update_voice_context_after_hold(
+                conversation_id=voice_session.conversation.id,
+                hold=hold,
+            )
+
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
             tool_call_id=parsed.tool_call_id,
@@ -348,10 +410,14 @@ class RetellToolCallingAdapter:
         self,
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
+        voice_session = self._ensure_voice_conversation(parsed)
         arguments = _as_release_arguments(parsed.arguments)
         owner_id = self._resolve_hold_owner_id(
             provider_call_id=parsed.provider_call_id,
             owner_id=arguments.owner_id,
+            conversation_id=(
+                voice_session.conversation.id if voice_session is not None else None
+            ),
         )
 
         if owner_id is None:
@@ -373,11 +439,95 @@ class RetellToolCallingAdapter:
                 error_code="appointment_hold_ownership_error",
             )
 
+        if voice_session is not None:
+            self._clear_voice_active_hold_context(conversation_id=voice_session.conversation.id)
+
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
             tool_call_id=parsed.tool_call_id,
             result={"released": True, "hold_id": str(arguments.hold_id)},
         )
+
+    def _ensure_voice_conversation(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> _VoiceConversationSession | None:
+        if self.voice_conversation_bridge is None:
+            return None
+
+        voice_call = self.voice_calls.get_by_provider_call_id(
+            provider=self.provider,
+            provider_call_id=parsed.provider_call_id,
+        )
+        if voice_call is None:
+            return None
+
+        conversation = self.voice_conversation_bridge.get_or_create_conversation_for_call(
+            self.provider,
+            parsed.provider_call_id,
+        )
+
+        return _VoiceConversationSession(
+            conversation=conversation,
+            voice_context=read_voice_context(conversation.conversation_metadata),
+        )
+
+    def _update_voice_context_after_check_availability(
+        self,
+        *,
+        conversation_id: UUID,
+        arguments: CheckAvailabilityToolArguments,
+        result: dict[str, Any],
+    ) -> None:
+        if self.conversations is None:
+            return
+
+        voice_context: dict[str, Any] = {}
+        if arguments.specialty_name is not None:
+            voice_context["specialty_name"] = arguments.specialty_name
+        if arguments.doctor_name is not None:
+            voice_context["doctor_name"] = arguments.doctor_name
+
+        doctor_id = result.get("doctor_id")
+        if doctor_id is not None:
+            voice_context["doctor_id"] = str(doctor_id)
+
+        if arguments.start_from is not None:
+            voice_context["requested_date"] = arguments.start_from.date().isoformat()
+
+        if not voice_context:
+            return
+
+        self.conversations.merge_voice_context(
+            conversation_id=conversation_id,
+            voice_context=voice_context,
+        )
+
+    def _update_voice_context_after_hold(
+        self,
+        *,
+        conversation_id: UUID,
+        hold: AppointmentHold,
+    ) -> None:
+        if self.conversations is None:
+            return
+
+        self.conversations.merge_voice_context(
+            conversation_id=conversation_id,
+            voice_context={
+                "hold_id": str(hold.hold_id),
+                "availability_slot_id": str(hold.availability_slot_id),
+                "doctor_id": str(hold.doctor_id),
+                "start_time": hold.start_time.isoformat(),
+                "end_time": hold.end_time.isoformat(),
+            },
+        )
+
+    def _clear_voice_active_hold_context(self, *, conversation_id: UUID) -> None:
+        if self.conversations is None:
+            return
+
+        self.conversations.clear_voice_active_hold(conversation_id=conversation_id)
 
     def _translate_legacy_response(
         self,
@@ -473,6 +623,7 @@ class RetellToolCallingAdapter:
         *,
         provider_call_id: str,
         owner_id: str | None,
+        conversation_id: UUID | None = None,
     ) -> str | None:
         for candidate in [owner_id, provider_call_id]:
             if candidate is None:
@@ -482,6 +633,9 @@ class RetellToolCallingAdapter:
 
             if normalized:
                 return normalized
+
+        if conversation_id is not None:
+            return str(conversation_id)
 
         return None
 

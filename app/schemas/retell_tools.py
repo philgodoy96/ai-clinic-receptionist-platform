@@ -93,8 +93,8 @@ class CheckAvailabilityToolArguments(BaseModel):
     doctor_id: UUID | None = None
     doctor_name: str | None = Field(default=None, max_length=160)
     specialty_name: str | None = Field(default=None, max_length=120)
-    start_from: datetime
-    start_to: datetime
+    start_from: datetime | None = None
+    start_to: datetime | None = None
     limit: int | None = Field(
         default=None,
         ge=MIN_CHECK_AVAILABILITY_LIMIT,
@@ -103,7 +103,11 @@ class CheckAvailabilityToolArguments(BaseModel):
 
     @model_validator(mode="after")
     def validate_availability_window(self) -> CheckAvailabilityToolArguments:
-        if self.start_to <= self.start_from:
+        if (
+            self.start_from is not None
+            and self.start_to is not None
+            and self.start_to <= self.start_from
+        ):
             msg = "start_to must be greater than start_from"
             raise ValueError(msg)
 
