@@ -116,6 +116,60 @@ def build_rejected_tool_call_response(
     )
 
 
+def build_failed_tool_call_response(
+    *,
+    tool_name: str,
+    tool_call_id: str | None,
+    error_code: str,
+    result: dict[str, Any] | None = None,
+) -> RetellToolCallResponse:
+    return RetellToolCallResponse(
+        status=RetellToolCallStatus.FAILED,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        result=result or {},
+        error_code=error_code,
+    )
+
+
+def build_succeeded_tool_call_response(
+    *,
+    tool_name: str,
+    tool_call_id: str | None,
+    result: dict[str, Any],
+    duplicate: bool = False,
+) -> RetellToolCallResponse:
+    return RetellToolCallResponse(
+        status=RetellToolCallStatus.SUCCEEDED,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        result=result,
+        duplicate=duplicate,
+    )
+
+
+def build_retell_tool_call_idempotency_key(
+    *,
+    provider: str,
+    provider_call_id: str,
+    tool_name: str,
+    tool_call_id: str,
+) -> str:
+    return f"{provider}:{provider_call_id}:tool:{tool_name}:{tool_call_id}"
+
+
+def build_retell_tool_call_event_type(tool_name: RetellSupportedToolName) -> str:
+    return f"retell_tool:{tool_name.value}"
+
+
+def serialize_tool_call_outcome(response: RetellToolCallResponse) -> dict[str, Any]:
+    return response.model_dump(mode="json")
+
+
+def deserialize_tool_call_outcome(payload: dict[str, Any]) -> RetellToolCallResponse:
+    return RetellToolCallResponse.model_validate(payload)
+
+
 def _parse_tool_arguments(
     tool_name: RetellSupportedToolName,
     arguments: dict[str, Any],

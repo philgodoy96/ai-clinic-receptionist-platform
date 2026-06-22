@@ -254,6 +254,13 @@ class FakeAppointmentHoldRepository:
     def get(self, *, doctor_id: UUID, start_time: datetime) -> AppointmentHold | None:
         return self.holds.get((doctor_id, start_time))
 
+    def get_by_hold_id(self, hold_id: UUID) -> AppointmentHold | None:
+        for hold in self.holds.values():
+            if hold.hold_id == hold_id:
+                return hold
+
+        return None
+
     def delete(self, *, doctor_id: UUID, start_time: datetime) -> None:
         self.holds.pop((doctor_id, start_time), None)
 
@@ -262,7 +269,7 @@ class FakeRedisClient:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
 
-    def set(self, name: str, value: str, ex: int, nx: bool) -> bool:
+    def set(self, name: str, value: str, ex: int, nx: bool = False) -> bool:
         if nx and name in self.values:
             return False
 
