@@ -20,6 +20,7 @@ The implementation includes:
 - safe voice conversation context
 - Retell tool adapter integration with conversation context
 - voice booking context resolution for `book_appointment`
+- voice cancellation context resolution for `cancel_appointment`
 - internal/debug context endpoint
 
 See also:
@@ -27,6 +28,7 @@ See also:
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
+- [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Conversation Domain](conversation-domain.md)
 
@@ -87,6 +89,7 @@ Safe context may include scheduling-related fields such as:
 - `requested_time_window`
 - `selected_availability_slot_id`
 - active hold fields (`hold_id`, `availability_slot_id`, `start_time`, `end_time`)
+- `appointment_id` and `appointment_status` after booking or cancellation
 
 `VoiceConversationBridgeService` and the Retell tool adapter read and merge only allowlisted keys. Blocked keys include transcripts, raw provider payloads, secrets, and raw phone numbers.
 
@@ -101,6 +104,8 @@ Before executing supported scheduling tools, the Retell tool adapter ensures the
 `release_appointment_hold` clears active hold fields from `voice_context` while preserving non-hold scheduling preferences when present.
 
 `book_appointment` reads active hold fields from `voice_context`, validates hold ownership and expiration, and on success clears hold fields while storing a safe `appointment_id` reference. On recoverable booking failure, useful hold context is preserved so the caller can retry without re-holding.
+
+`cancel_appointment` resolves the target appointment from tool arguments or linked `voice_context`, requires explicit cancellation confirmation, and on success updates `appointment_status` to `cancelled` while clearing active hold fields when present.
 
 ## Internal Debug Endpoint
 
@@ -132,7 +137,6 @@ The two context namespaces are separate so chat and voice adapters do not overwr
 
 Future implementation phases may add:
 
-- cancel appointment via voice
 - reschedule appointment via voice
 - transcript summary persistence
 - deployment runbook
