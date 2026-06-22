@@ -36,6 +36,8 @@ Conversation metadata and message history do not own scheduling truth.
 
 `chat_context` inside `conversation_metadata` is conversational memory only. It helps the chat layer remember what the user has already said across turns, but it is not authoritative for appointments, availability, patients, doctors, or specialties.
 
+`voice_context` inside `conversation_metadata` is conversational memory for Retell voice tool flows. It may store safe scheduling criteria, selected slot identifiers, and active hold fields so voice tools can continue a multi-turn scheduling conversation. Like `chat_context`, it is not authoritative for appointments, availability, patients, doctors, or specialties. Redis hold state is the actual temporary hold truth. The `appointments` table in PostgreSQL is the durable source of truth for confirmed bookings.
+
 `chat_context` may store values such as `offered_slots`, `hold_id`, `patient_identity`, and `appointment_id` so the chat layer can continue a multi-turn hold and booking flow. These values are conversational memory only. Redis hold state is the actual temporary hold truth. The `appointments` table in PostgreSQL is the durable source of truth for confirmed bookings. Conversation metadata does not replace Redis or scheduling storage.
 
 They may reference scheduling context in assistant replies, but appointments, availability, patients, doctors, and specialties remain authoritative in scheduling storage.
@@ -62,6 +64,8 @@ Fields include:
 
 `conversation_metadata` may include a `chat_context` object for conversational state such as selected doctor, selected specialty, requested date, `offered_slots`, `hold_id`, `patient_identity`, and `appointment_id`. This is conversational memory for multi-turn chat guidance, not business truth. Redis hold state is the actual temporary hold truth. Confirmed appointment truth lives in the Postgres `appointments` table and related scheduling services.
 
+`conversation_metadata` may also include a `voice_context` object for safe Retell voice scheduling state such as requested date, requested time window, selected availability slot, and active hold fields. See [Voice Conversation Bridge](voice-conversation-bridge.md).
+
 ### ConversationMessage
 
 A conversation message represents one message or tool-related entry.
@@ -81,6 +85,7 @@ Fields include:
 Supported channels:
 
 - chat
+- voice
 - retell_voice
 - system
 
