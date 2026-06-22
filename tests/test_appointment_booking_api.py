@@ -34,6 +34,7 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
+from tests.retell_webhook_support import configure_retell_for_tests
 
 
 @pytest.fixture()
@@ -93,6 +94,7 @@ def booking_context() -> BookingApiContext:
 @pytest.fixture()
 def client(booking_context: BookingApiContext) -> Generator[TestClient, None, None]:
     app = create_app()
+    configure_retell_for_tests(app)
     audit_logs = FakeAuditLogService()
     email_jobs = FakeEmailJobService()
 
