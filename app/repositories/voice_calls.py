@@ -1,12 +1,17 @@
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from app.domain.voice_calls.enums import VoiceCallStatus
 from app.models.voice_calls import VoiceCall, VoiceCallEvent
+from app.services.voice_call_pagination import VoiceCallCursor, VoiceCallEventCursor
 
 
 class VoiceCallRepository(Protocol):
+    def get_by_id(self, voice_call_id: UUID) -> VoiceCall | None:
+        raise NotImplementedError
+
     def get_by_provider_call_id(
         self,
         *,
@@ -43,8 +48,11 @@ class VoiceCallRepository(Protocol):
         self,
         *,
         limit: int,
+        cursor: VoiceCallCursor | None = None,
         status: VoiceCallStatus | None = None,
         provider: str | None = None,
+        provider_call_id: str | None = None,
+        created_after: datetime | None = None,
     ) -> Sequence[VoiceCall]:
         raise NotImplementedError
 
@@ -53,5 +61,6 @@ class VoiceCallRepository(Protocol):
         *,
         voice_call_id: UUID,
         limit: int,
+        cursor: VoiceCallEventCursor | None = None,
     ) -> Sequence[VoiceCallEvent]:
         raise NotImplementedError
