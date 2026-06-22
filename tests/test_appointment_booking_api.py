@@ -453,6 +453,17 @@ class FakeAppointmentRepository:
 
         return appointment
 
+    def find_by_rescheduled_from(
+        self,
+        *,
+        appointment_id: UUID,
+    ) -> Appointment | None:
+        for appointment in self.appointments:
+            if appointment.rescheduled_from_appointment_id == appointment_id:
+                return appointment
+
+        return None
+
 
 class FakeAppointmentHoldRepository:
     def __init__(self) -> None:

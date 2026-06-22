@@ -27,6 +27,7 @@ See also:
 
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
+- [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md)
 - [Voice Conversation Bridge](voice-conversation-bridge.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
 
@@ -67,11 +68,13 @@ Cancellation is implemented as a shared backend service.
 
 Voice is only one channel into that service.
 
+Rescheduling is implemented separately as a shared backend service in `AppointmentReschedulingService`. Voice cancellation does not perform rescheduling directly. See [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md).
+
 ## Future Work
 
 Future implementation phases may add:
 
-- reschedule appointment via voice
+- Retell voice reschedule tool delegating to `AppointmentReschedulingService`
 - cancellation notification email if supported by the notification system
 - cancellation through written chat
 - Retell dashboard setup runbook
