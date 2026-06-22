@@ -5,10 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
-from app.ai.llm_provider import LLMProviderName
+from app.ai.groq_provider import GroqLLMProvider
+from app.ai.llm_provider import LLMProviderError, LLMProviderName
 from app.ai.llm_reliability import LLMFailureReason
 from app.api.dependencies import get_llm_receptionist_analysis_service
+from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
 from tests.llm_reliability_test_helpers import (
     AlwaysFailingLLMProvider,
@@ -16,6 +19,11 @@ from tests.llm_reliability_test_helpers import (
     analysis_request,
     assert_result_reliability_metadata,
     build_orchestration_service,
+)
+from tests.test_groq_llm_provider import (
+    SequentialStubGroqHttpClient,
+    build_groq_provider_with_client,
+    build_valid_chat_completion_response,
 )
 from tests.test_llm_provider_config import load_settings
 
@@ -201,7 +209,7 @@ def test_fallback_provider_not_instantiated_when_disabled(
     settings = load_settings(monkeypatch, LLM_FALLBACK_ENABLED="false")
 
     with patch(
-        "app.api.dependencies.create_llm_provider_from_settings",
+        "app.ai.provider_factory.create_llm_provider_from_settings",
     ) as create_provider:
         create_provider.return_value = FakeLLMProvider()
         service = get_llm_receptionist_analysis_service(settings=settings)
@@ -255,3 +263,133 @@ def test_bedrock_fallback_can_be_configured_with_mocked_provider_factory(
     assert service.fallback_provider is not None
     assert service.primary_provider_name == LLMProviderName.FAKE
     assert service.fallback_provider_name == LLMProviderName.BEDROCK
+
+
+def test_groq_fallback_not_instantiated_when_fallback_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_FALLBACK_ENABLED="false",
+        LLM_FALLBACK_PROVIDER="groq",
+    )
+
+    with patch("app.ai.groq_provider.GroqLLMProvider") as groq_cls:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    groq_cls.assert_not_called()
+    assert service is not None
+    assert service.fallback_provider is None
+
+
+def test_groq_primary_with_bedrock_fallback_config_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+        LLM_FALLBACK_ENABLED="true",
+        LLM_FALLBACK_PROVIDER="bedrock",
+        BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0",
+    )
+    stub_client = MagicMock()
+
+    with patch(
+        "app.ai.bedrock_llm_provider.BedrockLLMProvider._create_client",
+        return_value=stub_client,
+    ) as create_client:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    assert service is not None
+    assert isinstance(service.primary_provider, GroqLLMProvider)
+    assert service.fallback_provider is not None
+    create_client.assert_called_once()
+    assert service.primary_provider_name == LLMProviderName.GROQ
+    assert service.fallback_provider_name == LLMProviderName.BEDROCK
+
+
+def test_bedrock_primary_with_groq_fallback_config_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="bedrock",
+        BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0",
+        LLM_FALLBACK_ENABLED="true",
+        LLM_FALLBACK_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+    )
+    stub_client = MagicMock()
+
+    with patch(
+        "app.ai.bedrock_llm_provider.BedrockLLMProvider._create_client",
+        return_value=stub_client,
+    ) as create_client:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    assert service is not None
+    create_client.assert_called_once()
+    assert isinstance(service.primary_provider, BedrockLLMProvider)
+    assert isinstance(service.fallback_provider, GroqLLMProvider)
+    assert service.primary_provider_name == LLMProviderName.BEDROCK
+    assert service.fallback_provider_name == LLMProviderName.GROQ
+
+
+def test_groq_primary_failure_uses_fake_fallback_in_orchestration() -> None:
+    primary_client = SequentialStubGroqHttpClient(
+        steps=[
+            (None, LLMProviderError("Groq server error: 503")),
+        ],
+    )
+    primary = build_groq_provider_with_client(primary_client)
+    fallback = CountingLLMProvider(
+        content=build_receptionist_analysis_payload(),
+        name="fallback",
+    )
+    service = LLMReceptionistAnalysisService(
+        primary_provider=primary,
+        fallback_provider=fallback,
+        primary_provider_name=LLMProviderName.GROQ,
+        fallback_provider_name=LLMProviderName.FAKE,
+        max_primary_attempts=1,
+        max_fallback_attempts=1,
+    )
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary_client.call_count == 1
+    assert fallback.call_count == 1
+    assert result.used_fallback_provider is True
+    assert result.provider == LLMProviderName.FAKE.value
+    assert result.primary_provider == LLMProviderName.GROQ.value
+    assert result.fallback_provider == LLMProviderName.FAKE.value
+
+
+def test_fake_primary_failure_uses_mocked_groq_fallback_in_orchestration() -> None:
+    primary = AlwaysFailingLLMProvider()
+    payload = build_receptionist_analysis_payload()
+    fallback_client = SequentialStubGroqHttpClient(
+        steps=[
+            (build_valid_chat_completion_response(content=payload), None),
+        ],
+    )
+    fallback = build_groq_provider_with_client(fallback_client)
+    service = LLMReceptionistAnalysisService(
+        primary_provider=primary,
+        fallback_provider=fallback,
+        primary_provider_name=LLMProviderName.FAKE,
+        fallback_provider_name=LLMProviderName.GROQ,
+        max_primary_attempts=1,
+        max_fallback_attempts=1,
+    )
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary.call_count == 1
+    assert fallback_client.call_count == 1
+    assert result.used_fallback_provider is True
+    assert result.provider == LLMProviderName.GROQ.value
+    assert result.fallback_provider == LLMProviderName.GROQ.value

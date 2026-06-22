@@ -35,6 +35,23 @@ Provider mode runs the dataset against the configured LLM provider through the s
 - deterministic fallback after exhaustion
 - `failure_reason`, `failure_category`, and attempt metadata on failed cases
 
+With Groq configured as the primary provider, provider mode calls Groq only when both `--mode provider` and `--allow-provider-calls` are set and `GROQ_API_KEY` / `GROQ_MODEL` are present in the environment.
+
+Example Groq configuration for a manual provider-run check:
+
+```env
+LLM_PRIMARY_PROVIDER=groq
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_RESPONSE_FORMAT=json_schema
+LLM_MAX_PRIMARY_ATTEMPTS=2
+LLM_FALLBACK_ENABLED=false
+```
+
+```powershell
+python -m scripts.evaluate_receptionist_analysis --mode provider --allow-provider-calls --fail-on-errors
+```
+
 It requires explicit confirmation:
 
 ```powershell
@@ -68,9 +85,11 @@ Provider-run evaluation does not:
 
 ## Testing Boundary
 
-Automated tests do not call real Bedrock.
+Automated tests do not call real Groq or Bedrock.
 
 Tests use fake or stub providers.
+
+Recorded mode remains offline and does not instantiate any real provider adapter.
 
 ## Future Work
 
@@ -83,4 +102,4 @@ Future implementation phases may add:
 - cost estimates
 - regression report artifacts
 
-See also: [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).
+See also: [Groq LLM Provider](groq-llm-provider.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).

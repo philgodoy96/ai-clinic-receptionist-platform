@@ -5,7 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-from app.ai.llm_provider import LLMProvider
 from app.evals.provider_receptionist_analysis import (
     ProviderEvaluationCaseOutput,
     ProviderReceptionistAnalysisEvaluator,
@@ -20,6 +19,7 @@ from app.evals.receptionist_analysis import (
     evaluate_receptionist_analysis_cases,
     load_receptionist_analysis_eval_cases,
 )
+from app.services.llm_receptionist import LLMReceptionistAnalysisService
 
 DEFAULT_DATASET_PATH = Path("evals/receptionist_analysis.jsonl")
 
@@ -66,21 +66,24 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _create_llm_provider_for_evaluation() -> LLMProvider:
-    from app.ai.provider_factory import build_llm_provider
+def _create_llm_receptionist_analysis_service_for_evaluation() -> LLMReceptionistAnalysisService:
     from app.core.config import get_settings
+    from app.services.llm_receptionist import (
+        build_llm_receptionist_analysis_service_from_settings,
+    )
 
-    return build_llm_provider(get_settings())
+    service = build_llm_receptionist_analysis_service_from_settings(get_settings())
+    if service is None:
+        raise RuntimeError(
+            "LLM analysis is disabled. Set LLM_ENABLED=true for provider evaluation.",
+        )
+    return service
 
 
 def _run_provider_evaluation(
     cases: list[ReceptionistAnalysisEvalCase],
 ) -> tuple[EvaluationSummary, tuple[ProviderEvaluationCaseOutput, ...]]:
-    from app.services.llm_receptionist import LLMReceptionistAnalysisService
-
-    llm_analysis_service = LLMReceptionistAnalysisService(
-        provider=_create_llm_provider_for_evaluation(),
-    )
+    llm_analysis_service = _create_llm_receptionist_analysis_service_for_evaluation()
     evaluator = ProviderReceptionistAnalysisEvaluator(
         llm_analysis_service=llm_analysis_service,
     )

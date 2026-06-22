@@ -86,6 +86,10 @@ Local development and CI should keep:
 
     LLM_PROVIDER=fake
 
+No Groq API key is required for the default local flow.
+
+Optional Groq configuration is for hosted public demo only. See `docs/architecture/groq-llm-provider.md`.
+
 Optional Bedrock configuration requires runtime AWS credentials and is not needed for the default demo flow.
 
 ## Public Demo Guardrails

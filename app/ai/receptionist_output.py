@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -56,3 +59,11 @@ def fallback_receptionist_analysis() -> ReceptionistLLMAnalysis:
         confidence=0.0,
         urgency=ReceptionistUrgency.NORMAL,
     )
+
+
+def build_receptionist_analysis_openai_json_schema() -> dict[str, Any]:
+    return {
+        "name": "ReceptionistLLMAnalysis",
+        "strict": True,
+        "schema": ReceptionistLLMAnalysis.model_json_schema(),
+    }

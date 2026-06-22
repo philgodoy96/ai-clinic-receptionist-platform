@@ -3,7 +3,7 @@ from functools import lru_cache
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.ai.llm_provider import LLMProviderName
+from app.ai.llm_provider import GroqResponseFormat, LLMProviderName
 
 
 class Settings(BaseSettings):
@@ -98,6 +98,26 @@ class Settings(BaseSettings):
     bedrock_max_tokens: int = Field(default=800, alias="BEDROCK_MAX_TOKENS")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    groq_model: str = Field(default="", alias="GROQ_MODEL")
+    groq_base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        alias="GROQ_BASE_URL",
+    )
+    groq_request_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        alias="GROQ_REQUEST_TIMEOUT_SECONDS",
+    )
+    groq_max_output_tokens: int = Field(
+        default=800,
+        ge=1,
+        alias="GROQ_MAX_OUTPUT_TOKENS",
+    )
+    groq_temperature: float = Field(default=0.0, ge=0.0, le=2.0, alias="GROQ_TEMPERATURE")
+    groq_response_format: GroqResponseFormat = Field(
+        default=GroqResponseFormat.JSON_SCHEMA,
+        alias="GROQ_RESPONSE_FORMAT",
+    )
 
     public_demo_mode: bool = Field(default=False, alias="PUBLIC_DEMO_MODE")
     # When public_demo_mode is true without guardrails, the demo is exposed without
@@ -166,14 +186,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_llm_provider_settings(self) -> "Settings":
-        self._validate_bedrock_provider_config(self.resolved_llm_primary_provider)
+        self._validate_llm_provider_config(self.resolved_llm_primary_provider)
 
         if self.llm_fallback_enabled:
             if self.llm_fallback_provider is None:
                 raise ValueError(
                     "LLM_FALLBACK_PROVIDER is required when LLM_FALLBACK_ENABLED is true",
                 )
-            self._validate_bedrock_provider_config(self.llm_fallback_provider)
+            self._validate_llm_provider_config(self.llm_fallback_provider)
 
         self._validate_email_provider_settings()
 
@@ -191,11 +211,21 @@ class Settings(BaseSettings):
         if not self.email_from_address.strip():
             raise ValueError("EMAIL_FROM_ADDRESS is required when EMAIL_PROVIDER is resend")
 
-    def _validate_bedrock_provider_config(self, provider: LLMProviderName) -> None:
+    def _validate_llm_provider_config(self, provider: LLMProviderName) -> None:
         if provider == LLMProviderName.BEDROCK and not self.bedrock_model_id.strip():
             raise ValueError(
                 "BEDROCK_MODEL_ID is required when a configured LLM provider is bedrock",
             )
+
+        if provider == LLMProviderName.GROQ:
+            if not self.groq_api_key.strip():
+                raise ValueError(
+                    "GROQ_API_KEY is required when a configured LLM provider is groq",
+                )
+            if not self.groq_model.strip():
+                raise ValueError(
+                    "GROQ_MODEL is required when a configured LLM provider is groq",
+                )
 
 
 @lru_cache

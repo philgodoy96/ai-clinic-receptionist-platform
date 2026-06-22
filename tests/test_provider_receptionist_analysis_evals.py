@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.groq_provider import GroqLLMProvider
 from app.ai.llm_provider import LLMProviderError, LLMRequest, LLMResponse
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
 from app.evals.provider_receptionist_analysis import (
@@ -16,14 +19,20 @@ from app.evals.receptionist_analysis import (
     EvaluationInput,
     EvaluationMode,
     ReceptionistAnalysisEvalCase,
+    evaluate_receptionist_analysis_cases,
+    load_receptionist_analysis_eval_cases,
 )
-from app.services.llm_receptionist import LLMReceptionistAnalysisService
+from app.services.llm_receptionist import (
+    LLMReceptionistAnalysisService,
+    build_llm_receptionist_analysis_service_from_settings,
+)
 from tests.eval_report_test_helpers import assert_report_excludes_secret_like_keys
 from tests.llm_provider_test_helpers import (
     RaisingLLMProvider,
     StaticContentLLMProvider,
     build_receptionist_analysis_payload,
 )
+from tests.test_llm_provider_config import load_settings
 
 
 def _default_prompt_version() -> str:
@@ -239,3 +248,69 @@ def test_build_evaluation_report_excludes_secret_like_keys(tmp_path: Path) -> No
     )
 
     assert_report_excludes_secret_like_keys(cast(dict[str, Any], report))
+
+
+def test_provider_eval_builds_groq_service_from_settings_without_real_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+    )
+    case = _build_case(message="Hello", intent="greeting")
+
+    service = build_llm_receptionist_analysis_service_from_settings(settings)
+    assert service is not None
+    assert isinstance(service.primary_provider, GroqLLMProvider)
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(
+            service.primary_provider,
+            "complete",
+            FakeLLMProvider().complete,
+        )
+        summary = run_provider_receptionist_analysis_evaluation(
+            cases=[case],
+            llm_analysis_service=service,
+        )
+
+    assert summary.passed_cases == 1
+    assert summary.failed_cases == 0
+
+
+def test_recorded_eval_stays_offline_without_groq_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    case = _build_case()
+    dataset_path = tmp_path / "cases.jsonl"
+    dataset_path.write_text(
+        (
+            "{"
+            f'"id":"{case.id}",'
+            f'"prompt_version":"{case.prompt_version}",'
+            '"input":{"message":"Hello"},'
+            '"expected":{"intent":"greeting","urgency":"normal","requires_human":false,'
+            '"safety_flags":[],"extracted":{"specialty":null,"doctor":null,"date":null,"time":null}},'
+            '"recorded_output":{"intent":"greeting","urgency":"normal","requires_human":false,'
+            '"safety_flags":[],"extracted":{"specialty":null,"doctor":null,"date":null,"time":null}}'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(
+            "app.ai.groq_provider.GroqLLMProvider",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("recorded eval must not instantiate Groq"),
+            ),
+        )
+        cases = load_receptionist_analysis_eval_cases(dataset_path)
+        summary = evaluate_receptionist_analysis_cases(cases, mode=EvaluationMode.RECORDED)
+
+    assert summary.mode == EvaluationMode.RECORDED
+    assert summary.passed_cases == 1
+    assert summary.failed_cases == 0
