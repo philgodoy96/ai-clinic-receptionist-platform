@@ -19,12 +19,14 @@ The implementation includes:
 - `VoiceConversationBridgeService`
 - safe voice conversation context
 - Retell tool adapter integration with conversation context
+- voice booking context resolution for `book_appointment`
 - internal/debug context endpoint
 
 See also:
 
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
+- [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Conversation Domain](conversation-domain.md)
 
@@ -65,7 +67,7 @@ The bridge is responsible for:
 
 The bridge is not responsible for:
 
-- booking appointments
+- executing booking business logic
 - sending emails
 - calling LLMs
 - storing transcripts
@@ -98,6 +100,8 @@ Before executing supported scheduling tools, the Retell tool adapter ensures the
 
 `release_appointment_hold` clears active hold fields from `voice_context` while preserving non-hold scheduling preferences when present.
 
+`book_appointment` reads active hold fields from `voice_context`, validates hold ownership and expiration, and on success clears hold fields while storing a safe `appointment_id` reference. On recoverable booking failure, useful hold context is preserved so the caller can retry without re-holding.
+
 ## Internal Debug Endpoint
 
 For local verification and demo debugging only:
@@ -128,7 +132,6 @@ The two context namespaces are separate so chat and voice adapters do not overwr
 
 Future implementation phases may add:
 
-- voice booking after explicit confirmation
 - cancel appointment via voice
 - reschedule appointment via voice
 - transcript summary persistence
