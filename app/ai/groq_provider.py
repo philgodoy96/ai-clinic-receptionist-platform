@@ -17,6 +17,8 @@ from app.ai.llm_provider import (
 )
 from app.ai.receptionist_output import build_receptionist_analysis_openai_json_schema
 
+GROQ_HTTP_USER_AGENT = "ai-clinic-receptionist-platform/1.0"
+
 
 class GroqHttpClient(Protocol):
     def post_chat_completion(
@@ -50,11 +52,13 @@ class UrllibGroqHttpClient:
             with urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8")
         except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace").strip()
+            error_suffix = f": {error_body}" if error_body else ""
             if exc.code == 429:
                 raise LLMProviderRateLimitError("Groq rate limit exceeded") from exc
             if exc.code >= 500:
-                raise LLMProviderError(f"Groq server error: {exc.code}") from exc
-            raise LLMProviderError(f"Groq request failed: {exc.code}") from exc
+                raise LLMProviderError(f"Groq server error: {exc.code}{error_suffix}") from exc
+            raise LLMProviderError(f"Groq request failed: {exc.code}{error_suffix}") from exc
         except TimeoutError as exc:
             raise LLMProviderTimeoutError("Groq request timed out") from exc
         except URLError as exc:
@@ -105,6 +109,7 @@ class GroqLLMProvider:
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
+                    "User-Agent": GROQ_HTTP_USER_AGENT,
                 },
                 payload=payload,
                 timeout_seconds=self._timeout_seconds,

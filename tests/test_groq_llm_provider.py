@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.ai.groq_provider import GroqLLMProvider
+from app.ai.groq_provider import GROQ_HTTP_USER_AGENT, GroqLLMProvider
 from app.ai.llm_provider import (
     GroqResponseFormat,
     LLMFinishReason,
@@ -275,6 +275,7 @@ def test_groq_sends_json_object_response_format_when_configured() -> None:
     assert client.last_url == "https://api.groq.com/openai/v1/chat/completions"
     assert client.last_headers is not None
     assert client.last_headers["Authorization"] == "Bearer gsk_test"
+    assert client.last_headers["User-Agent"] == GROQ_HTTP_USER_AGENT
     assert "gsk_test" not in str(client.last_payload)
 
 
