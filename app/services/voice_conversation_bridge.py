@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from app.domain.conversations.enums import ConversationChannel
+from app.domain.voice_cancellation import resolve_cancel_appointment_id_for_conversation
 from app.domain.voice_conversation import (
     ConversationNotFoundForBridgeError,
     VoiceCallNotFoundForBridgeError,
@@ -180,6 +181,18 @@ class VoiceConversationBridgeService:
                 )
             ),
         )
+
+    def resolve_cancel_appointment_id_for_conversation(
+        self,
+        conversation: Conversation,
+        arguments: object,
+    ) -> UUID | None:
+        from app.schemas.retell_tools import CancelAppointmentToolArguments
+
+        if not isinstance(arguments, CancelAppointmentToolArguments):
+            return None
+
+        return resolve_cancel_appointment_id_for_conversation(arguments, conversation)
 
     def _get_voice_call_or_raise(
         self,

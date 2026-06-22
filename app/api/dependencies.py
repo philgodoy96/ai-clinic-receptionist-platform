@@ -21,6 +21,9 @@ from app.messaging.email_job_dispatch import (
     RabbitMQEmailJobDispatchPublisher,
 )
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
+from app.repositories.sqlalchemy.appointments import (
+    SQLAlchemyAppointmentCancellationAttemptRepository,
+)
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
 from app.repositories.sqlalchemy.conversations import SQLAlchemyConversationRepository
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
@@ -37,6 +40,7 @@ from app.repositories.sqlalchemy.voice_booking_attempts import (
 )
 from app.repositories.sqlalchemy.voice_calls import SQLAlchemyVoiceCallRepository
 from app.services.appointment_booking import AppointmentBookingService
+from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
@@ -335,6 +339,17 @@ def get_voice_booking_confirmation_service(
     )
 
 
+def get_appointment_cancellation_service(
+    db: Annotated[Session, Depends(get_db)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> AppointmentCancellationService:
+    return AppointmentCancellationService(
+        appointments=SQLAlchemyAppointmentRepository(db),
+        cancellation_attempts=SQLAlchemyAppointmentCancellationAttemptRepository(db),
+        audit_logs=audit_logs,
+    )
+
+
 def get_retell_tool_calling_adapter(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -347,6 +362,10 @@ def get_retell_tool_calling_adapter(
         VoiceBookingConfirmationService,
         Depends(get_voice_booking_confirmation_service),
     ],
+    appointment_cancellation: Annotated[
+        AppointmentCancellationService,
+        Depends(get_appointment_cancellation_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -356,6 +375,7 @@ def get_retell_tool_calling_adapter(
         voice_conversation_bridge=voice_conversation_bridge,
         conversations=ConversationService(repository=conversation_repository),
         voice_booking_confirmation=voice_booking_confirmation,
+        appointment_cancellation=appointment_cancellation,
         appointments=SQLAlchemyAppointmentRepository(db),
     )
 
