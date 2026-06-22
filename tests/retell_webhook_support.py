@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_retell_signature_verifier
 from app.core.config import Settings, get_settings
 from app.integrations.retell.signature import FakeRetellSignatureVerifier
+from app.schemas.retell_tools import RetellToolCallRequest, RetellToolCallResponse
+from app.services.retell_tool_adapter import RetellToolCallingAdapter
 
 
 def make_retell_enabled_settings(**overrides: Any) -> Settings:
@@ -119,3 +121,22 @@ def install_fake_retell_verifier(
 
     app.dependency_overrides[get_retell_signature_verifier] = override_verifier
     return verifier
+
+
+class TrackingRetellToolCallingAdapter:
+    def __init__(self, adapter: RetellToolCallingAdapter) -> None:
+        self.adapter = adapter
+        self.execute_calls: list[RetellToolCallRequest] = []
+
+    def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
+        self.execute_calls.append(request)
+        return self.adapter.execute(request)
+
+
+class NeverCalledRetellToolCallingAdapter:
+    def __init__(self) -> None:
+        self.execute_calls: list[RetellToolCallRequest] = []
+
+    def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
+        self.execute_calls.append(request)
+        raise AssertionError("adapter must not be called")
