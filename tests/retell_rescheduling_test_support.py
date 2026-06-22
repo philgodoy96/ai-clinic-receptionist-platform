@@ -47,11 +47,16 @@ def reschedule_arguments(
     hold_id: str | None = None,
     new_slot_id: str | None = None,
     explicit_confirmation: bool = True,
+    confirmation_text: str | None = "Yes, please reschedule it.",
+    reschedule_reason: str | None = "Patient requested a new time",
+    patient_name: str | None = "Jane Doe",
+    patient_date_of_birth: str | None = "1990-05-15",
+    patient_email: str | None = "jane.doe@example.com",
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "explicit_confirmation": explicit_confirmation,
-        "confirmation_text": "Yes, please reschedule it.",
-        "reschedule_reason": "Patient requested a new time",
+        "confirmation_text": confirmation_text,
+        "reschedule_reason": reschedule_reason,
     }
     if original_appointment_id is not None:
         payload["original_appointment_id"] = original_appointment_id
@@ -59,7 +64,41 @@ def reschedule_arguments(
         payload["hold_id"] = hold_id
     if new_slot_id is not None:
         payload["new_slot_id"] = new_slot_id
+    if patient_name is not None:
+        payload["patient_name"] = patient_name
+    if patient_date_of_birth is not None:
+        payload["patient_date_of_birth"] = patient_date_of_birth
+    if patient_email is not None:
+        payload["patient_email"] = patient_email
     return payload
+
+
+def valid_reschedule_arguments(
+    *,
+    original_appointment_id: str | None = None,
+    hold_id: str | None = None,
+    new_slot_id: str | None = None,
+    explicit_confirmation: bool = True,
+    confirmation_text: str | None = "Yes, please reschedule it.",
+    reschedule_reason: str | None = "Patient requested a new time",
+    patient_name: str | None = "Jane Doe",
+    patient_date_of_birth: str | None = "1990-05-15",
+    patient_email: str | None = "jane.doe@example.com",
+) -> dict[str, object]:
+    resolved_hold_id = hold_id if hold_id is not None else str(uuid4())
+    return reschedule_arguments(
+        original_appointment_id=original_appointment_id
+        if original_appointment_id is not None
+        else str(uuid4()),
+        hold_id=resolved_hold_id,
+        new_slot_id=new_slot_id,
+        explicit_confirmation=explicit_confirmation,
+        confirmation_text=confirmation_text,
+        reschedule_reason=reschedule_reason,
+        patient_name=patient_name,
+        patient_date_of_birth=patient_date_of_birth,
+        patient_email=patient_email,
+    )
 
 
 def reschedule_tool_request(
