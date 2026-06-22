@@ -15,6 +15,10 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversations import ConversationService
 from app.services.scheduling import SchedulingService
+from tests.retell_cancellation_test_support import (
+    cancellation_tool_request,
+    create_retell_cancellation_tool_context,
+)
 from tests.test_chat_booking_confirmation_flow import (
     FULL_IDENTITY_WITH_CONFIRM,
     _conversation_with_active_hold,
@@ -170,6 +174,55 @@ def test_regression_chat_booking_flow_still_works() -> None:
     assert len(tracking_booking.book_calls) == 1
     assert result.conversation.conversation_metadata["chat_context"]["appointment_id"]
     assert appointments.appointments[0].availability_slot_id == EMILY_JULY_SLOT_1_ID
+
+
+def test_regression_book_appointment_tool_still_works() -> None:
+    context = create_retell_booking_tool_context()
+    booking_context = context["booking_context"]
+    hold_id = _hold_id(booking_context)
+
+    response = context["adapter"].execute(
+        _tool_request(hold_id=hold_id, slot_id=str(booking_context.slot.id)),
+    )
+
+    assert response.status == "succeeded"
+    assert len(context["tracking_booking"].book_calls) == 1
+    assert response.result["appointment_id"] is not None
+    assert response.result["status"] == "scheduled"
+
+
+def test_regression_cancellation_tool_does_not_enqueue_email() -> None:
+    context = create_retell_cancellation_tool_context()
+    appointment = context["appointment"]
+
+    with patch(
+        "app.services.email_jobs.EmailJobService.enqueue_appointment_confirmation",
+    ) as enqueue_mock:
+        response = context["adapter"].execute(
+            cancellation_tool_request(
+                appointment_id=str(appointment.id),
+                tool_call_id="tool-call-cancel-regression-email",
+            ),
+        )
+
+    assert response.status == "succeeded"
+    enqueue_mock.assert_not_called()
+
+
+def test_regression_cancellation_tool_does_not_trigger_llm() -> None:
+    context = create_retell_cancellation_tool_context()
+    appointment = context["appointment"]
+
+    with patch("app.ai.provider_factory.build_llm_provider") as llm_factory_mock:
+        response = context["adapter"].execute(
+            cancellation_tool_request(
+                appointment_id=str(appointment.id),
+                tool_call_id="tool-call-cancel-regression-llm",
+            ),
+        )
+
+    assert response.status == "succeeded"
+    llm_factory_mock.assert_not_called()
 
 
 def test_regression_booking_tool_does_not_trigger_llm() -> None:

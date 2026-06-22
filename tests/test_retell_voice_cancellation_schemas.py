@@ -13,7 +13,9 @@ from app.domain.retell_tools import (
 from app.domain.voice_cancellation import (
     cancellation_patient_phone_required,
     is_cancel_appointment_executable,
+    is_cancel_appointment_reference_ambiguous,
     resolve_cancel_appointment_id,
+    validate_cancel_appointment_conversation_context,
 )
 from app.schemas.retell_tools import (
     MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH,
@@ -150,3 +152,65 @@ def test_blocked_transcript_fields_rejected() -> None:
 
     with pytest.raises(ValidationError):
         CancelAppointmentToolArguments.model_validate(payload)
+
+
+def test_conversation_appointment_id_fallback_when_args_omit_id() -> None:
+    appointment_id = uuid4()
+    arguments = CancelAppointmentToolArguments.model_validate(
+        {
+            "explicit_confirmation": True,
+            "confirmation_text": "Yes, cancel it.",
+        },
+    )
+
+    assert resolve_cancel_appointment_id(
+        arguments,
+        {},
+        conversation_appointment_id=appointment_id,
+    ) == appointment_id
+    assert is_cancel_appointment_executable(
+        arguments,
+        voice_context={},
+        conversation_appointment_id=appointment_id,
+    ) is True
+
+
+def test_ambiguous_appointment_reference_is_not_executable() -> None:
+    voice_appointment_id = uuid4()
+    conversation_appointment_id = uuid4()
+    arguments = CancelAppointmentToolArguments.model_validate(
+        {
+            "explicit_confirmation": True,
+            "confirmation_text": "Yes, cancel it.",
+        },
+    )
+
+    assert is_cancel_appointment_reference_ambiguous(
+        arguments,
+        {"appointment_id": str(voice_appointment_id)},
+        conversation_appointment_id=conversation_appointment_id,
+    ) is True
+    assert is_cancel_appointment_executable(
+        arguments,
+        voice_context={"appointment_id": str(voice_appointment_id)},
+        conversation_appointment_id=conversation_appointment_id,
+    ) is False
+
+
+def test_appointment_context_mismatch_is_rejected() -> None:
+    argument_appointment_id = uuid4()
+    context_appointment_id = uuid4()
+    arguments = CancelAppointmentToolArguments.model_validate(
+        {
+            "appointment_id": str(argument_appointment_id),
+            "explicit_confirmation": True,
+            "confirmation_text": "Yes, cancel it.",
+        },
+    )
+
+    assert validate_cancel_appointment_conversation_context(
+        argument_appointment_id,
+        arguments=arguments,
+        voice_context={"appointment_id": str(context_appointment_id)},
+        conversation_appointment_id=None,
+    ) is False

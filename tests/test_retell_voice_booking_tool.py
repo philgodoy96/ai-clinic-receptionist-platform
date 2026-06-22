@@ -25,6 +25,7 @@ from app.services.scheduling import SchedulingService
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 from tests.retell_webhook_support import (
+    NeverCalledRetellToolCallingAdapter,
     configure_retell_for_tests,
     install_fake_retell_verifier,
     make_retell_enabled_settings,
@@ -39,7 +40,6 @@ from tests.test_conversations import FakeConversationRepository
 from tests.test_email_jobs import FakeEmailJobRepository
 from tests.test_retell_call_lifecycle_service import FakeVoiceCallRepository
 from tests.test_retell_tool_adapter import TrackingVoiceCallRepository
-from tests.test_retell_tool_route import NeverCalledRetellToolCallingAdapter
 from tests.test_scheduling_services import FakeSpecialtyRepository
 from tests.test_voice_booking_confirmation_service import FakeVoiceBookingAttemptRepository
 
@@ -269,6 +269,20 @@ def test_duplicate_tool_callback_does_not_duplicate_email_job() -> None:
     context["adapter"].execute(request)
 
     assert len(context["email_repository"].email_jobs) == email_count
+
+
+def test_booking_tool_still_works_alongside_cancellation_tool() -> None:
+    context = create_retell_booking_tool_context()
+    booking_context = context["booking_context"]
+    hold_id = _hold_id(booking_context)
+
+    response = context["adapter"].execute(
+        _tool_request(hold_id=hold_id, slot_id=str(booking_context.slot.id)),
+    )
+
+    assert response.status == "succeeded"
+    assert len(context["tracking_booking"].book_calls) == 1
+    assert response.result["status"] == "scheduled"
 
 
 def test_unknown_tool_still_rejected() -> None:

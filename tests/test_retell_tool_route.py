@@ -17,13 +17,12 @@ from app.api.dependencies import (
 )
 from app.db.session import get_db
 from app.domain.scheduling.appointment_holds import AppointmentHold
-from app.domain.scheduling.enums import AvailabilitySlotStatus
+from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.domain.voice_calls.enums import VoiceCallStatus
 from app.integrations.retell.signature import HmacRetellSignatureVerifier
 from app.main import create_app
 from app.models.scheduling import AvailabilitySlot, Doctor, Specialty
 from app.models.voice_calls import VoiceCall
-from app.schemas.retell_tools import RetellToolCallRequest, RetellToolCallResponse
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
@@ -31,7 +30,15 @@ from tests.demo_guardrail_support import (
     create_guarded_retell_app,
     make_guardrail_settings,
 )
+from tests.retell_cancellation_test_support import (
+    PROVIDER_CALL_ID,
+    TOOL_CALL_ID,
+    cancellation_arguments,
+    create_retell_cancellation_tool_context,
+)
 from tests.retell_webhook_support import (
+    NeverCalledRetellToolCallingAdapter,
+    TrackingRetellToolCallingAdapter,
     configure_retell_for_tests,
     install_fake_retell_verifier,
     make_retell_enabled_settings,
@@ -678,6 +685,107 @@ def test_email_service_is_not_called(
     assert route_context.email_service.calls == []
 
 
+def test_verified_cancel_appointment_route_succeeds() -> None:
+    context = create_retell_cancellation_tool_context()
+    appointment = context["appointment"]
+
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+    tracking_adapter = TrackingRetellToolCallingAdapter(context["adapter"])
+
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            "/api/v1/retell/tools",
+            settings=settings,
+            json_body={
+                "provider_call_id": PROVIDER_CALL_ID,
+                "tool_call_id": TOOL_CALL_ID,
+                "tool_name": "cancel_appointment",
+                "arguments": cancellation_arguments(appointment_id=str(appointment.id)),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["result"]["appointment_id"] == str(appointment.id)
+    assert body["result"]["status"] == AppointmentStatus.CANCELLED.value
+    assert len(tracking_adapter.execute_calls) == 1
+
+
+def test_cancel_appointment_route_rejects_invalid_signature() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app)
+    tracking_adapter = NeverCalledRetellToolCallingAdapter()
+
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/retell/tools",
+            content=(
+                b'{"provider_call_id":"retell-call-cancel-route","tool_name":"cancel_appointment",'
+                b'"tool_call_id":"tool-call-cancel-route","arguments":{"appointment_id":"'
+                + str(uuid4()).encode()
+                + b'","explicit_confirmation":true}}'
+            ),
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature="v=1,d=invalid"),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "retell_signature_invalid"
+    assert tracking_adapter.execute_calls == []
+
+
+def test_cancel_appointment_route_does_not_call_email_service() -> None:
+    context = create_retell_cancellation_tool_context()
+    appointment = context["appointment"]
+    email_service = NeverCalledEmailService()
+
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    install_fake_retell_verifier(app, accept_all=True)
+
+    app.dependency_overrides[get_retell_tool_calling_adapter] = (
+        lambda: TrackingRetellToolCallingAdapter(context["adapter"])
+    )
+    app.dependency_overrides[get_email_job_service] = lambda: email_service
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            "/api/v1/retell/tools",
+            settings=settings,
+            json_body={
+                "provider_call_id": PROVIDER_CALL_ID,
+                "tool_call_id": "tool-call-cancel-route-email",
+                "tool_name": "cancel_appointment",
+                "arguments": cancellation_arguments(appointment_id=str(appointment.id)),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert email_service.calls == []
+
+
 def test_public_demo_guardrails_still_apply() -> None:
     app, redis_client = create_guarded_retell_app(
         make_guardrail_settings(DEMO_RETELL_TOOL_CALLS_PER_MINUTE_PER_IP=1),
@@ -701,25 +809,6 @@ def test_public_demo_guardrails_still_apply() -> None:
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "demo_guardrail_limit_exceeded"
     assert len(redis_client.values) == 2
-
-
-class TrackingRetellToolCallingAdapter:
-    def __init__(self, adapter: RetellToolCallingAdapter) -> None:
-        self.adapter = adapter
-        self.execute_calls: list[RetellToolCallRequest] = []
-
-    def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
-        self.execute_calls.append(request)
-        return self.adapter.execute(request)
-
-
-class NeverCalledRetellToolCallingAdapter:
-    def __init__(self) -> None:
-        self.execute_calls: list[RetellToolCallRequest] = []
-
-    def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
-        self.execute_calls.append(request)
-        raise AssertionError("adapter must not be called")
 
 
 class RouteAppointmentHoldRepository:
