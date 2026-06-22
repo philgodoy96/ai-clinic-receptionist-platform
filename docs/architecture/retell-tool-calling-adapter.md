@@ -27,6 +27,7 @@ See also:
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
 - [Voice Conversation Bridge](voice-conversation-bridge.md)
+- [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
 - [Appointment Slot Holds](appointment-holds.md)
 
@@ -37,6 +38,7 @@ Current supported tools:
 - `check_availability`
 - `hold_appointment_slot`
 - `release_appointment_hold`
+- `book_appointment` (requires active hold, validated patient identity, and explicit caller confirmation)
 
 Unified tool execution is exposed at:
 
@@ -48,7 +50,7 @@ Legacy per-tool routes under `/api/v1/retell/tools/*` may remain for compatibili
 
 Retell tool calls cannot directly:
 
-- create appointments
+- create appointments without going through `AppointmentBookingService`
 - cancel appointments
 - reschedule appointments
 - send emails
@@ -56,8 +58,9 @@ Retell tool calls cannot directly:
 - mutate patient records
 - bypass appointment hold rules
 - bypass scheduling validation
+- bypass explicit booking confirmation
 
-The adapter delegates only to existing scheduling and hold services. Booking, cancellation, rescheduling, email dispatch, and LLM orchestration remain outside this boundary.
+The adapter delegates scheduling and hold work to existing services. `book_appointment` delegates to `VoiceBookingConfirmationService` and then `AppointmentBookingService` with strict hold, identity, and confirmation checks. Cancellation, rescheduling, email dispatch, and LLM orchestration remain outside this boundary.
 
 ## Execution Flow
 
@@ -77,9 +80,9 @@ Public demo guardrails run after signature verification and before adapter execu
 
 Side-effecting tool calls use `provider_call_id` and `tool_call_id` when available.
 
-Duplicate provider retries should not duplicate holds or releases.
+Duplicate provider retries should not duplicate holds, releases, appointments, or confirmation email jobs.
 
-When `tool_call_id` is present, hold and release outcomes are recorded on the related `VoiceCall` event metadata so repeated requests return the prior provider-safe result instead of performing the side effect again.
+When `tool_call_id` is present, hold, release, and booking outcomes are recorded on the related `VoiceCall` event metadata (and `VoiceBookingAttempt` for booking) so repeated requests return the prior provider-safe result instead of performing the side effect again.
 
 ## Relationship to Chat
 
@@ -93,7 +96,6 @@ Retell tools now resolve safe voice conversation context from the shared `Conver
 
 Future implementation phases may add:
 
-- `book_appointment` via voice after explicit confirmation
 - cancel appointment via voice
 - reschedule appointment via voice
 - transcript summary persistence

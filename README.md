@@ -22,7 +22,7 @@ This project focuses on:
 - Voice AI architecture
 - Retell web voice integration
 - Retell voice call lifecycle persistence
-- Retell voice tool-calling adapter (availability, hold, release)
+- Retell voice tool-calling adapter (availability, hold, release, booking with explicit confirmation)
 - Voice conversation bridge linking Retell calls to shared `Conversation` state
 - Chat receptionist flow
 - Tool calling
@@ -105,7 +105,7 @@ The receptionist will support:
 - Specialty information
 - Availability lookup
 - Temporary appointment slot holding
-- Retell voice tools: availability check, slot hold, and hold release (via verified `POST /api/v1/retell/tools`)
+- Retell voice tools: availability check, slot hold, hold release, and booking with explicit confirmation (via verified `POST /api/v1/retell/tools`)
 - Voice conversation bridge: link Retell calls to shared `Conversation` state with safe `voice_context`
 - Human escalation case creation
 - Confirmation email jobs
@@ -167,6 +167,7 @@ Architecture docs:
 - `docs/architecture/retell-call-lifecycle.md`
 - `docs/architecture/retell-tool-calling-adapter.md`
 - `docs/architecture/voice-conversation-bridge.md`
+- `docs/architecture/retell-voice-booking-confirmation.md`
 
 ## Local Mode vs Public Demo Mode
 
@@ -208,6 +209,6 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, and `release_appointment_hold` via `POST /api/v1/retell/tools`. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, and `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules.
+**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, and `book_appointment` via `POST /api/v1/retell/tools`. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, and `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
