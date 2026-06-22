@@ -10,7 +10,6 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import SessionLocal
 from app.email.factory import create_email_provider_from_settings
-from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
 from app.services.email_job_worker import EmailJobWorkerResult, EmailJobWorkerService
 
 logger = logging.getLogger("app.email_job_worker")
@@ -36,21 +35,18 @@ def main() -> None:
     configure_logging()
     settings = get_settings()
     lock_duration = timedelta(seconds=settings.email_job_lock_ttl_seconds)
+    provider = create_email_provider_from_settings(settings)
 
     while True:
-        with SessionLocal() as session:
-            repository = SQLAlchemyEmailJobRepository(session)
-            provider = create_email_provider_from_settings(settings)
-            worker = EmailJobWorkerService(
-                repository=repository,
-                delivery_provider=provider,
-                worker_id=args.worker_id,
-                lock_duration=lock_duration,
-                backoff_base_seconds=settings.email_job_backoff_base_seconds,
-                backoff_max_seconds=settings.email_job_backoff_max_seconds,
-            )
-            results = worker.process_due_email_jobs(limit=1)
-            session.commit()
+        worker = EmailJobWorkerService(
+            session_factory=SessionLocal,
+            delivery_provider=provider,
+            worker_id=args.worker_id,
+            lock_duration=lock_duration,
+            backoff_base_seconds=settings.email_job_backoff_base_seconds,
+            backoff_max_seconds=settings.email_job_backoff_max_seconds,
+        )
+        results = worker.process_due_email_jobs(limit=1)
 
         result = results[0] if results else EmailJobWorkerResult(processed=False)
 

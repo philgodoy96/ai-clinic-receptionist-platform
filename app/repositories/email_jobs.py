@@ -61,6 +61,9 @@ class EmailJobRepository(Protocol):
 
 
 class EmailJobWorkerRepository(Protocol):
+    def get_by_id(self, email_job_id: UUID) -> EmailJob | None:
+        raise NotImplementedError
+
     def claim_next_available(
         self,
         *,
