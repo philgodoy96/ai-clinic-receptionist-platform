@@ -125,6 +125,7 @@ Implemented:
 - LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
 - Retell webhook security with configuration validation, centralized signature verification, protected callback/tool routes, and standardized rejection for missing or invalid signatures
+- Retell call lifecycle with durable `VoiceCall` and `VoiceCallEvent` records, idempotent verified webhook ingestion, conservative status transitions, safe event metadata storage, and internal/debug inspection APIs
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 
 Upcoming:
@@ -141,7 +142,7 @@ Upcoming:
 
 ## Stage 7 — Retell Tool Integration
 
-Status: Planned
+Status: In progress
 
 Goals:
 
@@ -149,6 +150,15 @@ Goals:
 - Validate Retell tool payloads
 - Record tool calls
 - Add Retell integration documentation
+
+Implemented:
+
+- Retell call lifecycle persistence and verified webhook ingestion (see `docs/architecture/retell-call-lifecycle.md`)
+
+Upcoming:
+
+- Retell tool-calling adapter for voice booking flows
+- Tool call recording
 
 ## Stage 8 — Background Email Jobs
 

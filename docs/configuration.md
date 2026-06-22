@@ -124,6 +124,8 @@ Retell is **disabled by default** for local development and CI.
 | `RETELL_SIGNATURE_HEADER_NAME` | `x-retell-signature` | Request header carrying the Retell webhook signature |
 | `RETELL_REQUEST_MAX_BODY_BYTES` | `262144` | Maximum raw request body size for Retell callbacks (`>= 1`) |
 
+Protected Retell routes include tool callbacks under `/api/v1/retell/tools/*` and lifecycle ingestion at `/api/v1/retell/webhooks/lifecycle`.
+
 For local development and CI, keep:
 
 ```env
@@ -141,7 +143,7 @@ RETELL_WEBHOOK_SECRET=whsec_...
 RETELL_ALLOW_INSECURE_WEBHOOKS=false
 ```
 
-See also: [Retell Webhook Security](architecture/retell-webhook-security.md).
+See also: [Retell Webhook Security](architecture/retell-webhook-security.md), [Retell Call Lifecycle](architecture/retell-call-lifecycle.md).
 
 ## Public Demo Guardrails
 

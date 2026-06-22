@@ -21,6 +21,7 @@ This project focuses on:
 
 - Voice AI architecture
 - Retell web voice integration
+- Retell voice call lifecycle persistence
 - Chat receptionist flow
 - Tool calling
 - Appointment scheduling
@@ -199,6 +200,6 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes require webhook signature verification when enabled for a hosted demo. See `docs/architecture/retell-webhook-security.md` for the verification flow and safety boundary.
+**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. See `docs/architecture/retell-webhook-security.md` for the verification flow and `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
