@@ -245,3 +245,101 @@ def test_no_booking_email_or_llm_service_is_called(
     assert not hasattr(service, "llm_service")
     assert len(conversations.conversations) == 1
     assert voice_calls.voice_calls[0].conversation_id == conversations.conversations[0].id
+
+
+def test_get_debug_context_for_linked_voice_call(
+    bridge_bundle: tuple[
+        VoiceConversationBridgeService,
+        FakeVoiceCallRepository,
+        FakeConversationRepository,
+    ],
+) -> None:
+    service, voice_calls, conversations, *_ = bridge_bundle
+    slot_id = str(uuid4())
+    conversation = Conversation(
+        id=uuid4(),
+        channel=ConversationChannel.VOICE,
+        status=ConversationStatus.ACTIVE,
+        conversation_metadata={
+            "voice_context": {
+                "hold_id": "hold-debug",
+                "availability_slot_id": slot_id,
+                "specialty_name": "Cardiology",
+                "requested_date": "2026-07-05",
+                "selected_availability_slot_id": slot_id,
+            },
+        },
+    )
+    conversations.conversations.append(conversation)
+    voice_call = _create_voice_call(
+        voice_calls,
+        provider_call_id="call-debug",
+        conversation_id=conversation.id,
+    )
+
+    debug_context = service.get_debug_context_for_voice_call(voice_call.id)
+
+    assert debug_context.voice_call_id == voice_call.id
+    assert debug_context.provider == "retell"
+    assert debug_context.provider_call_id == "call-debug"
+    assert debug_context.conversation_id == conversation.id
+    assert debug_context.conversation_channel == ConversationChannel.VOICE
+    assert debug_context.active_hold is not None
+    assert debug_context.active_hold.hold_id == "hold-debug"
+    assert debug_context.requested_specialty == "Cardiology"
+    assert debug_context.requested_date == "2026-07-05"
+    assert debug_context.last_selected_slot_id == slot_id
+
+
+def test_get_debug_context_missing_voice_call_raises(
+    bridge_bundle: tuple[
+        VoiceConversationBridgeService,
+        FakeVoiceCallRepository,
+        FakeConversationRepository,
+    ],
+) -> None:
+    service, *_ = bridge_bundle
+
+    with pytest.raises(VoiceCallNotFoundForBridgeError):
+        service.get_debug_context_for_voice_call(uuid4())
+
+
+def test_get_debug_context_excludes_raw_provider_payload_and_secrets(
+    bridge_bundle: tuple[
+        VoiceConversationBridgeService,
+        FakeVoiceCallRepository,
+        FakeConversationRepository,
+    ],
+) -> None:
+    service, voice_calls, conversations, *_ = bridge_bundle
+    conversation = Conversation(
+        id=uuid4(),
+        channel=ConversationChannel.VOICE,
+        status=ConversationStatus.ACTIVE,
+        conversation_metadata={
+            "voice_context": {
+                "hold_id": "hold-safe-debug",
+                "requested_date": "2026-07-06",
+                "transcript": "secret symptoms",
+                "raw_payload": {"nested": "value"},
+                "api_key": "secret-key",
+                "phone_number": "+15551234567",
+            },
+        },
+    )
+    conversations.conversations.append(conversation)
+    voice_call = _create_voice_call(
+        voice_calls,
+        provider_call_id="call-safe-debug",
+        conversation_id=conversation.id,
+    )
+
+    debug_context = service.get_debug_context_for_voice_call(voice_call.id)
+    serialized = repr(debug_context)
+
+    assert debug_context.active_hold is not None
+    assert debug_context.requested_date == "2026-07-06"
+    assert "secret symptoms" not in serialized
+    assert "secret-key" not in serialized
+    assert "+15551234567" not in serialized
+    assert "raw_payload" not in serialized

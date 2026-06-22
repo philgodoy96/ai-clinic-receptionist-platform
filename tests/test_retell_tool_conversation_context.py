@@ -307,6 +307,43 @@ def test_check_availability_uses_voice_context_safely(
     assert "secret symptoms" not in str(conversation.conversation_metadata)
 
 
+def test_check_availability_writes_safe_conversation_criteria(
+    context_bundle: ContextBundle,
+) -> None:
+    voice_call = _seed_voice_call(context_bundle, provider_call_id="retell-call-write")
+    conversation = Conversation(
+        id=uuid4(),
+        channel=ConversationChannel.VOICE,
+        status=ConversationStatus.ACTIVE,
+        conversation_metadata={"voice_context": {}},
+    )
+    context_bundle.conversations.conversations.append(conversation)
+    voice_call.conversation_id = conversation.id
+
+    response = context_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-write",
+                "tool_name": "check_availability",
+                "arguments": {
+                    "doctor_id": str(context_bundle.doctor_id),
+                    "specialty_name": "Dermatology",
+                    "doctor_name": "Dr. Emily Carter",
+                    "start_from": "2026-07-01T09:00:00Z",
+                    "start_to": "2026-07-01T12:00:00Z",
+                },
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    voice_context = read_voice_context(conversation.conversation_metadata)
+    assert voice_context["specialty_name"] == "Dermatology"
+    assert voice_context["doctor_name"] == "Dr. Emily Carter"
+    assert voice_context["doctor_id"] == str(context_bundle.doctor_id)
+    assert voice_context["requested_date"] == "2026-07-01"
+
+
 def test_no_booking_email_or_llm_side_effects(context_bundle: ContextBundle) -> None:
     _seed_voice_call(context_bundle, provider_call_id="retell-call-safe")
 
@@ -338,3 +375,40 @@ def test_no_booking_email_or_llm_side_effects(context_bundle: ContextBundle) -> 
 
     assert context_bundle.email_service.calls == []
     assert context_bundle.llm_service.calls == []
+    assert context_bundle.booking_service.calls == []
+    assert context_bundle.scheduling_service.appointments == []
+
+
+def test_voice_tool_flow_does_not_create_appointment(context_bundle: ContextBundle) -> None:
+    _seed_voice_call(context_bundle, provider_call_id="retell-call-no-appointment")
+
+    hold_response = context_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-no-appointment",
+                "tool_call_id": "hold-no-appointment",
+                "tool_name": "hold_appointment_slot",
+                "arguments": {
+                    "availability_slot_id": str(context_bundle.availability_slot.id),
+                },
+            },
+        ),
+    )
+    check_response = context_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-no-appointment",
+                "tool_name": "check_availability",
+                "arguments": {
+                    "doctor_id": str(context_bundle.doctor_id),
+                    "start_from": "2026-07-01T09:00:00Z",
+                    "start_to": "2026-07-01T12:00:00Z",
+                },
+            },
+        ),
+    )
+
+    assert hold_response.status == "succeeded"
+    assert check_response.status == "succeeded"
+    assert context_bundle.scheduling_service.appointments == []
+    assert context_bundle.booking_service.calls == []
