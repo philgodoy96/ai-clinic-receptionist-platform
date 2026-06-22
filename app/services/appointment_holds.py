@@ -78,6 +78,21 @@ class AppointmentHoldService:
 
         return hold
 
+    def get_hold_by_id(self, hold_id: UUID) -> AppointmentHold | None:
+        return self.repository.get_by_hold_id(hold_id)
+
+    def release_hold_by_id(self, *, hold_id: UUID, owner_id: str) -> None:
+        hold = self.repository.get_by_hold_id(hold_id)
+
+        if hold is None:
+            return
+
+        self.release_hold(
+            doctor_id=hold.doctor_id,
+            start_time=hold.start_time,
+            owner_id=owner_id,
+        )
+
     def validate_hold(
         self,
         *,

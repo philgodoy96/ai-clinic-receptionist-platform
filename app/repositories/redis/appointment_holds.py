@@ -26,7 +26,16 @@ class RedisAppointmentHoldRepository:
             nx=True,
         )
 
-        return bool(result)
+        if not result:
+            return False
+
+        self.redis_client.set(
+            self._hold_id_key(hold.hold_id),
+            self._serialize(hold),
+            ex=ttl_seconds,
+        )
+
+        return True
 
     def get(self, *, doctor_id: UUID, start_time: datetime) -> AppointmentHold | None:
         raw_value = self.redis_client.get(
@@ -41,13 +50,32 @@ class RedisAppointmentHoldRepository:
 
         return self._deserialize(raw_value)
 
+    def get_by_hold_id(self, hold_id: UUID) -> AppointmentHold | None:
+        raw_value = self.redis_client.get(self._hold_id_key(hold_id))
+
+        if raw_value is None:
+            return None
+
+        if isinstance(raw_value, bytes):
+            raw_value = raw_value.decode("utf-8")
+
+        return self._deserialize(raw_value)
+
     def delete(self, *, doctor_id: UUID, start_time: datetime) -> None:
+        hold = self.get(doctor_id=doctor_id, start_time=start_time)
+
         self.redis_client.delete(
             self._key(doctor_id=doctor_id, start_time=start_time),
         )
 
+        if hold is not None:
+            self.redis_client.delete(self._hold_id_key(hold.hold_id))
+
     def _key(self, *, doctor_id: UUID, start_time: datetime) -> str:
         return f"{self.key_prefix}:{doctor_id}:{self._datetime_to_string(start_time)}"
+
+    def _hold_id_key(self, hold_id: UUID) -> str:
+        return f"{self.key_prefix}:id:{hold_id}"
 
     def _serialize(self, hold: AppointmentHold) -> str:
         return json.dumps(

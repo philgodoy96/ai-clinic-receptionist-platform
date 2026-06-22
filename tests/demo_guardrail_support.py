@@ -16,12 +16,15 @@ from app.api.dependencies import (
     get_email_job_dispatch_publisher,
     get_email_job_service,
     get_retell_scheduling_tool_adapter,
+    get_retell_tool_calling_adapter,
 )
 from app.core.config import Settings
 from app.db.session import get_db
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
+from app.domain.retell_tools import build_succeeded_tool_call_response
 from app.main import create_app
 from app.models.email_jobs import EmailJob
+from app.schemas.retell_tools import RetellToolCallRequest
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.clock import FixedClock
 from app.services.conversations import ConversationService
@@ -249,10 +252,23 @@ def create_guarded_retell_app(
     def override_adapter() -> RetellSchedulingToolAdapter:
         return RetellSchedulingToolAdapter(EmptySchedulingService())
 
+    def override_retell_tool_calling_adapter() -> _StubRetellToolCallingAdapter:
+        return _StubRetellToolCallingAdapter()
+
     app.dependency_overrides[get_demo_guardrail_service] = override_guardrails
     app.dependency_overrides[get_retell_scheduling_tool_adapter] = override_adapter
+    app.dependency_overrides[get_retell_tool_calling_adapter] = override_retell_tool_calling_adapter
 
     return app, redis
+
+
+class _StubRetellToolCallingAdapter:
+    def execute(self, request: RetellToolCallRequest) -> Any:
+        return build_succeeded_tool_call_response(
+            tool_name=request.tool_name,
+            tool_call_id=request.tool_call_id,
+            result={},
+        )
 
 
 class FakeRedisClient:
