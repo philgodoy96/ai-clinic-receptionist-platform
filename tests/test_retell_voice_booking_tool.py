@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, cast
+from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -26,6 +27,7 @@ from app.services.voice_conversation_bridge import VoiceConversationBridgeServic
 from tests.retell_webhook_support import (
     configure_retell_for_tests,
     install_fake_retell_verifier,
+    make_retell_enabled_settings,
     make_secured_retell_settings,
     post_retell_tool,
     retell_request_headers,
@@ -389,3 +391,47 @@ def test_verified_route_booking_tool_returns_provider_safe_response() -> None:
     assert body["result"]["appointment_id"]
     assert body["result"]["status"] == "scheduled"
     assert "traceback" not in str(body).lower()
+
+
+def test_retell_disabled_rejects_booking_route() -> None:
+    app = create_app()
+    settings = make_retell_enabled_settings(RETELL_ENABLED=False)
+    configure_retell_for_tests(app, settings=settings)
+    tracking_adapter = NeverCalledRetellToolCallingAdapter()
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: tracking_adapter
+
+    with TestClient(app) as client:
+        response = post_retell_tool(
+            client,
+            "/api/v1/retell/tools",
+            settings=settings,
+            json_body={
+                "provider_call_id": PROVIDER_CALL_ID,
+                "tool_call_id": TOOL_CALL_ID,
+                "tool_name": "book_appointment",
+                "arguments": _booking_arguments(
+                    hold_id=str(uuid4()),
+                    slot_id=str(uuid4()),
+                ),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "retell_disabled"
+    assert tracking_adapter.execute_calls == []
+
+
+def test_booking_tool_does_not_trigger_llm() -> None:
+    context = create_retell_booking_tool_context()
+    booking_context = context["booking_context"]
+    hold_id = _hold_id(booking_context)
+
+    with patch("app.ai.provider_factory.build_llm_provider") as llm_factory_mock:
+        response = context["adapter"].execute(
+            _tool_request(hold_id=hold_id, slot_id=str(booking_context.slot.id)),
+        )
+
+    assert response.status == "succeeded"
+    llm_factory_mock.assert_not_called()
