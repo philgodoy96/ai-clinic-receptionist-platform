@@ -14,7 +14,6 @@ from app.domain.appointment_rescheduling import (
     AppointmentReschedulingSlotAlreadyBookedError,
     AppointmentReschedulingSlotNotFoundError,
     AppointmentReschedulingSlotUnavailableError,
-    build_reschedule_success_context_updates,
     is_appointment_reschedulable,
     normalize_rescheduling_reason,
     validate_appointment_rescheduling_request,
@@ -23,6 +22,10 @@ from app.domain.appointment_rescheduling_enums import AppointmentRescheduleAttem
 from app.domain.audit.appointment_rescheduling import build_safe_reschedule_audit_metadata
 from app.domain.audit.enums import AuditEventOutcome, AuditEventType
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
+from app.domain.voice_rescheduling import (
+    VOICE_RESCHEDULING_SOURCE,
+    apply_reschedule_success_to_conversation,
+)
 from app.models.appointment_reschedule_attempt import AppointmentRescheduleAttempt
 from app.models.scheduling import Appointment, AvailabilitySlot
 from app.repositories.appointments import AppointmentRescheduleAttemptRepository
@@ -388,22 +391,22 @@ class AppointmentReschedulingService:
         if self.conversations is None or not request.conversation_id:
             return
 
+        if request.source == VOICE_RESCHEDULING_SOURCE:
+            return
+
         try:
             conversation_id = UUID(request.conversation_id.strip())
         except ValueError:
             return
 
-        if hold_used:
-            self.conversations.clear_voice_active_hold(conversation_id=conversation_id)
-
-        self.conversations.merge_voice_context(
+        apply_reschedule_success_to_conversation(
+            self.conversations,
             conversation_id=conversation_id,
-            voice_context=build_reschedule_success_context_updates(
-                appointment_id=new_appointment.id,
-                availability_slot_id=slot.id,
-                start_time=new_appointment.start_time.isoformat(),
-                end_time=new_appointment.end_time.isoformat(),
-            ),
+            original_appointment_id=request.appointment_id,
+            new_appointment_id=new_appointment.id,
+            availability_slot_id=slot.id,
+            start_time=new_appointment.start_time.isoformat(),
+            end_time=new_appointment.end_time.isoformat(),
         )
 
     def _release_hold_best_effort(

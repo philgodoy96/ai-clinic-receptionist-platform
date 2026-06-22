@@ -29,6 +29,7 @@ See also:
 - [Voice Conversation Bridge](voice-conversation-bridge.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
 - [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
+- [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
 - [Appointment Slot Holds](appointment-holds.md)
 
@@ -41,6 +42,7 @@ Current supported tools:
 - `release_appointment_hold`
 - `book_appointment` (requires active hold, validated patient identity, and explicit caller confirmation)
 - `cancel_appointment` (requires explicit cancellation confirmation and a cancelable appointment reference)
+- `reschedule_appointment` (requires explicit reschedule confirmation, original appointment reference, and target hold or new slot)
 
 Unified tool execution is exposed at:
 
@@ -54,7 +56,7 @@ Retell tool calls cannot directly:
 
 - create appointments without going through `AppointmentBookingService`
 - cancel appointments without going through `AppointmentCancellationService`
-- reschedule appointments
+- reschedule appointments without going through `AppointmentReschedulingService`
 - send emails
 - trigger LLM calls
 - mutate patient records
@@ -63,7 +65,7 @@ Retell tool calls cannot directly:
 - bypass explicit booking confirmation
 - bypass explicit cancellation confirmation
 
-The adapter delegates scheduling and hold work to existing services. `book_appointment` delegates to `VoiceBookingConfirmationService` and then `AppointmentBookingService` with strict hold, identity, and confirmation checks. `cancel_appointment` delegates to `AppointmentCancellationService` with strict appointment reference, cancelable status, and confirmation checks. Rescheduling, email dispatch, and LLM orchestration remain outside this boundary.
+The adapter delegates scheduling and hold work to existing services. `book_appointment` delegates to `VoiceBookingConfirmationService` and then `AppointmentBookingService` with strict hold, identity, and confirmation checks. `cancel_appointment` delegates to `AppointmentCancellationService` with strict appointment reference, cancelable status, and confirmation checks. `reschedule_appointment` delegates to `AppointmentReschedulingService` with strict original appointment reference, hold/slot, and confirmation checks. Email dispatch and LLM orchestration remain outside this boundary.
 
 ## Execution Flow
 
@@ -83,9 +85,9 @@ Public demo guardrails run after signature verification and before adapter execu
 
 Side-effecting tool calls use `provider_call_id` and `tool_call_id` when available.
 
-Duplicate provider retries should not duplicate holds, releases, appointments, cancellations, or confirmation email jobs.
+Duplicate provider retries should not duplicate holds, releases, appointments, cancellations, reschedules, or confirmation email jobs.
 
-When `tool_call_id` is present, hold, release, booking, and cancellation outcomes are recorded on the related `VoiceCall` event metadata (and `VoiceBookingAttempt` for booking, `AppointmentCancellationAttempt` for cancellation) so repeated requests return the prior provider-safe result instead of performing the side effect again.
+When `tool_call_id` is present, hold, release, booking, cancellation, and reschedule outcomes are recorded on the related `VoiceCall` event metadata (and `VoiceBookingAttempt` for booking, `AppointmentCancellationAttempt` for cancellation, `AppointmentRescheduleAttempt` for rescheduling) so repeated requests return the prior provider-safe result instead of performing the side effect again.
 
 ## Relationship to Chat
 
@@ -99,6 +101,5 @@ Retell tools now resolve safe voice conversation context from the shared `Conver
 
 Future implementation phases may add:
 
-- reschedule appointment via voice
 - transcript summary persistence
 - voice-specific operational metrics

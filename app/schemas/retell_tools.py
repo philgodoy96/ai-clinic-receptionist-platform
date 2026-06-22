@@ -14,6 +14,8 @@ MAX_BOOK_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_BOOK_APPOINTMENT_NOTES_LENGTH = 500
 MAX_CANCEL_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH = 500
+MAX_RESCHEDULE_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
+MAX_RESCHEDULE_APPOINTMENT_RESCHEDULE_REASON_LENGTH = 500
 _PATIENT_EMAIL_PATTERN = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
@@ -209,3 +211,49 @@ class CancelAppointmentToolArguments(BaseModel):
             raise ValueError(msg)
 
         return stripped
+
+
+class RescheduleAppointmentToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    original_appointment_id: UUID | str | None = None
+    hold_id: str | None = Field(default=None, max_length=120)
+    new_slot_id: UUID | str | None = None
+    explicit_confirmation: bool
+    confirmation_text: str | None = Field(
+        default=None,
+        max_length=MAX_RESCHEDULE_APPOINTMENT_CONFIRMATION_TEXT_LENGTH,
+    )
+    reschedule_reason: str | None = Field(
+        default=None,
+        max_length=MAX_RESCHEDULE_APPOINTMENT_RESCHEDULE_REASON_LENGTH,
+    )
+    patient_name: str | None = Field(default=None, max_length=160)
+    patient_date_of_birth: date | None = None
+    patient_email: str | None = Field(
+        default=None,
+        max_length=255,
+        pattern=_PATIENT_EMAIL_PATTERN,
+    )
+
+    @field_validator("patient_name")
+    @classmethod
+    def validate_patient_name_not_blank_if_present(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_name cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_target_reference(self) -> RescheduleAppointmentToolArguments:
+        has_hold = self.hold_id is not None and self.hold_id.strip() != ""
+        has_slot = self.new_slot_id is not None and str(self.new_slot_id).strip() != ""
+        if not has_hold and not has_slot:
+            msg = "either hold_id or new_slot_id is required"
+            raise ValueError(msg)
+        return self

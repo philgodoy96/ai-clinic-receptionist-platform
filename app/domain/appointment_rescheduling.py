@@ -208,6 +208,7 @@ def normalize_rescheduling_reason(reason: str | None) -> str | None:
 def build_reschedule_success_context_updates(
     *,
     appointment_id: UUID,
+    original_appointment_id: UUID,
     availability_slot_id: UUID,
     start_time: str,
     end_time: str,
@@ -215,6 +216,7 @@ def build_reschedule_success_context_updates(
     return {
         "appointment_id": str(appointment_id),
         "appointment_status": AppointmentStatus.SCHEDULED.value,
+        "rescheduled_from_appointment_id": str(original_appointment_id),
         "availability_slot_id": str(availability_slot_id),
         "start_time": start_time,
         "end_time": end_time,

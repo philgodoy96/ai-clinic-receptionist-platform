@@ -68,13 +68,12 @@ Cancellation is implemented as a shared backend service.
 
 Voice is only one channel into that service.
 
-Rescheduling is implemented separately as a shared backend service in `AppointmentReschedulingService`. Voice cancellation does not perform rescheduling directly. See [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md).
+Rescheduling is implemented as a shared backend service in `AppointmentReschedulingService`. Voice rescheduling is wired through `reschedule_appointment` and delegates to that service. See [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md) and [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md).
 
 ## Future Work
 
 Future implementation phases may add:
 
-- Retell voice reschedule tool delegating to `AppointmentReschedulingService`
 - cancellation notification email if supported by the notification system
 - cancellation through written chat
 - Retell dashboard setup runbook
