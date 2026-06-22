@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from typing import cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +14,7 @@ from app.api.dependencies import (
     get_email_job_service,
 )
 from app.db.session import get_db
+from app.domain.jobs.enums import EmailJobType
 from app.main import create_app
 from app.messaging.email_job_dispatch import InMemoryEmailJobDispatchPublisher
 from app.models.email_jobs import EmailJob
@@ -21,6 +22,7 @@ from app.services.chat_receptionist import ChatReceptionistService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
+    AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
 from tests.test_chat_booking_confirmation import create_jane_doe_patient
@@ -36,20 +38,37 @@ from tests.test_scheduling_services import (
 
 class FakeEmailJobService:
     def __init__(self) -> None:
-        self.jobs: list[AppointmentConfirmationEmailJobCreate] = []
+        from tests.test_email_jobs import FakeEmailJobRepository
+
+        self.repository = FakeEmailJobRepository()
+        self._service = EmailJobService(repository=self.repository)
+
+    @property
+    def jobs(self) -> list[EmailJob]:
+        return self.repository.email_jobs
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return self._service.get_by_idempotency_key(
+            job_type=job_type,
+            idempotency_key=idempotency_key,
+        )
+
+    def get_or_create_appointment_confirmation_email_job(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> AppointmentConfirmationEmailJobResult:
+        return self._service.get_or_create_appointment_confirmation_email_job(payload)
 
     def enqueue_appointment_confirmation(
         self,
         payload: AppointmentConfirmationEmailJobCreate,
     ) -> EmailJob:
-        self.jobs.append(payload)
-        return EmailJob(
-            id=uuid4(),
-            appointment_id=payload.appointment_id,
-            patient_id=payload.patient_id,
-            subject="Appointment confirmation",
-            body="test",
-        )
+        return self._service.enqueue_appointment_confirmation(payload)
 
 
 class ChatBookingApiContext:

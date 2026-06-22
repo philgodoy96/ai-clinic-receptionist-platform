@@ -16,13 +16,15 @@ class EmailJobResponse(BaseModel):
     recipient_email: str | None
     subject: str
     body: str
-    attempts: int
+    attempt_count: int
     max_attempts: int
     locked_by: str | None
     locked_until: datetime | None
     last_error: str | None
+    idempotency_key: str | None
+    provider_message_id: str | None
     payload: dict[str, Any]
-    scheduled_for: datetime
+    next_attempt_at: datetime | None
     sent_at: datetime | None
     created_at: datetime
     updated_at: datetime

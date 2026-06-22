@@ -1,32 +1,13 @@
-from __future__ import annotations
+"""Backward-compatible email delivery exports."""
 
-from dataclasses import dataclass
-from typing import Protocol
+from app.email.fake_provider import FakeEmailProvider as FakeEmailDeliveryProvider
+from app.email.types import EmailProvider as EmailDeliveryProvider
+from app.email.types import EmailProviderError as EmailDeliveryError
+from app.email.types import OutboundEmailMessage as EmailMessage
 
-
-class EmailDeliveryError(Exception):
-    """Raised when an email provider cannot deliver a message."""
-
-
-@dataclass(frozen=True, slots=True)
-class EmailMessage:
-    to: str
-    subject: str
-    body: str
-
-
-class EmailDeliveryProvider(Protocol):
-    def send(self, message: EmailMessage) -> None:
-        raise NotImplementedError
-
-
-class FakeEmailDeliveryProvider:
-    def __init__(self, *, should_fail: bool = False) -> None:
-        self.should_fail = should_fail
-        self.sent_messages: list[EmailMessage] = []
-
-    def send(self, message: EmailMessage) -> None:
-        if self.should_fail:
-            raise EmailDeliveryError("fake email provider failure")
-
-        self.sent_messages.append(message)
+__all__ = [
+    "EmailDeliveryError",
+    "EmailDeliveryProvider",
+    "EmailMessage",
+    "FakeEmailDeliveryProvider",
+]

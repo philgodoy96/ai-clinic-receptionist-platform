@@ -28,6 +28,7 @@ from app.services.conversations import ConversationService
 from app.services.demo_guardrails import DemoGuardrailService
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
+    AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
 from tests.test_api_errors import EmptySchedulingService
@@ -277,6 +278,21 @@ class FailingRedisClient(FakeRedisClient):
 
 
 class _NoopEmailJobService:
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return None
+
+    def get_or_create_appointment_confirmation_email_job(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> AppointmentConfirmationEmailJobResult:
+        email_job = self.enqueue_appointment_confirmation(payload)
+        return AppointmentConfirmationEmailJobResult(email_job=email_job, created=True)
+
     def enqueue_appointment_confirmation(
         self,
         payload: AppointmentConfirmationEmailJobCreate,

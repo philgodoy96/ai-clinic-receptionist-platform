@@ -20,6 +20,10 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
 )
 from app.services.conversations import ConversationService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    EmailJobService,
+)
 from app.services.scheduling import SchedulingService
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
@@ -29,6 +33,7 @@ from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
+from tests.test_email_jobs import FakeEmailJobRepository
 from tests.test_scheduling_services import (
     EMILY_JULY_SLOT_1_ID,
     FakeAppointmentRepository,
@@ -258,6 +263,46 @@ def test_hold_expired_when_booking_service_raises_hold_not_found(
     assert "expired" in result.reply.lower() or "not found" in result.reply.lower()
 
 
+def test_complete_identity_with_confirmation_creates_one_idempotent_email_job(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, _tracking_booking, _hold_service, _scheduling = booking_flow_context
+    email_job_repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=email_job_repository)
+    conversation = _conversation_with_active_hold(service)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=FULL_IDENTITY_WITH_CONFIRM,
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.booking_confirmed is True
+    assert result.appointment_id is not None
+    assert result.booked_patient_id is not None
+    assert result.booked_appointment_start_time is not None
+
+    payload = AppointmentConfirmationEmailJobCreate(
+        appointment_id=result.appointment_id,
+        patient_id=result.booked_patient_id,
+        appointment_start_time=result.booked_appointment_start_time.isoformat(),
+        payload={"source": "chat_booking"},
+    )
+    first = email_jobs.get_or_create_appointment_confirmation_email_job(payload)
+    second = email_jobs.get_or_create_appointment_confirmation_email_job(payload)
+
+    assert first.created is True
+    assert second.created is False
+    assert second.email_job.id == first.email_job.id
+    assert len(email_job_repository.email_jobs) == 1
+
+
 def test_emergency_takes_priority_over_booking_confirmation(
     booking_flow_context: tuple[
         ChatReceptionistService,
@@ -278,3 +323,190 @@ def test_emergency_takes_priority_over_booking_confirmation(
 
     assert result.intent == ChatReceptionistIntent.EMERGENCY
     assert tracking_booking.book_calls == []
+
+
+def test_successful_booking_api_creates_confirmation_email_job() -> None:
+    from fastapi.testclient import TestClient
+
+    from tests.demo_guardrail_support import create_guarded_chat_app, make_guardrail_settings
+
+    app, _, email_jobs = create_guarded_chat_app(
+        make_guardrail_settings(DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100),
+        track_email_jobs=True,
+    )
+
+    with TestClient(app) as client:
+        availability = client.post(
+            "/api/v1/chat/messages",
+            json={"message": "Dr. Emily Carter on 2026-07-02"},
+        )
+        conversation_id = availability.json()["conversation_id"]
+        client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": "I'll take 09:00",
+                "conversation_id": conversation_id,
+            },
+        )
+        booking = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": FULL_IDENTITY_WITH_CONFIRM,
+                "conversation_id": conversation_id,
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert booking.status_code == 200
+    body = booking.json()
+    assert body["booking_confirmed"] is True
+    assert body["confirmation_email_queued"] is True
+    assert email_jobs is not None
+    assert len(email_jobs.jobs) == 1
+    assert email_jobs.jobs[0].payload["source"] == "chat_booking"
+
+
+def test_dispatch_publish_failure_does_not_rollback_booking() -> None:
+    from collections.abc import Generator
+    from typing import cast
+    from uuid import UUID
+
+    from fastapi.testclient import TestClient
+
+    from app.api.dependencies import (
+        get_appointment_hold_service,
+        get_chat_receptionist_service,
+        get_email_job_dispatch_publisher,
+        get_email_job_service,
+    )
+    from app.db.session import get_db
+    from app.main import create_app
+    from app.messaging.email_job_dispatch import EmailJobDispatchPublisherError
+    from app.services.conversations import ConversationService
+    from app.services.email_jobs import EmailJobService
+    from tests.test_chat_api import FakeDatabaseSession, FakeEmailJobService
+    from tests.test_chat_receptionist_service import (
+        FakeAppointmentHoldService,
+        create_chat_receptionist_service,
+    )
+    from tests.test_conversations import FakeConversationRepository
+    from tests.test_scheduling_services import (
+        create_demo_scheduling_service_with_emily_july_availability,
+    )
+
+    class FailingDispatchPublisher:
+        def publish_email_job_ready(self, *, email_job_id: UUID) -> None:
+            raise EmailJobDispatchPublisherError("publish failed")
+
+    app = create_app()
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    hold_service = FakeAppointmentHoldService()
+    scheduling = create_demo_scheduling_service_with_emily_july_availability(
+        patients=[create_jane_doe_patient()],
+    )
+    chat_service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=hold_service,
+    )
+    email_jobs = FakeEmailJobService()
+    db = FakeDatabaseSession()
+
+    def override_db() -> Generator[FakeDatabaseSession, None, None]:
+        yield db
+
+    app.dependency_overrides[get_chat_receptionist_service] = lambda: chat_service
+    app.dependency_overrides[get_appointment_hold_service] = lambda: hold_service
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_email_job_service] = lambda: cast(
+        EmailJobService,
+        email_jobs,
+    )
+    app.dependency_overrides[get_email_job_dispatch_publisher] = (
+        lambda: FailingDispatchPublisher()
+    )
+
+    with TestClient(app) as client:
+        availability = client.post(
+            "/api/v1/chat/messages",
+            json={"message": "Dr. Emily Carter on 2026-07-02"},
+        )
+        conversation_id = availability.json()["conversation_id"]
+        client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": "I'll take 09:00",
+                "conversation_id": conversation_id,
+            },
+        )
+        booking = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": FULL_IDENTITY_WITH_CONFIRM,
+                "conversation_id": conversation_id,
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert booking.status_code == 200
+    assert db.committed is True
+    assert db.rolled_back is False
+    body = booking.json()
+    assert body["booking_confirmed"] is True
+    assert body["appointment_id"]
+    assert len(email_jobs.jobs) == 1
+
+
+def test_demo_email_quota_exceeded_keeps_booking_without_confirmation_job() -> None:
+    from fastapi.testclient import TestClient
+
+    from tests.demo_guardrail_support import (
+        FakeRedisClient,
+        create_guarded_chat_app,
+        make_guardrail_settings,
+    )
+
+    redis_client = FakeRedisClient()
+    app, _, email_jobs = create_guarded_chat_app(
+        make_guardrail_settings(
+            DEMO_CONFIRMATION_EMAILS_PER_DAY_PER_IP=1,
+            DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100,
+        ),
+        redis_client=redis_client,
+        track_email_jobs=True,
+    )
+    email_ip_key = "demo_guardrail:email:ip:testclient:day:20260621"
+    redis_client.values[email_ip_key] = 1
+
+    with TestClient(app) as client:
+        availability = client.post(
+            "/api/v1/chat/messages",
+            json={"message": "Dr. Emily Carter on 2026-07-02"},
+        )
+        conversation_id = availability.json()["conversation_id"]
+        client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": "I'll take 09:00",
+                "conversation_id": conversation_id,
+            },
+        )
+        booking = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": FULL_IDENTITY_WITH_CONFIRM,
+                "conversation_id": conversation_id,
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert booking.status_code == 200
+    body = booking.json()
+    assert body["booking_confirmed"] is True
+    assert body["confirmation_email_queued"] is False
+    assert email_jobs is not None
+    assert email_jobs.jobs == []
