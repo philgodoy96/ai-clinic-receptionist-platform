@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.groq_provider import GroqLLMProvider
 from app.ai.llm_provider import LLMProviderName
 from app.ai.llm_reliability import LLMFailureReason
 from app.api.dependencies import get_llm_receptionist_analysis_service
@@ -201,7 +203,7 @@ def test_fallback_provider_not_instantiated_when_disabled(
     settings = load_settings(monkeypatch, LLM_FALLBACK_ENABLED="false")
 
     with patch(
-        "app.api.dependencies.create_llm_provider_from_settings",
+        "app.ai.provider_factory.create_llm_provider_from_settings",
     ) as create_provider:
         create_provider.return_value = FakeLLMProvider()
         service = get_llm_receptionist_analysis_service(settings=settings)
@@ -255,3 +257,76 @@ def test_bedrock_fallback_can_be_configured_with_mocked_provider_factory(
     assert service.fallback_provider is not None
     assert service.primary_provider_name == LLMProviderName.FAKE
     assert service.fallback_provider_name == LLMProviderName.BEDROCK
+
+
+def test_groq_fallback_not_instantiated_when_fallback_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_FALLBACK_ENABLED="false",
+        LLM_FALLBACK_PROVIDER="groq",
+    )
+
+    with patch("app.ai.groq_provider.GroqLLMProvider") as groq_cls:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    groq_cls.assert_not_called()
+    assert service is not None
+    assert service.fallback_provider is None
+
+
+def test_groq_primary_with_bedrock_fallback_config_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+        LLM_FALLBACK_ENABLED="true",
+        LLM_FALLBACK_PROVIDER="bedrock",
+        BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0",
+    )
+    stub_client = MagicMock()
+
+    with patch(
+        "app.ai.bedrock_llm_provider.BedrockLLMProvider._create_client",
+        return_value=stub_client,
+    ) as create_client:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    assert service is not None
+    assert isinstance(service.primary_provider, GroqLLMProvider)
+    assert service.fallback_provider is not None
+    create_client.assert_called_once()
+    assert service.primary_provider_name == LLMProviderName.GROQ
+    assert service.fallback_provider_name == LLMProviderName.BEDROCK
+
+
+def test_bedrock_primary_with_groq_fallback_config_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="bedrock",
+        BEDROCK_MODEL_ID="anthropic.claude-3-haiku-20240307-v1:0",
+        LLM_FALLBACK_ENABLED="true",
+        LLM_FALLBACK_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+    )
+    stub_client = MagicMock()
+
+    with patch(
+        "app.ai.bedrock_llm_provider.BedrockLLMProvider._create_client",
+        return_value=stub_client,
+    ) as create_client:
+        service = get_llm_receptionist_analysis_service(settings=settings)
+
+    assert service is not None
+    create_client.assert_called_once()
+    assert isinstance(service.primary_provider, BedrockLLMProvider)
+    assert isinstance(service.fallback_provider, GroqLLMProvider)
+    assert service.primary_provider_name == LLMProviderName.BEDROCK
+    assert service.fallback_provider_name == LLMProviderName.GROQ

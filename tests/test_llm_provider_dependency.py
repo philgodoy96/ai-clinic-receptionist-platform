@@ -8,8 +8,12 @@ from pydantic import ValidationError
 
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
+from app.ai.groq_provider import GroqLLMProvider
 from app.ai.llm_provider import LLMProviderName
-from app.ai.provider_factory import build_llm_provider, create_llm_provider_from_settings
+from app.ai.provider_factory import (
+    build_llm_provider,
+    create_llm_provider_from_settings,
+)
 from app.api.dependencies import get_llm_provider, get_llm_receptionist_analysis_service
 from app.core.config import Settings, get_settings
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
@@ -199,7 +203,7 @@ def test_fallback_enabled_instantiates_primary_and_fallback_providers(
     )
 
     with patch(
-        "app.api.dependencies.create_llm_provider_from_settings",
+        "app.ai.provider_factory.create_llm_provider_from_settings",
         wraps=create_llm_provider_from_settings,
     ) as create_provider:
         service = get_llm_receptionist_analysis_service(settings=settings)
@@ -207,3 +211,74 @@ def test_fallback_enabled_instantiates_primary_and_fallback_providers(
     assert service is not None
     assert create_provider.call_count == 2
     assert service.fallback_provider is not None
+
+
+def test_build_llm_provider_groq_uses_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+        GROQ_REQUEST_TIMEOUT_SECONDS="15",
+        GROQ_MAX_OUTPUT_TOKENS="512",
+        GROQ_TEMPERATURE="0.1",
+    )
+
+    provider = build_llm_provider(settings)
+
+    assert isinstance(provider, GroqLLMProvider)
+    assert provider._model == "llama-3.3-70b-versatile"
+    assert provider._api_key == "gsk_test"
+    assert provider._timeout_seconds == 15
+    assert provider._default_max_output_tokens == 512
+    assert provider._default_temperature == 0.1
+
+
+def test_groq_provider_created_only_when_selected(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+    )
+
+    provider = build_llm_provider(settings)
+
+    assert isinstance(provider, GroqLLMProvider)
+
+
+def test_fake_provider_does_not_create_groq_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(monkeypatch)
+
+    with patch("app.ai.groq_provider.GroqLLMProvider") as groq_cls:
+        provider = build_llm_provider(settings)
+
+    groq_cls.assert_not_called()
+    assert isinstance(provider, FakeLLMProvider)
+
+
+def test_llm_primary_provider_groq_creates_groq_for_receptionist_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = load_settings(
+        monkeypatch,
+        LLM_PRIMARY_PROVIDER="groq",
+        GROQ_API_KEY="gsk_test",
+        GROQ_MODEL="llama-3.3-70b-versatile",
+    )
+
+    service = get_llm_receptionist_analysis_service(settings=settings)
+
+    assert service is not None
+    assert isinstance(service.primary_provider, GroqLLMProvider)
+    assert service.primary_provider_name == LLMProviderName.GROQ
+    assert service.fallback_provider is None
+
+
+def test_invalid_llm_provider_name_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError):
+        load_settings(monkeypatch, LLM_PROVIDER="openai")
