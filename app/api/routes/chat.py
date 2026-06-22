@@ -1,16 +1,20 @@
 import logging
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
 
+from app.api.demo_guardrail_enforcement import enforce_chat_message_allowed
 from app.api.dependencies import (
     get_appointment_hold_service,
     get_chat_receptionist_service,
+    get_demo_guardrail_service,
     get_email_job_dispatch_publisher,
     get_email_job_service,
 )
 from app.api.errors import APIError
+from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.messaging.email_job_dispatch import (
     EmailJobDispatchPublisher,
@@ -22,6 +26,11 @@ from app.services.chat_receptionist import ChatMessageInput, ChatReceptionistSer
 from app.services.conversations import (
     ConversationNotFoundError,
     InvalidConversationMessageError,
+)
+from app.services.demo_guardrails import (
+    DemoGuardrailLimitExceeded,
+    DemoGuardrailService,
+    DemoGuardrailStoreUnavailable,
 )
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
@@ -40,7 +49,10 @@ logger = logging.getLogger("app.chat")
     status_code=status.HTTP_200_OK,
 )
 def send_chat_message(
+    request: Request,
     payload: ChatMessageRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+    guardrails: Annotated[DemoGuardrailService, Depends(get_demo_guardrail_service)],
     service: Annotated[ChatReceptionistService, Depends(get_chat_receptionist_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
@@ -50,7 +62,9 @@ def send_chat_message(
     ],
     db: Annotated[Session, Depends(get_db)],
 ) -> ChatMessageResponse:
+    client_ip = enforce_chat_message_allowed(request, settings, guardrails)
     confirmation_email_job_id = None
+    confirmation_email_queued: bool | None = None
     handoff_notification_email_job_id = None
 
     try:
@@ -69,19 +83,19 @@ def send_chat_message(
             and result.booked_patient_id is not None
             and result.booked_appointment_start_time is not None
         ):
-            email_job = email_jobs.enqueue_appointment_confirmation(
-                AppointmentConfirmationEmailJobCreate(
+            guardrails.record_appointment_created(client_ip)
+            confirmation_email_job_id, confirmation_email_queued = (
+                _enqueue_confirmation_email_if_allowed(
+                    guardrails=guardrails,
+                    client_ip=client_ip,
+                    email_jobs=email_jobs,
                     appointment_id=result.appointment_id,
                     patient_id=result.booked_patient_id,
                     appointment_start_time=result.booked_appointment_start_time.isoformat(),
-                    payload={
-                        "source": CHAT_BOOKING_SOURCE,
-                        "hold_id": result.hold_id_to_release,
-                        "conversation_id": str(result.conversation.id),
-                    },
-                ),
+                    conversation_id=result.conversation.id,
+                    hold_id=result.hold_id_to_release,
+                )
             )
-            confirmation_email_job_id = email_job.id
 
         handoff_notification_email_job_id = (
             result.human_handoff_notification_email_job_id
@@ -171,4 +185,58 @@ def send_chat_message(
         reply=result.reply,
         appointment_id=result.appointment_id,
         booking_confirmed=result.booking_confirmed,
+        confirmation_email_queued=confirmation_email_queued,
     )
+
+
+def _enqueue_confirmation_email_if_allowed(
+    *,
+    guardrails: DemoGuardrailService,
+    client_ip: str,
+    email_jobs: EmailJobService,
+    appointment_id: UUID,
+    patient_id: UUID,
+    appointment_start_time: str,
+    conversation_id: UUID,
+    hold_id: str | None,
+) -> tuple[UUID | None, bool]:
+    try:
+        guardrails.check_confirmation_email_allowed(client_ip)
+    except DemoGuardrailLimitExceeded as exc:
+        logger.warning(
+            "demo_confirmation_email_skipped",
+            extra={
+                "event": "demo_confirmation_email_skipped",
+                "reason": "demo_quota_exceeded",
+                "limit_name": exc.limit_name,
+                "source": CHAT_BOOKING_SOURCE,
+                "appointment_id": str(appointment_id),
+            },
+        )
+        return None, False
+    except DemoGuardrailStoreUnavailable:
+        logger.error(
+            "demo_confirmation_email_skipped",
+            extra={
+                "event": "demo_confirmation_email_skipped",
+                "reason": "demo_guardrail_store_unavailable",
+                "source": CHAT_BOOKING_SOURCE,
+                "appointment_id": str(appointment_id),
+            },
+        )
+        return None, False
+
+    email_job = email_jobs.enqueue_appointment_confirmation(
+        AppointmentConfirmationEmailJobCreate(
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            appointment_start_time=appointment_start_time,
+            payload={
+                "source": CHAT_BOOKING_SOURCE,
+                "hold_id": hold_id,
+                "conversation_id": str(conversation_id),
+            },
+        ),
+    )
+    guardrails.record_confirmation_email_created(client_ip)
+    return email_job.id, True
