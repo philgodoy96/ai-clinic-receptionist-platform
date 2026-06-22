@@ -104,7 +104,7 @@ def test_provider_error_becomes_failed_case_with_fallback_result() -> None:
 
     assert summary.failed_cases == 1
     assert summary.case_results[0].passed is False
-    assert case_output.failure_reason == "provider_error"
+    assert case_output.failure_reason == "provider_exception"
     assert case_output.actual["intent"] == "fallback"
 
 
@@ -120,7 +120,7 @@ def test_invalid_json_becomes_failed_case_with_fallback_result() -> None:
 
     assert summary.failed_cases == 1
     assert summary.case_results[0].passed is False
-    assert case_output.failure_reason == "invalid_json"
+    assert case_output.failure_reason == "json_parse_failed"
     assert case_output.actual["intent"] == "fallback"
 
 
@@ -172,7 +172,7 @@ def test_provider_error_on_one_case_does_not_crash_whole_run() -> None:
     assert summary.passed_cases == 1
     assert summary.failed_cases == 1
     assert case_outputs[0].failure_reason is None
-    assert case_outputs[1].failure_reason == "provider_error"
+    assert case_outputs[1].failure_reason == "provider_exception"
     assert case_outputs[1].actual["intent"] == "fallback"
 
 

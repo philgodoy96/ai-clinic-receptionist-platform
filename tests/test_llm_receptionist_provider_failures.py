@@ -93,7 +93,7 @@ def test_bedrock_client_timeout_triggers_analysis_service_fallback() -> None:
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.PROVIDER_ERROR
+    assert result.failure_reason == LLMFailureReason.PROVIDER_TIMEOUT
     assert result.prompt_version == get_current_receptionist_analysis_prompt_metadata().version
     assert result.error is not None
     assert "Read timeout" in result.error
@@ -112,7 +112,7 @@ def test_invalid_json_from_provider_triggers_invalid_json_fallback() -> None:
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.INVALID_JSON
+    assert result.failure_reason == LLMFailureReason.JSON_PARSE_FAILED
 
 
 def test_bedrock_invalid_json_triggers_invalid_json_fallback() -> None:
@@ -129,7 +129,7 @@ def test_bedrock_invalid_json_triggers_invalid_json_fallback() -> None:
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.INVALID_JSON
+    assert result.failure_reason == LLMFailureReason.JSON_PARSE_FAILED
 
 
 def test_bedrock_malformed_response_triggers_provider_error_fallback() -> None:
@@ -144,7 +144,7 @@ def test_bedrock_malformed_response_triggers_provider_error_fallback() -> None:
     )
 
     assert result.used_fallback is True
-    assert result.failure_reason == LLMFailureReason.PROVIDER_ERROR
+    assert result.failure_reason == LLMFailureReason.PROVIDER_EXCEPTION
 
 
 def test_bedrock_successful_response_flows_through_analysis_service() -> None:
