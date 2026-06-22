@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy.exc import IntegrityError
-
 from app.domain.appointment_rescheduling import (
     APPOINTMENT_RESCHEDULING_SOURCE,
+    AppointmentReschedulingError,
     AppointmentReschedulingHoldExpiredError,
     AppointmentReschedulingNotFoundError,
     AppointmentReschedulingNotReschedulableError,
@@ -20,6 +19,8 @@ from app.domain.appointment_rescheduling import (
     normalize_rescheduling_reason,
     validate_appointment_rescheduling_request,
 )
+from app.domain.appointment_rescheduling_enums import AppointmentRescheduleAttemptStatus
+from app.domain.audit.appointment_rescheduling import build_safe_reschedule_audit_metadata
 from app.domain.audit.enums import AuditEventOutcome, AuditEventType
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.models.appointment_reschedule_attempt import AppointmentRescheduleAttempt
@@ -77,16 +78,27 @@ class AppointmentReschedulingService:
         self,
         request: AppointmentReschedulingRequest,
     ) -> AppointmentReschedulingResult:
-        validate_appointment_rescheduling_request(request)
+        try:
+            validate_appointment_rescheduling_request(request)
+        except AppointmentReschedulingError as exc:
+            self._record_rejected_audit(request, failure_code=exc.failure_code.value)
+            raise
 
         existing_attempt = self.reschedule_attempts.get_by_idempotency_key(
             request.idempotency_key,
         )
-        if existing_attempt is not None and existing_attempt.new_appointment_id is not None:
-            return self._result_from_existing_attempt(existing_attempt, duplicate=True)
+        if self._is_successful_attempt(existing_attempt):
+            assert existing_attempt is not None
+            result = self._result_from_existing_attempt(existing_attempt, duplicate=True)
+            self._record_duplicate_audit(request, result=result)
+            return result
 
         original = self.appointments.get_by_id(request.appointment_id)
         if original is None:
+            self._record_rejected_audit(
+                request,
+                failure_code="appointment_not_found",
+            )
             raise AppointmentReschedulingNotFoundError()
 
         if original.status == AppointmentStatus.RESCHEDULED:
@@ -94,11 +106,15 @@ class AppointmentReschedulingService:
                 appointment_id=original.id,
             )
             if successor is not None:
-                self._record_attempt_best_effort(
-                    request,
-                    original_appointment_id=original.id,
-                    new_appointment_id=successor.id,
-                )
+                tracked_attempt = existing_attempt or self.reschedule_attempts.create_attempt(
+                    idempotency_key=request.idempotency_key,
+                    appointment_id=original.id,
+                ).attempt
+                if tracked_attempt.new_appointment_id is None:
+                    self.reschedule_attempts.mark_succeeded(
+                        tracked_attempt,
+                        new_appointment_id=successor.id,
+                    )
                 return AppointmentReschedulingResult(
                     original_appointment_id=original.id,
                     new_appointment_id=successor.id,
@@ -106,6 +122,43 @@ class AppointmentReschedulingService:
                     already_rescheduled=True,
                 )
 
+        attempt: AppointmentRescheduleAttempt
+        if existing_attempt is not None:
+            attempt = existing_attempt
+        else:
+            create_result = self.reschedule_attempts.create_attempt(
+                idempotency_key=request.idempotency_key,
+                appointment_id=original.id,
+            )
+            attempt = create_result.attempt
+            if create_result.created:
+                self._record_requested_audit(request, original=original)
+
+        try:
+            return self._execute_reschedule(
+                request=request,
+                original=original,
+                attempt=attempt,
+            )
+        except AppointmentReschedulingError as exc:
+            self.reschedule_attempts.mark_failed_or_rejected(
+                attempt,
+                error_code=exc.failure_code.value,
+            )
+            self._record_rejected_audit(
+                request,
+                failure_code=exc.failure_code.value,
+                original=original,
+            )
+            raise
+
+    def _execute_reschedule(
+        self,
+        *,
+        request: AppointmentReschedulingRequest,
+        original: Appointment,
+        attempt: AppointmentRescheduleAttempt,
+    ) -> AppointmentReschedulingResult:
         if not is_appointment_reschedulable(original.status):
             raise AppointmentReschedulingNotReschedulableError()
 
@@ -136,32 +189,15 @@ class AppointmentReschedulingService:
             new_appointment=new_appointment,
         )
 
-        self.audit_logs.record_best_effort(
-            AuditLogCreate(
-                event_type=AuditEventType.APPOINTMENT_RESCHEDULING_CONFIRMED,
-                outcome=AuditEventOutcome.SUCCESS,
-                actor_type=request.actor_type,
-                actor_id=request.actor_id,
-                source=request.source or APPOINTMENT_RESCHEDULING_SOURCE,
-                call_id=request.call_id,
-                conversation_id=request.conversation_id,
-                patient_id=original.patient_id,
-                appointment_id=new_appointment.id,
-                availability_slot_id=slot.id,
-                event_metadata={
-                    "idempotency_key": request.idempotency_key,
-                    "duplicate": False,
-                    "already_rescheduled": False,
-                    "original_appointment_id": str(original.id),
-                    "new_appointment_id": str(new_appointment.id),
-                },
-            ),
-        )
-
-        self._record_attempt_best_effort(
-            request,
-            original_appointment_id=original.id,
+        self.reschedule_attempts.mark_succeeded(
+            attempt,
             new_appointment_id=new_appointment.id,
+        )
+        self._record_succeeded_audit(
+            request=request,
+            original=original,
+            new_appointment=new_appointment,
+            slot=slot,
         )
         self._update_conversation_metadata_best_effort(
             request=request,
@@ -176,6 +212,18 @@ class AppointmentReschedulingService:
             new_appointment_id=new_appointment.id,
             patient_id=original.patient_id,
             confirmation_email_created=confirmation_email_created,
+        )
+
+    def _is_successful_attempt(
+        self,
+        attempt: AppointmentRescheduleAttempt | None,
+    ) -> bool:
+        if attempt is None:
+            return False
+
+        return (
+            attempt.status == AppointmentRescheduleAttemptStatus.SUCCEEDED
+            or attempt.new_appointment_id is not None
         )
 
     def _result_from_existing_attempt(
@@ -373,24 +421,127 @@ class AppointmentReschedulingService:
             owner_id=target.owner_id,
         )
 
-    def _record_attempt_best_effort(
+    def _record_requested_audit(
         self,
         request: AppointmentReschedulingRequest,
         *,
-        original_appointment_id: UUID,
-        new_appointment_id: UUID,
+        original: Appointment,
     ) -> None:
-        try:
-            self.reschedule_attempts.add(
-                AppointmentRescheduleAttempt(
-                    idempotency_key=request.idempotency_key,
-                    appointment_id=original_appointment_id,
-                    new_appointment_id=new_appointment_id,
-                ),
-            )
-        except IntegrityError:
-            existing_attempt = self.reschedule_attempts.get_by_idempotency_key(
-                request.idempotency_key,
-            )
-            if existing_attempt is None:
-                return
+        self.audit_logs.record_best_effort(
+            self._build_audit_payload(
+                request=request,
+                event_type=AuditEventType.APPOINTMENT_RESCHEDULE_REQUESTED,
+                outcome=AuditEventOutcome.SUCCESS,
+                patient_id=original.patient_id,
+                appointment_id=original.id,
+                new_slot_id=request.new_slot_id,
+                hold_id=request.hold_id,
+            ),
+        )
+
+    def _record_succeeded_audit(
+        self,
+        *,
+        request: AppointmentReschedulingRequest,
+        original: Appointment,
+        new_appointment: Appointment,
+        slot: AvailabilitySlot,
+    ) -> None:
+        self.audit_logs.record_best_effort(
+            self._build_audit_payload(
+                request=request,
+                event_type=AuditEventType.APPOINTMENT_RESCHEDULE_SUCCEEDED,
+                outcome=AuditEventOutcome.SUCCESS,
+                patient_id=original.patient_id,
+                appointment_id=new_appointment.id,
+                new_slot_id=slot.id,
+                hold_id=request.hold_id,
+                original_appointment_id=original.id,
+                new_appointment_id=new_appointment.id,
+            ),
+        )
+
+    def _record_rejected_audit(
+        self,
+        request: AppointmentReschedulingRequest,
+        *,
+        failure_code: str,
+        original: Appointment | None = None,
+    ) -> None:
+        original_appointment_id = (
+            original.id if original is not None else request.appointment_id
+        )
+        self.audit_logs.record_best_effort(
+            self._build_audit_payload(
+                request=request,
+                event_type=AuditEventType.APPOINTMENT_RESCHEDULE_REJECTED,
+                outcome=AuditEventOutcome.FAILURE,
+                patient_id=original.patient_id if original is not None else None,
+                appointment_id=request.appointment_id,
+                new_slot_id=request.new_slot_id,
+                hold_id=request.hold_id,
+                original_appointment_id=original_appointment_id,
+                failure_code=failure_code,
+            ),
+        )
+
+    def _record_duplicate_audit(
+        self,
+        request: AppointmentReschedulingRequest,
+        *,
+        result: AppointmentReschedulingResult,
+    ) -> None:
+        self.audit_logs.record_best_effort(
+            self._build_audit_payload(
+                request=request,
+                event_type=AuditEventType.APPOINTMENT_RESCHEDULE_DUPLICATE,
+                outcome=AuditEventOutcome.SUCCESS,
+                patient_id=result.patient_id,
+                appointment_id=result.new_appointment_id,
+                new_slot_id=request.new_slot_id,
+                hold_id=request.hold_id,
+                original_appointment_id=result.original_appointment_id,
+                new_appointment_id=result.new_appointment_id,
+                duplicate=True,
+                already_rescheduled=result.already_rescheduled,
+            ),
+        )
+
+    def _build_audit_payload(
+        self,
+        *,
+        request: AppointmentReschedulingRequest,
+        event_type: AuditEventType,
+        outcome: AuditEventOutcome,
+        patient_id: UUID | None,
+        appointment_id: UUID | None,
+        new_slot_id: UUID | None = None,
+        hold_id: UUID | None = None,
+        original_appointment_id: UUID | None = None,
+        new_appointment_id: UUID | None = None,
+        failure_code: str | None = None,
+        duplicate: bool | None = None,
+        already_rescheduled: bool | None = None,
+    ) -> AuditLogCreate:
+        return AuditLogCreate(
+            event_type=event_type,
+            outcome=outcome,
+            actor_type=request.actor_type,
+            actor_id=request.actor_id,
+            source=request.source or APPOINTMENT_RESCHEDULING_SOURCE,
+            call_id=request.call_id,
+            conversation_id=request.conversation_id,
+            patient_id=patient_id,
+            appointment_id=appointment_id,
+            availability_slot_id=new_slot_id,
+            event_metadata=build_safe_reschedule_audit_metadata(
+                idempotency_key=request.idempotency_key,
+                original_appointment_id=original_appointment_id,
+                new_appointment_id=new_appointment_id,
+                new_slot_id=new_slot_id,
+                hold_id=hold_id,
+                failure_code=failure_code,
+                duplicate=duplicate,
+                already_rescheduled=already_rescheduled,
+            ),
+        )

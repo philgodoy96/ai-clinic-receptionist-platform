@@ -6,7 +6,6 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.domain.appointment_rescheduling import (
     AppointmentReschedulingHoldExpiredError,
@@ -17,6 +16,7 @@ from app.domain.appointment_rescheduling import (
     AppointmentReschedulingRequest,
     AppointmentReschedulingSlotUnavailableError,
 )
+from app.domain.appointment_rescheduling_enums import AppointmentRescheduleAttemptStatus
 from app.domain.audit.enums import AuditEventOutcome, AuditEventType
 from app.domain.conversations.enums import ConversationChannel
 from app.domain.jobs.enums import EmailJobType
@@ -25,6 +25,7 @@ from app.domain.voice_conversation import read_voice_context
 from app.models.appointment_reschedule_attempt import AppointmentRescheduleAttempt
 from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
+from app.repositories.appointments import RescheduleAttemptCreateResult
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
@@ -66,17 +67,6 @@ class FakeAppointmentRescheduleAttemptRepository:
         self.attempts: list[AppointmentRescheduleAttempt] = []
         self._idempotency_keys: set[str] = set()
 
-    def add(self, attempt: AppointmentRescheduleAttempt) -> AppointmentRescheduleAttempt:
-        if attempt.idempotency_key in self._idempotency_keys:
-            raise IntegrityError("duplicate idempotency key", {}, Exception())
-
-        if attempt.id is None:
-            attempt.id = uuid4()
-
-        self._idempotency_keys.add(attempt.idempotency_key)
-        self.attempts.append(attempt)
-        return attempt
-
     def get_by_idempotency_key(
         self,
         idempotency_key: str,
@@ -85,6 +75,51 @@ class FakeAppointmentRescheduleAttemptRepository:
             if attempt.idempotency_key == idempotency_key:
                 return attempt
         return None
+
+    def create_attempt(
+        self,
+        *,
+        idempotency_key: str,
+        appointment_id: UUID,
+    ) -> RescheduleAttemptCreateResult:
+        existing = self.get_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            return RescheduleAttemptCreateResult(attempt=existing, created=False)
+
+        attempt = AppointmentRescheduleAttempt(
+            idempotency_key=idempotency_key,
+            appointment_id=appointment_id,
+            status=AppointmentRescheduleAttemptStatus.PENDING,
+        )
+        if attempt.id is None:
+            attempt.id = uuid4()
+        self._idempotency_keys.add(idempotency_key)
+        self.attempts.append(attempt)
+        return RescheduleAttemptCreateResult(attempt=attempt, created=True)
+
+    def mark_succeeded(
+        self,
+        attempt: AppointmentRescheduleAttempt,
+        *,
+        new_appointment_id: UUID,
+    ) -> AppointmentRescheduleAttempt:
+        attempt.status = AppointmentRescheduleAttemptStatus.SUCCEEDED
+        attempt.new_appointment_id = new_appointment_id
+        attempt.error_code = None
+        return attempt
+
+    def mark_failed_or_rejected(
+        self,
+        attempt: AppointmentRescheduleAttempt,
+        *,
+        error_code: str,
+        status: AppointmentRescheduleAttemptStatus = (
+            AppointmentRescheduleAttemptStatus.REJECTED
+        ),
+    ) -> AppointmentRescheduleAttempt:
+        attempt.status = status
+        attempt.error_code = error_code
+        return attempt
 
 
 def _build_request(
@@ -328,7 +363,7 @@ def test_duplicate_request_is_idempotent() -> None:
     assert second.new_appointment_id == first.new_appointment_id
     assert len(context.appointment_repository.appointments) == 2
     assert len(context.attempt_repository.attempts) == 1
-    assert len(context.audit_logs.records) == 1
+    assert len(context.audit_logs.records) == 3
     assert len(context.email_repository.email_jobs) == 1
 
 
@@ -373,16 +408,55 @@ def test_conversation_metadata_is_safely_merged_after_reschedule() -> None:
     assert updated.conversation_metadata["source"] == "retell_voice"
 
 
-def test_audit_log_written_on_successful_reschedule() -> None:
+def test_audit_logs_written_on_successful_reschedule() -> None:
     context = create_rescheduling_context()
 
     result = context.service.reschedule_appointment(_build_request(context))
 
-    assert len(context.audit_logs.records) == 1
-    audit_record = context.audit_logs.records[0]
-    assert audit_record.event_type == AuditEventType.APPOINTMENT_RESCHEDULING_CONFIRMED
-    assert audit_record.outcome == AuditEventOutcome.SUCCESS
-    assert audit_record.appointment_id == result.new_appointment_id
-    assert audit_record.event_metadata["original_appointment_id"] == str(
+    assert len(context.audit_logs.records) == 2
+    requested = context.audit_logs.records[0]
+    succeeded = context.audit_logs.records[1]
+    assert requested.event_type == AuditEventType.APPOINTMENT_RESCHEDULE_REQUESTED
+    assert requested.outcome == AuditEventOutcome.SUCCESS
+    assert succeeded.event_type == AuditEventType.APPOINTMENT_RESCHEDULE_SUCCEEDED
+    assert succeeded.outcome == AuditEventOutcome.SUCCESS
+    assert succeeded.appointment_id == result.new_appointment_id
+    assert succeeded.event_metadata["original_appointment_id"] == str(
         context.original_appointment.id,
     )
+    assert "transcript" not in succeeded.event_metadata
+    assert "email" not in succeeded.event_metadata
+
+
+def test_rejected_audit_written_when_slot_unavailable() -> None:
+    context = create_rescheduling_context(
+        new_slot_status=AvailabilitySlotStatus.BLOCKED,
+    )
+
+    with pytest.raises(AppointmentReschedulingSlotUnavailableError):
+        context.service.reschedule_appointment(_build_request(context))
+
+    assert len(context.audit_logs.records) == 2
+    audit_record = context.audit_logs.records[-1]
+    assert audit_record.event_type == AuditEventType.APPOINTMENT_RESCHEDULE_REJECTED
+    assert audit_record.outcome == AuditEventOutcome.FAILURE
+    assert audit_record.event_metadata["failure_code"] == "slot_unavailable"
+    assert context.attempt_repository.attempts[0].status == (
+        AppointmentRescheduleAttemptStatus.REJECTED
+    )
+
+
+def test_duplicate_audit_written_on_idempotent_retry() -> None:
+    context = create_rescheduling_context()
+    request = _build_request(context, idempotency_key="reschedule-dup-audit")
+
+    context.service.reschedule_appointment(request)
+    context.service.reschedule_appointment(request)
+
+    duplicate_records = [
+        record
+        for record in context.audit_logs.records
+        if record.event_type == AuditEventType.APPOINTMENT_RESCHEDULE_DUPLICATE
+    ]
+    assert len(duplicate_records) == 1
+    assert duplicate_records[0].event_metadata["duplicate"] is True

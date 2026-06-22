@@ -4,9 +4,17 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
+from app.domain.appointment_rescheduling_enums import AppointmentRescheduleAttemptStatus
+
+
+def appointment_reschedule_attempt_status_values(
+    enum_class: type[AppointmentRescheduleAttemptStatus],
+) -> list[str]:
+    return [item.value for item in enum_class]
 
 
 class AppointmentRescheduleAttempt(Base):
@@ -24,9 +32,25 @@ class AppointmentRescheduleAttempt(Base):
         nullable=True,
         index=True,
     )
+    status: Mapped[AppointmentRescheduleAttemptStatus] = mapped_column(
+        SAEnum(
+            AppointmentRescheduleAttemptStatus,
+            values_callable=appointment_reschedule_attempt_status_values,
+            name="appointment_reschedule_attempt_status",
+        ),
+        nullable=False,
+        default=AppointmentRescheduleAttemptStatus.PENDING,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
 

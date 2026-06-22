@@ -137,6 +137,7 @@ def test_validate_request_requires_hold_or_slot() -> None:
             ),
         )
 
+
 def test_validate_request_accepts_valid_request() -> None:
     validate_appointment_rescheduling_request(_build_request())
 
