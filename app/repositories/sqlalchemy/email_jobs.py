@@ -235,6 +235,53 @@ class SQLAlchemyEmailJobRepository:
 
         return email_job
 
+    def claim_by_id(
+        self,
+        *,
+        email_job_id: UUID,
+        worker_id: str,
+        now: datetime,
+        lock_duration: timedelta,
+    ) -> EmailJob | None:
+        statement = (
+            select(EmailJob)
+            .where(EmailJob.id == email_job_id)
+            .with_for_update()
+        )
+        email_job = self.session.scalars(statement).first()
+
+        if email_job is None:
+            return None
+
+        if email_job.status == EmailJobStatus.SENT:
+            return email_job
+
+        if not self._is_eligible_for_claim(email_job, now):
+            return email_job
+
+        email_job.status = EmailJobStatus.PROCESSING
+        email_job.locked_by = worker_id
+        email_job.locked_until = now + lock_duration
+        email_job.updated_at = now
+        self.session.flush()
+
+        return email_job
+
+    def _is_eligible_for_claim(self, email_job: EmailJob, now: datetime) -> bool:
+        if email_job.status == EmailJobStatus.PENDING:
+            return (
+                email_job.next_attempt_at is None or email_job.next_attempt_at <= now
+            ) and (
+                email_job.locked_until is None or email_job.locked_until < now
+            )
+
+        if email_job.status == EmailJobStatus.PROCESSING:
+            return (
+                email_job.locked_until is not None and email_job.locked_until < now
+            )
+
+        return False
+
     def mark_sent(
         self,
         *,

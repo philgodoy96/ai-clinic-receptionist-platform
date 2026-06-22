@@ -247,6 +247,51 @@ class RetryPolicyEmailJobWorkerRepository:
 
         return email_job
 
+    def claim_by_id(
+        self,
+        *,
+        email_job_id: UUID,
+        worker_id: str,
+        now: datetime,
+        lock_duration: timedelta,
+    ) -> EmailJob | None:
+        email_job = next(
+            (job for job in self.email_jobs if job.id == email_job_id),
+            None,
+        )
+
+        if email_job is None:
+            return None
+
+        if email_job.status == EmailJobStatus.SENT:
+            return email_job
+
+        eligible = (
+            email_job.status == EmailJobStatus.PENDING
+            and (
+                email_job.next_attempt_at is None
+                or email_job.next_attempt_at <= now
+            )
+            and (
+                email_job.locked_until is None
+                or email_job.locked_until < now
+            )
+        ) or (
+            email_job.status == EmailJobStatus.PROCESSING
+            and email_job.locked_until is not None
+            and email_job.locked_until < now
+        )
+
+        if not eligible:
+            return email_job
+
+        email_job.status = EmailJobStatus.PROCESSING
+        email_job.locked_by = worker_id
+        email_job.locked_until = now + lock_duration
+        email_job.updated_at = now
+
+        return email_job
+
     def mark_sent(
         self,
         *,

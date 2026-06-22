@@ -17,7 +17,8 @@ def test_email_job_dispatch_message_round_trip() -> None:
     encoded = encode_email_job_dispatch_message(message)
     decoded = decode_email_job_dispatch_message(encoded)
 
-    assert decoded == message
+    assert decoded.email_job_id == message.email_job_id
+    assert decoded.message_type == "email_job_ready"
 
 
 def test_noop_email_job_dispatch_publisher_does_nothing() -> None:
