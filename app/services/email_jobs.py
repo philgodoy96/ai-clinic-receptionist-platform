@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from app.core.config import get_settings
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
 from app.models.email_jobs import EmailJob
 from app.repositories.email_jobs import EmailJobRepository
@@ -86,6 +87,7 @@ class EmailJobService:
     ) -> EmailJob:
         subject = "Appointment confirmation"
         body = self._build_confirmation_body(payload)
+        settings = get_settings()
         email_job = EmailJob(
             job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
             status=EmailJobStatus.PENDING,
@@ -94,8 +96,8 @@ class EmailJobService:
             recipient_email=payload.recipient_email,
             subject=subject,
             body=body,
-            attempts=0,
-            max_attempts=3,
+            attempt_count=0,
+            max_attempts=settings.email_job_max_attempts,
             payload={
                 "patient_name": payload.patient_name,
                 "doctor_name": payload.doctor_name,
@@ -133,6 +135,7 @@ class EmailJobService:
         normalized_payload = {
             key: value for key, value in job_payload.items() if value is not None
         }
+        settings = get_settings()
         email_job = EmailJob(
             job_type=EmailJobType.HUMAN_ESCALATION_NOTIFICATION,
             status=EmailJobStatus.PENDING,
@@ -141,8 +144,9 @@ class EmailJobService:
             recipient_email=payload.recipient_email,
             subject=subject,
             body=body,
-            attempts=0,
-            max_attempts=3,
+            attempt_count=0,
+            max_attempts=settings.email_job_max_attempts,
+            idempotency_key=payload.idempotency_key,
             payload=normalized_payload,
         )
 
@@ -226,22 +230,22 @@ class EmailJobService:
             now=effective_now,
         )
 
-    def replay_dead_letter_email_job(
+    def replay_failed_email_job(
         self,
         email_job_id: UUID,
         now: datetime | None = None,
     ) -> EmailJob:
         email_job = self.get_email_job(email_job_id)
 
-        if email_job.status != EmailJobStatus.DEAD_LETTER:
+        if email_job.status != EmailJobStatus.FAILED:
             raise InvalidEmailJobReplayStateError(
                 f"email job cannot be replayed from status: {email_job.status.value}",
             )
 
         effective_now = now if now is not None else datetime.now(UTC)
 
-        return self.repository.create_replay(
-            original_email_job=email_job,
+        return self.repository.reset_for_replay(
+            email_job=email_job,
             now=effective_now,
         )
 

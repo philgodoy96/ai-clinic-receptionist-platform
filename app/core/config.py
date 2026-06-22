@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     )
     email_job_queue_name: str = Field(default="email_jobs", alias="EMAIL_JOB_QUEUE_NAME")
     email_job_dispatch_enabled: bool = Field(default=False, alias="EMAIL_JOB_DISPATCH_ENABLED")
+    email_job_max_attempts: int = Field(default=3, ge=1, alias="EMAIL_JOB_MAX_ATTEMPTS")
+    email_job_backoff_base_seconds: int = Field(
+        default=30,
+        ge=1,
+        alias="EMAIL_JOB_BACKOFF_BASE_SECONDS",
+    )
+    email_job_backoff_max_seconds: int = Field(
+        default=900,
+        ge=1,
+        alias="EMAIL_JOB_BACKOFF_MAX_SECONDS",
+    )
+    email_job_lock_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        alias="EMAIL_JOB_LOCK_TTL_SECONDS",
+    )
 
     retell_api_key: str = Field(default="", alias="RETELL_API_KEY")
     retell_webhook_secret: str = Field(default="", alias="RETELL_WEBHOOK_SECRET")
