@@ -16,6 +16,7 @@ from app.domain.appointment_rescheduling import (
     AppointmentReschedulingFailureCode,
     AppointmentReschedulingInvalidIdempotencyKeyError,
     AppointmentReschedulingMissingConfirmationError,
+    AppointmentReschedulingMissingTargetError,
     AppointmentReschedulingRequest,
     is_appointment_reschedulable,
     normalize_rescheduling_reason,
@@ -60,7 +61,7 @@ def _build_request(
 ) -> AppointmentReschedulingRequest:
     return AppointmentReschedulingRequest(
         appointment_id=uuid4(),
-        availability_slot_id=uuid4(),
+        new_slot_id=uuid4(),
         explicit_confirmation=explicit_confirmation,
         idempotency_key=idempotency_key,
         rescheduling_reason="Patient requested a new time",
@@ -125,6 +126,16 @@ def test_appointment_status_reschedulable_support(
 ) -> None:
     assert is_appointment_reschedulable(status) is expected
 
+
+def test_validate_request_requires_hold_or_slot() -> None:
+    with pytest.raises(AppointmentReschedulingMissingTargetError):
+        validate_appointment_rescheduling_request(
+            AppointmentReschedulingRequest(
+                appointment_id=uuid4(),
+                explicit_confirmation=True,
+                idempotency_key="reschedule-attempt-1",
+            ),
+        )
 
 def test_validate_request_accepts_valid_request() -> None:
     validate_appointment_rescheduling_request(_build_request())

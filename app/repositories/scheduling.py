@@ -87,3 +87,10 @@ class AppointmentRepository(Protocol):
 
     def add(self, appointment: Appointment) -> Appointment:
         raise NotImplementedError
+
+    def find_by_rescheduled_from(
+        self,
+        *,
+        appointment_id: UUID,
+    ) -> Appointment | None:
+        raise NotImplementedError

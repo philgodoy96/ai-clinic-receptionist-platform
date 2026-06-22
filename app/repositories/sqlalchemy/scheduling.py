@@ -182,3 +182,13 @@ class SQLAlchemyAppointmentRepository:
         self.session.flush()
 
         return appointment
+
+    def find_by_rescheduled_from(
+        self,
+        *,
+        appointment_id: UUID,
+    ) -> Appointment | None:
+        statement = select(Appointment).where(
+            Appointment.rescheduled_from_appointment_id == appointment_id,
+        )
+        return self.session.scalar(statement)

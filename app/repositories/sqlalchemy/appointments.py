@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.appointment_cancellation_attempt import AppointmentCancellationAttempt
+from app.models.appointment_reschedule_attempt import AppointmentRescheduleAttempt
 
 
 class SQLAlchemyAppointmentCancellationAttemptRepository:
@@ -25,6 +26,30 @@ class SQLAlchemyAppointmentCancellationAttemptRepository:
         statement = (
             select(AppointmentCancellationAttempt)
             .where(AppointmentCancellationAttempt.idempotency_key == idempotency_key)
+            .limit(1)
+        )
+        return self.session.scalars(statement).first()
+
+
+class SQLAlchemyAppointmentRescheduleAttemptRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def add(
+        self,
+        attempt: AppointmentRescheduleAttempt,
+    ) -> AppointmentRescheduleAttempt:
+        self.session.add(attempt)
+        self.session.flush()
+        return attempt
+
+    def get_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> AppointmentRescheduleAttempt | None:
+        statement = (
+            select(AppointmentRescheduleAttempt)
+            .where(AppointmentRescheduleAttempt.idempotency_key == idempotency_key)
             .limit(1)
         )
         return self.session.scalars(statement).first()
