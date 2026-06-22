@@ -140,7 +140,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, an offline LLM evaluation dataset for structured receptionist analysis quality, and optional provider-run evaluation mode for manual local checks.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, background email jobs, human escalation, an LLM provider boundary with fake as the default provider and optional Bedrock adapter, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -153,3 +153,25 @@ Architecture docs:
 - `docs/architecture/llm-provider-foundation.md`
 - `docs/architecture/llm-evaluation-dataset.md`
 - `docs/architecture/provider-run-evaluation-mode.md`
+- `docs/architecture/public-demo-guardrails.md`
+
+## Local Mode vs Public Demo Mode
+
+**Local mode** is the default for development and CI:
+
+- `PUBLIC_DEMO_MODE=false`
+- `PUBLIC_DEMO_GUARDRAILS_ENABLED=false`
+- `LLM_PROVIDER=fake`
+- `EMAIL_PROVIDER=fake`
+- no real provider API keys required
+- Docker Compose for PostgreSQL, Redis, and RabbitMQ
+
+**Public demo mode** is intended for a hosted unauthenticated demo:
+
+- `PUBLIC_DEMO_MODE=true`
+- `PUBLIC_DEMO_GUARDRAILS_ENABLED=true`
+- Redis-backed per-IP and global quotas on chat, Retell tools, appointments, and confirmation emails
+- standardized `429` responses when limits are exceeded
+- protected endpoints fail closed when guardrails are enabled but Redis is unavailable
+
+See `docs/architecture/public-demo-guardrails.md` for design details and `docs/configuration.md` for all guardrail environment variables.
