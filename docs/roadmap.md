@@ -172,10 +172,14 @@ Implemented:
 - Durable retry policy with exponential backoff, max attempts, and `next_attempt_at`
 - Appointment confirmation idempotency key
 - RabbitMQ wake-up messages containing only `email_job_id`
-- Worker claim/lock behavior and polling fallback worker
+- Worker claim/lock behavior, split claim/finalize transactions, and polling fallback worker
+- RabbitMQ ack after durable finalize commit; Resend idempotency keys
 
 Future work:
 
+- provider webhook/bounce handling
+- RabbitMQ DLQ for malformed broker messages
+- delivery metrics dashboard and production alerting for terminal `failed` jobs
 - Admin auth/RBAC as future production hardening, outside current demo scope
 - Prometheus/Grafana integration (optional)
 
