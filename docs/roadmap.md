@@ -126,8 +126,9 @@ Implemented:
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
 - Retell webhook security with configuration validation, centralized signature verification, protected callback/tool routes, and standardized rejection for missing or invalid signatures
 - Retell call lifecycle with durable `VoiceCall` and `VoiceCallEvent` records, idempotent verified webhook ingestion, conservative status transitions, safe event metadata storage, and internal/debug inspection APIs
-- Retell tool-calling adapter with explicit supported-tool allowlist, scheduling and hold service delegation, side-effect idempotency, and provider-safe responses for `check_availability`, `hold_appointment_slot`, and `release_appointment_hold`
+- Retell tool-calling adapter with explicit supported-tool allowlist, scheduling and hold service delegation, side-effect idempotency, and provider-safe responses for `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, and `book_appointment`
 - Voice conversation bridge with durable `VoiceCall` to `Conversation` linkage, safe `voice_context` storage, Retell tool context integration, and internal/debug conversation-context API
+- Retell voice booking confirmation with active hold validation, patient identity validation, explicit caller confirmation, idempotent provider callback handling, and delegation to `AppointmentBookingService` (see `docs/architecture/retell-voice-booking-confirmation.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 
 Upcoming:
@@ -158,6 +159,7 @@ Implemented:
 - Retell call lifecycle persistence and verified webhook ingestion (see `docs/architecture/retell-call-lifecycle.md`)
 - Retell tool-calling adapter with explicit allowlist, scheduling/hold delegation, idempotency, and provider-safe responses (see `docs/architecture/retell-tool-calling-adapter.md`)
 - Voice conversation bridge with `VoiceCall` to `Conversation` linkage, safe voice context, Retell tool integration, and internal/debug context endpoint (see `docs/architecture/voice-conversation-bridge.md`)
+- Retell voice booking confirmation with hold, identity, and explicit confirmation validation (see `docs/architecture/retell-voice-booking-confirmation.md`)
 
 Upcoming:
 
