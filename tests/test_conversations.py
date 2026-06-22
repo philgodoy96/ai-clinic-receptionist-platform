@@ -221,6 +221,13 @@ class FakeConversationRepository:
 
         return None
 
+    def get_by_call_id(self, call_id: str) -> Conversation | None:
+        for conversation in self.conversations:
+            if conversation.call_id == call_id:
+                return conversation
+
+        return None
+
     def add_message(self, message: ConversationMessage) -> ConversationMessage:
         if message.id is None:
             message.id = uuid4()
