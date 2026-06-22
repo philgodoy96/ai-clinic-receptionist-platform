@@ -11,8 +11,10 @@ from app.domain.voice_conversation import (
     VoiceConversationDebugContext,
     VoiceConversationLinkConflictError,
     extract_scheduling_summaries,
+    read_last_reschedule_summary,
     read_voice_context,
 )
+from app.domain.voice_rescheduling import apply_reschedule_success_to_conversation
 from app.models.conversations import Conversation
 from app.models.voice_calls import VoiceCall
 from app.repositories.conversations import ConversationRepository
@@ -146,6 +148,7 @@ class VoiceConversationBridgeService:
         )
 
         voice_context: dict[str, object] = {}
+        conversation: Conversation | None = None
         if voice_call.conversation_id is not None:
             conversation = self.conversations.get_by_id(voice_call.conversation_id)
             if conversation is not None:
@@ -180,6 +183,31 @@ class VoiceConversationBridgeService:
                     "selected_availability_slot_id",
                 )
             ),
+            last_reschedule_summary=read_last_reschedule_summary(
+                conversation.conversation_metadata if conversation is not None else {},
+            ),
+        )
+
+    def record_successful_reschedule_context(
+        self,
+        *,
+        conversation_id: UUID,
+        original_appointment_id: UUID,
+        new_appointment_id: UUID,
+        availability_slot_id: UUID,
+        start_time: str,
+        end_time: str,
+        duplicate: bool = False,
+    ) -> Conversation:
+        return apply_reschedule_success_to_conversation(
+            self.conversation_service,
+            conversation_id=conversation_id,
+            original_appointment_id=original_appointment_id,
+            new_appointment_id=new_appointment_id,
+            availability_slot_id=availability_slot_id,
+            start_time=start_time,
+            end_time=end_time,
+            duplicate=duplicate,
         )
 
     def resolve_cancel_appointment_id_for_conversation(

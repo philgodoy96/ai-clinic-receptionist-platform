@@ -405,7 +405,12 @@ def test_conversation_metadata_is_safely_merged_after_reschedule() -> None:
     assert voice_context["appointment_status"] == AppointmentStatus.SCHEDULED.value
     assert voice_context["availability_slot_id"] == str(context.new_slot.id)
     assert voice_context.get("hold_id") is None
+    assert voice_context["rescheduled_from_appointment_id"] == str(result.original_appointment_id)
     assert updated.conversation_metadata["source"] == "retell_voice"
+    assert updated.conversation_metadata["last_reschedule_summary"]["status"] == "succeeded"
+    assert updated.conversation_metadata["last_reschedule_summary"]["new_appointment_id"] == str(
+        result.new_appointment_id,
+    )
 
 
 def test_audit_logs_written_on_successful_reschedule() -> None:

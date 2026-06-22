@@ -37,9 +37,24 @@ _SAFE_VOICE_CONTEXT_KEYS = frozenset(
         "hold_id",
         "requested_date",
         "requested_time_window",
+        "rescheduled_from_appointment_id",
         "selected_availability_slot_id",
         "specialty_name",
         "start_time",
+    },
+)
+
+_SAFE_RESCHEDULE_SUMMARY_KEYS = frozenset(
+    {
+        "appointment_status",
+        "availability_slot_id",
+        "duplicate",
+        "end_time",
+        "failure_code",
+        "new_appointment_id",
+        "original_appointment_id",
+        "start_time",
+        "status",
     },
 )
 
@@ -82,6 +97,19 @@ class SchedulingPreferenceSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class RescheduleSummary:
+    status: str
+    original_appointment_id: str | None = None
+    new_appointment_id: str | None = None
+    appointment_status: str | None = None
+    availability_slot_id: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    failure_code: str | None = None
+    duplicate: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class VoiceConversationContext:
     provider_call_id: str
     voice_call_id: UUID
@@ -105,6 +133,7 @@ class VoiceConversationDebugContext:
     requested_date: str | None = None
     requested_time_window: dict[str, str] | None = None
     last_selected_slot_id: str | None = None
+    last_reschedule_summary: RescheduleSummary | None = None
 
 
 def _safe_string(value: Any) -> str | None:
@@ -223,6 +252,57 @@ def clear_active_hold_voice_context_metadata(
         **conversation_metadata,
         "voice_context": cleared_context,
     }
+
+
+def _sanitize_reschedule_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in summary.items()
+        if key.strip().lower() in _SAFE_RESCHEDULE_SUMMARY_KEYS
+        and key.strip().lower() not in _BLOCKED_CONTEXT_KEYS
+    }
+
+
+def merge_last_reschedule_summary_metadata(
+    conversation_metadata: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    safe_summary = _sanitize_reschedule_summary(summary)
+    if not safe_summary:
+        return conversation_metadata
+
+    return {
+        **conversation_metadata,
+        "last_reschedule_summary": safe_summary,
+    }
+
+
+def read_last_reschedule_summary(
+    conversation_metadata: dict[str, Any],
+) -> RescheduleSummary | None:
+    raw_summary = conversation_metadata.get("last_reschedule_summary")
+    if not isinstance(raw_summary, dict):
+        return None
+
+    safe_summary = _sanitize_reschedule_summary(raw_summary)
+    status = _safe_string(safe_summary.get("status"))
+    if status is None:
+        return None
+
+    duplicate_value = safe_summary.get("duplicate")
+    duplicate = duplicate_value if isinstance(duplicate_value, bool) else None
+
+    return RescheduleSummary(
+        status=status,
+        original_appointment_id=_safe_string(safe_summary.get("original_appointment_id")),
+        new_appointment_id=_safe_string(safe_summary.get("new_appointment_id")),
+        appointment_status=_safe_string(safe_summary.get("appointment_status")),
+        availability_slot_id=_safe_string(safe_summary.get("availability_slot_id")),
+        start_time=_safe_string(safe_summary.get("start_time")),
+        end_time=_safe_string(safe_summary.get("end_time")),
+        failure_code=_safe_string(safe_summary.get("failure_code")),
+        duplicate=duplicate,
+    )
 
 
 def _day_bounds_from_requested_date(requested_date: str) -> tuple[datetime, datetime]:

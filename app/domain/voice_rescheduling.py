@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from app.domain.appointment_rescheduling import build_reschedule_success_context_updates
 from app.domain.voice_conversation import read_voice_context
 
 if TYPE_CHECKING:
     from app.models.conversations import Conversation
     from app.schemas.retell_tools import RescheduleAppointmentToolArguments
+    from app.services.conversations import ConversationService
 
 _BLOCKED_RESCHEDULE_ARGUMENT_KEYS = frozenset(
     {
@@ -185,6 +187,77 @@ def resolve_reschedule_target_reference(
             return None, None, "new_slot_required"
 
     return parsed_hold, parsed_slot, None
+
+
+def build_last_reschedule_success_summary(
+    *,
+    original_appointment_id: UUID,
+    new_appointment_id: UUID,
+    availability_slot_id: UUID,
+    start_time: str,
+    end_time: str,
+    duplicate: bool = False,
+) -> dict[str, object]:
+    return {
+        "status": "succeeded",
+        "original_appointment_id": str(original_appointment_id),
+        "new_appointment_id": str(new_appointment_id),
+        "appointment_status": "scheduled",
+        "availability_slot_id": str(availability_slot_id),
+        "start_time": start_time,
+        "end_time": end_time,
+        "duplicate": duplicate,
+    }
+
+
+_RECOVERABLE_RESCHEDULE_FAILURE_CODES = frozenset(
+    {
+        "active_hold_required",
+        "appointment_hold_expired",
+        "slot_unavailable",
+        "slot_already_booked",
+        "new_slot_required",
+    },
+)
+
+
+def is_recoverable_reschedule_failure(error_code: str) -> bool:
+    return error_code in _RECOVERABLE_RESCHEDULE_FAILURE_CODES
+
+
+def apply_reschedule_success_to_conversation(
+    conversations: ConversationService,
+    *,
+    conversation_id: UUID,
+    original_appointment_id: UUID,
+    new_appointment_id: UUID,
+    availability_slot_id: UUID,
+    start_time: str,
+    end_time: str,
+    duplicate: bool = False,
+) -> Conversation:
+    conversations.clear_voice_active_hold(conversation_id=conversation_id)
+    conversations.merge_voice_context(
+        conversation_id=conversation_id,
+        voice_context=build_reschedule_success_context_updates(
+            appointment_id=new_appointment_id,
+            original_appointment_id=original_appointment_id,
+            availability_slot_id=availability_slot_id,
+            start_time=start_time,
+            end_time=end_time,
+        ),
+    )
+    return conversations.merge_last_reschedule_summary(
+        conversation_id=conversation_id,
+        summary=build_last_reschedule_success_summary(
+            original_appointment_id=original_appointment_id,
+            new_appointment_id=new_appointment_id,
+            availability_slot_id=availability_slot_id,
+            start_time=start_time,
+            end_time=end_time,
+            duplicate=duplicate,
+        ),
+    )
 
 
 def read_reschedule_appointment_voice_context(

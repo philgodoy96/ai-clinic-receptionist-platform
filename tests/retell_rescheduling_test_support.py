@@ -163,6 +163,7 @@ def create_retell_rescheduling_tool_context() -> dict[str, Any]:
 
     return {
         "adapter": adapter,
+        "bridge": bridge,
         "tracking_rescheduling": tracking_rescheduling,
         "rescheduling_context": rescheduling_context,
         "conversation": conversation,
@@ -170,4 +171,5 @@ def create_retell_rescheduling_tool_context() -> dict[str, Any]:
         "original_appointment": original_appointment,
         "hold": hold,
         "new_slot": rescheduling_context.new_slot,
+        "voice_call": voice_call,
     }

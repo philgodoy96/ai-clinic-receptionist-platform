@@ -968,10 +968,38 @@ class RetellToolCallingAdapter:
                 error_code=exc.failure_code.value,
             )
 
+        self._update_voice_context_after_reschedule(
+            conversation_id=conversation.id,
+            reschedule_result=reschedule_result,
+        )
+
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
             tool_call_id=parsed.tool_call_id,
             result=self._build_reschedule_appointment_result(reschedule_result),
+            duplicate=reschedule_result.duplicate,
+        )
+
+    def _update_voice_context_after_reschedule(
+        self,
+        *,
+        conversation_id: UUID,
+        reschedule_result: AppointmentReschedulingResult,
+    ) -> None:
+        if self.voice_conversation_bridge is None or self.appointments is None:
+            return
+
+        new_appointment = self.appointments.get_by_id(reschedule_result.new_appointment_id)
+        if new_appointment is None or new_appointment.availability_slot_id is None:
+            return
+
+        self.voice_conversation_bridge.record_successful_reschedule_context(
+            conversation_id=conversation_id,
+            original_appointment_id=reschedule_result.original_appointment_id,
+            new_appointment_id=reschedule_result.new_appointment_id,
+            availability_slot_id=new_appointment.availability_slot_id,
+            start_time=new_appointment.start_time.isoformat(),
+            end_time=new_appointment.end_time.isoformat(),
             duplicate=reschedule_result.duplicate,
         )
 
