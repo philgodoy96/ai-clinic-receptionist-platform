@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.schemas.retell_tools import (
+    BookAppointmentToolArguments,
     CheckAvailabilityToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
@@ -21,6 +22,7 @@ _ARGUMENT_MODEL_BY_TOOL: dict[
         CheckAvailabilityToolArguments
         | HoldAppointmentSlotToolArguments
         | ReleaseAppointmentHoldToolArguments
+        | BookAppointmentToolArguments
     ],
 ] = {}
 
@@ -29,6 +31,7 @@ class RetellSupportedToolName(StrEnum):
     CHECK_AVAILABILITY = "check_availability"
     HOLD_APPOINTMENT_SLOT = "hold_appointment_slot"
     RELEASE_APPOINTMENT_HOLD = "release_appointment_hold"
+    BOOK_APPOINTMENT = "book_appointment"
 
 
 class RetellToolCallStatus(StrEnum):
@@ -53,6 +56,7 @@ RetellToolArguments = (
     CheckAvailabilityToolArguments
     | HoldAppointmentSlotToolArguments
     | ReleaseAppointmentHoldToolArguments
+    | BookAppointmentToolArguments
 )
 
 
@@ -190,5 +194,6 @@ _ARGUMENT_MODEL_BY_TOOL.update(
         RetellSupportedToolName.CHECK_AVAILABILITY: CheckAvailabilityToolArguments,
         RetellSupportedToolName.HOLD_APPOINTMENT_SLOT: HoldAppointmentSlotToolArguments,
         RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD: ReleaseAppointmentHoldToolArguments,
+        RetellSupportedToolName.BOOK_APPOINTMENT: BookAppointmentToolArguments,
     },
 )
