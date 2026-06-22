@@ -25,6 +25,20 @@ class RequestedTimeWindowResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RescheduleSummaryResponse(BaseModel):
+    status: str
+    original_appointment_id: str | None = None
+    new_appointment_id: str | None = None
+    appointment_status: str | None = None
+    availability_slot_id: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    failure_code: str | None = None
+    duplicate: bool | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class VoiceConversationContextResponse(BaseModel):
     voice_call_id: UUID
     provider: str
@@ -37,6 +51,7 @@ class VoiceConversationContextResponse(BaseModel):
     requested_date: str | None = None
     requested_time_window: RequestedTimeWindowResponse | None = None
     last_selected_slot_id: str | None = None
+    last_reschedule_summary: RescheduleSummaryResponse | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,6 +74,12 @@ def voice_conversation_context_to_response(
             context.requested_time_window,
         )
 
+    last_reschedule_summary = None
+    if context.last_reschedule_summary is not None:
+        last_reschedule_summary = RescheduleSummaryResponse.model_validate(
+            context.last_reschedule_summary,
+        )
+
     return VoiceConversationContextResponse(
         voice_call_id=context.voice_call_id,
         provider=context.provider,
@@ -71,6 +92,7 @@ def voice_conversation_context_to_response(
         requested_date=context.requested_date,
         requested_time_window=requested_time_window,
         last_selected_slot_id=context.last_selected_slot_id,
+        last_reschedule_summary=last_reschedule_summary,
     )
 
 

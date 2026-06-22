@@ -13,6 +13,7 @@ from app.domain.conversations.enums import (
 )
 from app.domain.voice_conversation import (
     clear_active_hold_voice_context_metadata,
+    merge_last_reschedule_summary_metadata,
     merge_voice_context_metadata,
 )
 from app.models.conversations import Conversation, ConversationMessage
@@ -188,6 +189,20 @@ class ConversationService:
         conversation.conversation_metadata = merge_voice_context_metadata(
             conversation.conversation_metadata,
             voice_context,
+        )
+        conversation.updated_at = datetime.now(UTC)
+        return self.repository.update(conversation)
+
+    def merge_last_reschedule_summary(
+        self,
+        *,
+        conversation_id: UUID,
+        summary: dict[str, Any],
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        conversation.conversation_metadata = merge_last_reschedule_summary_metadata(
+            conversation.conversation_metadata,
+            summary,
         )
         conversation.updated_at = datetime.now(UTC)
         return self.repository.update(conversation)
