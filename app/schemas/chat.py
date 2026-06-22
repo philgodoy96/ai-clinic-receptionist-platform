@@ -21,3 +21,4 @@ class ChatMessageResponse(BaseModel):
     reply: str
     appointment_id: UUID | None = None
     booking_confirmed: bool = False
+    confirmation_email_queued: bool | None = None
