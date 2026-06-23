@@ -38,10 +38,11 @@ function ExternalLink({
 
 type DemoLandingProps = {
   onStartChat: () => void;
+  onStartVoice: () => void;
 };
 
-export function DemoLanding({ onStartChat }: DemoLandingProps) {
-  const voiceAvailable = publicConfig.voiceDemoEnabled;
+export function DemoLanding({ onStartChat, onStartVoice }: DemoLandingProps) {
+  const voiceEnabled = publicConfig.voiceDemoEnabled;
 
   return (
     <section className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-6 py-16 sm:py-24">
@@ -71,22 +72,17 @@ export function DemoLanding({ onStartChat }: DemoLandingProps) {
         </button>
         <button
           type="button"
-          disabled={!voiceAvailable}
-          title={
-            voiceAvailable
-              ? "Voice demo coming in a later phase"
-              : "Voice demo is not enabled for this deployment"
-          }
-          className="inline-flex h-12 items-center justify-center rounded-full border border-zinc-300 bg-white px-6 text-sm font-medium text-zinc-900 transition-colors enabled:hover:border-zinc-400 enabled:hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={onStartVoice}
+          className="inline-flex h-12 items-center justify-center rounded-full border border-zinc-300 bg-white px-6 text-sm font-medium text-zinc-900 transition-colors hover:border-zinc-400 hover:bg-zinc-50"
         >
           Call the clinic
         </button>
       </div>
 
       <p className="mt-4 text-sm text-zinc-500">
-        {voiceAvailable
-          ? "Chat connects to the backend API. Voice remains a later phase."
-          : "Chat connects to the backend API. Voice remains disabled for this deployment."}
+        {voiceEnabled
+          ? "Chat connects to the backend API. Voice entry uses a mock call until Retell is configured."
+          : "Chat connects to the backend API. Voice opens a configuration preview until the feature flag is enabled."}
       </p>
 
       <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-sm">

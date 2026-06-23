@@ -53,5 +53,6 @@ This app is intentionally small:
 - Basic layout and landing content
 - Public config helper in `lib/config.ts`
 - Backend-powered chat demo panel (`ChatPanel`)
+- Feature-flagged voice demo entry point (`VoiceCallPanel`)
 - No dashboard
 - No Retell web call integration yet
