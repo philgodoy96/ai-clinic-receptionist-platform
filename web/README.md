@@ -83,16 +83,42 @@ The chat client always requests **`/api/v1/chat/messages`** on the frontend orig
 
 The backend does **not** ship CORS middleware. Prefer same-origin access via Next.js rewrites or a reverse proxy. If the browser must call the API on a different origin directly, you must add CORS on the API separately (not configured in this repo today).
 
-## Voice feature flag
+## Voice demo
 
-`NEXT_PUBLIC_VOICE_DEMO_ENABLED` controls the voice panel only. It does not enable Retell on the backend.
+`NEXT_PUBLIC_VOICE_DEMO_ENABLED` controls the **frontend** voice panel only. It does not enable Retell on the backend (`RETELL_WEB_CALL_ENABLED` on the API).
+
+### Flag behavior
 
 | Value | Behavior |
 |-------|----------|
-| `false` (default) | **Call the clinic** opens a configuration preview: explains backend voice integration is prepared; **no microphone** access |
-| `true` | Shows **Start call**; requests a server-issued access token, then connects via the Retell Web SDK after the user starts the call; no Retell API keys in the browser |
+| `false` (default) | **Call the clinic** shows a configuration preview. **No microphone** permission is requested. |
+| `true` | **Start call** is shown. When the user starts a call, the app fetches a server-issued token and connects via the Retell Web SDK. |
 
-Backend Retell routes remain independent (`RETELL_ENABLED` in `.env.demo.example`).
+### Backend web call endpoint
+
+When voice is enabled on both frontend and backend:
+
+| | |
+|---|---|
+| **Endpoint** | `POST /api/v1/demo/voice/retell-web-call` (proxied via `/api/v1/*` like chat) |
+| **Request body** | Optional `{ "demo_session_id": null, "conversation_id": null }` |
+| **Success response** | `provider`, `call_id`, `access_token`, `expires_in_seconds`, optionally `conversation_id` |
+| **Errors** | Standard API error envelope (`voice_demo_disabled`, `rate_limited`, `provider_unavailable`, etc.) |
+
+The client is `createRetellWebCall` in `lib/api-client.ts`. The backend never returns `RETELL_API_KEY` or raw Retell provider payloads.
+
+### Microphone permission
+
+- **Disabled (`false`):** The voice panel never loads the Retell SDK or calls `getUserMedia`.
+- **Enabled (`true`):** Microphone access is requested only after the user clicks **Start call** and the backend returns an `access_token`. Denied permission surfaces a user-safe error; the app does not auto-retry.
+
+### No Retell secrets in the frontend
+
+- `RETELL_API_KEY`, webhook secrets, and agent configuration stay on the FastAPI backend.
+- The browser keeps the short-lived `access_token` in memory for the active session only (not `localStorage`).
+- Run `npm run check:env-safety` to scan for forbidden `NEXT_PUBLIC_*` names (for example `RETELL`, `API_KEY`).
+
+Retell tool and lifecycle webhooks are controlled separately (`RETELL_ENABLED`). Dashboard and hosted deploy steps: [`docs/operations/retell-dashboard-setup.md`](../docs/operations/retell-dashboard-setup.md) and [`docs/operations/public-demo-deployment.md`](../docs/operations/public-demo-deployment.md).
 
 ## Scripts
 
@@ -112,7 +138,7 @@ This app is intentionally small:
 - Landing page, layout, and demo disclaimer
 - Public config helper in `lib/config.ts`
 - Backend-powered chat demo panel (`ChatPanel`) with safe API error handling
-- Feature-flagged voice demo entry point (`VoiceCallPanel`, Retell Web SDK)
-- No dashboard, no Retell private keys, no real Retell web call yet
+- Feature-flagged voice demo entry point (`VoiceCallPanel`, Retell Web SDK behind `NEXT_PUBLIC_VOICE_DEMO_ENABLED`)
+- No dashboard, no Retell private keys in the browser
 
 Hosted deploy checklist: [`docs/operations/public-demo-deployment.md`](../docs/operations/public-demo-deployment.md).

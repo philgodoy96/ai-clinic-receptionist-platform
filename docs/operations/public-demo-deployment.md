@@ -116,6 +116,39 @@ The FastAPI app does **not** include CORS middleware today. If you bypass rewrit
 - [ ] With `NEXT_PUBLIC_VOICE_DEMO_ENABLED=true` and backend `RETELL_WEB_CALL_ENABLED=true`, **Call the clinic** starts a web call via the public demo API and Retell Web SDK (see [Retell Dashboard Setup](retell-dashboard-setup.md)).
 - [ ] `npm run check:env-safety` passes in CI or before release (no forbidden `NEXT_PUBLIC_*` secret names).
 
+## Enabling Voice Demo
+
+Voice requires **both** backend web-call configuration and the frontend feature flag. Retell agent, tool, and webhook setup is documented in [Retell Dashboard Setup](retell-dashboard-setup.md) — not duplicated here.
+
+### Backend environment variables (web calls)
+
+| Variable | Required when | Notes |
+|----------|---------------|-------|
+| `RETELL_WEB_CALL_ENABLED` | Browser web calls | `true` to allow `POST /api/v1/demo/voice/retell-web-call` |
+| `RETELL_API_KEY` | `RETELL_WEB_CALL_ENABLED=true` | Server-side only; never expose to the browser |
+| `RETELL_AGENT_ID` | `RETELL_WEB_CALL_ENABLED=true` | Must match the Retell dashboard agent |
+| `RETELL_AGENT_VERSION` | Optional | Pin agent version when set |
+| `RETELL_WEB_CALL_TIMEOUT_SECONDS` | Optional | Provider HTTP timeout |
+
+For tool callbacks and lifecycle webhooks during voice calls, also set `RETELL_ENABLED=true` with webhook verification (`RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true`).
+
+### Frontend environment variable
+
+| Variable | Notes |
+|----------|-------|
+| `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | `false` (default): configuration preview, no microphone. `true`: live voice UI; requires backend `RETELL_WEB_CALL_ENABLED=true`. |
+
+### Recommended deployment order
+
+1. Deploy API with chat and guardrails working (`PUBLIC_DEMO_MODE`, Redis, migrations).
+2. Configure Retell agent, tools, and webhooks per [Retell Dashboard Setup](retell-dashboard-setup.md).
+3. Set backend `RETELL_ENABLED=true`, `RETELL_WEB_CALL_ENABLED=true`, `RETELL_API_KEY`, and `RETELL_AGENT_ID`; redeploy API.
+4. Smoke-test `POST /api/v1/demo/voice/retell-web-call` — response should include `call_id` and `access_token` only (no API keys).
+5. Set `NEXT_PUBLIC_VOICE_DEMO_ENABLED=true` on the web service; redeploy `web/`.
+6. Verify end-to-end browser voice (microphone only after **Start call**, agent tools reach the API).
+
+Chat-only demos can skip steps 2–6 with `RETELL_ENABLED=false`, `RETELL_WEB_CALL_ENABLED=false`, and `NEXT_PUBLIC_VOICE_DEMO_ENABLED=false`.
+
 ## Required Environment Variables
 
 Copy values from `.env.demo.example` into your platform secret manager. At minimum for a production-like public demo:

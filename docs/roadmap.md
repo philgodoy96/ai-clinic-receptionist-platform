@@ -182,6 +182,7 @@ Implemented:
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService` and attempt/audit support (see `docs/architecture/appointment-rescheduling-foundation.md`)
 - Retell dashboard setup runbook (`docs/operations/retell-dashboard-setup.md`)
 - Retell Web SDK integration in `web/` with server-issued access tokens (see `web/README.md`)
+- Retell web call activation safety tests and public voice demo documentation
 
 Upcoming:
 
@@ -252,6 +253,7 @@ Implemented:
 - Deployment configuration safety tests
 - Public web demo shell (`web/`): Next.js landing, chat demo panel, Retell Web SDK voice demo, env safety check
 - [`docs/operations/retell-dashboard-setup.md`](operations/retell-dashboard-setup.md) Retell dashboard runbook
+- Retell web call activation safety tests and public voice demo deployment documentation
 
 Potential work:
 
