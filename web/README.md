@@ -32,6 +32,8 @@ All frontend variables are `NEXT_PUBLIC_*` and safe to expose to the browser.
 | `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Architecture documentation link |
 | `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | Placeholder flag for a future voiceover web voice demo |
 
+Server-only `API_PROXY_TARGET` proxies browser requests from `/api/v1/*` to the backend during local development.
+
 Do not add API keys, webhook secrets, or database URLs to this app.
 
 ## Scripts
@@ -50,6 +52,6 @@ This app is intentionally small:
 
 - Basic layout and landing content
 - Public config helper in `lib/config.ts`
+- Backend-powered chat demo panel (`ChatPanel`)
 - No dashboard
 - No Retell web call integration yet
-- No chat UI yet

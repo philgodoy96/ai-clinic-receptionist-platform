@@ -1,23 +1,17 @@
-function readPublicEnv(name: string): string | undefined {
-  const value = process.env[name]?.trim();
-  return value ? value : undefined;
-}
-
-function readBooleanEnv(name: string, defaultValue = false): boolean {
-  const value = readPublicEnv(name);
-  if (value === undefined) {
-    return defaultValue;
-  }
-
-  return value === "true" || value === "1";
+function readOptionalEnv(value: string | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed ?? "";
 }
 
 export const publicConfig = {
   apiBaseUrl:
-    readPublicEnv("NEXT_PUBLIC_API_BASE_URL") ?? "http://localhost:8000",
-  githubUrl: readPublicEnv("NEXT_PUBLIC_GITHUB_URL") ?? "",
-  architectureDocUrl: readPublicEnv("NEXT_PUBLIC_ARCHITECTURE_DOC_URL") ?? "",
-  voiceDemoEnabled: readBooleanEnv("NEXT_PUBLIC_VOICE_DEMO_ENABLED", false),
+    readOptionalEnv(process.env.NEXT_PUBLIC_API_BASE_URL) ||
+    "http://localhost:8000",
+  githubUrl: readOptionalEnv(process.env.NEXT_PUBLIC_GITHUB_URL),
+  architectureDocUrl: readOptionalEnv(process.env.NEXT_PUBLIC_ARCHITECTURE_DOC_URL),
+  voiceDemoEnabled:
+    process.env.NEXT_PUBLIC_VOICE_DEMO_ENABLED === "true" ||
+    process.env.NEXT_PUBLIC_VOICE_DEMO_ENABLED === "1",
 } as const;
 
 export type PublicConfig = typeof publicConfig;
