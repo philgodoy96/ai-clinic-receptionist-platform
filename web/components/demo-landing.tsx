@@ -2,21 +2,6 @@ import { publicConfig } from "@/lib/config";
 
 import { DemoDisclaimer } from "./demo-disclaimer";
 
-const demoBadges = [
-  "Chat demo",
-  "Voice-ready",
-  "Safe demo mode",
-  "Fictional clinic",
-] as const;
-
-function DemoBadge({ label }: { label: string }) {
-  return (
-    <span className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-600">
-      {label}
-    </span>
-  );
-}
-
 function ExternalLink({
   href,
   children,
@@ -46,13 +31,7 @@ export function DemoLanding({ onStartChat, onStartVoice }: DemoLandingProps) {
 
   return (
     <section className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-6 py-16 sm:py-24">
-      <div className="flex flex-wrap gap-2">
-        {demoBadges.map((badge) => (
-          <DemoBadge key={badge} label={badge} />
-        ))}
-      </div>
-
-      <div className="mt-8 space-y-4">
+      <div className="space-y-4">
         <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl sm:leading-tight">
           AI receptionist for a fictional clinic
         </h2>
