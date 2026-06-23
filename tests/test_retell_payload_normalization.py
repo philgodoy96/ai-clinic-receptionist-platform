@@ -19,6 +19,10 @@ from app.integrations.retell.payload_normalization import (
 )
 from app.integrations.retell.signature import HmacRetellSignatureVerifier
 from app.main import create_app
+from app.schemas.retell_lifecycle import (
+    RetellLifecycleWebhookRequest,
+    build_retell_lifecycle_payload,
+)
 from app.schemas.retell_tools import RetellToolCallRequest
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.clock import FixedClock
@@ -456,6 +460,151 @@ def test_args_only_payload_is_rejected_via_http() -> None:
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_retell_payload"
     assert "Payload: args only" in response.json()["error"]["message"]
+
+
+def _retell_dashboard_lifecycle_payload(
+    *,
+    call_id: str = "test_call",
+    event: str = "call_started",
+    event_timestamp: int | None = START_TS_MS,
+) -> dict[str, Any]:
+    call: dict[str, Any] = {
+        "call_id": call_id,
+        "call_type": "web_call",
+        "agent_id": "test_agent",
+        "agent_version": 0,
+        "agent_name": "Test Single Prompt Agent",
+        "call_status": "ongoing",
+        "start_timestamp": START_TS_MS,
+        "transcript": "",
+        "transcript_object": [],
+        "transcript_with_tool_calls": [],
+        "scrubbed_transcript_with_tool_calls": [],
+        "latency": {},
+        "call_cost": {
+            "product_costs": [],
+            "combined_cost": 0,
+            "total_duration_seconds": 0,
+            "total_duration_unit_price": 0,
+        },
+        "access_token": "secret-token-must-not-persist",
+    }
+    payload: dict[str, Any] = {
+        "event": event,
+        "call": call,
+    }
+    if event_timestamp is not None:
+        payload["event_timestamp"] = event_timestamp
+    return payload
+
+
+def test_retell_dashboard_lifecycle_payload_coerces_agent_version_to_string() -> None:
+    normalized = normalize_retell_lifecycle_payload(
+        _retell_dashboard_lifecycle_payload(),
+        clock=FixedClock(current_time=REFERENCE_NOW),
+    )
+
+    assert normalized["agent_version"] == "0"
+    assert normalized["agent_id"] == "test_agent"
+    assert normalized["call_status"] == "ongoing"
+    assert normalized["call_type"] == "web_call"
+    assert "access_token" not in normalized
+    assert "access_token" not in json.dumps(normalized)
+
+
+def test_retell_dashboard_lifecycle_payload_passes_pydantic_validation() -> None:
+    normalized = normalize_retell_lifecycle_payload(_retell_dashboard_lifecycle_payload())
+
+    request = RetellLifecycleWebhookRequest.model_validate(normalized)
+
+    assert request.agent_version == "0"
+    assert request.call_id == "test_call"
+
+
+def test_retell_dashboard_lifecycle_payload_metadata_excludes_access_token() -> None:
+    normalized = normalize_retell_lifecycle_payload(_retell_dashboard_lifecycle_payload())
+    request = RetellLifecycleWebhookRequest.model_validate(normalized)
+    lifecycle_payload = build_retell_lifecycle_payload(request)
+
+    assert "access_token" not in lifecycle_payload.safe_metadata
+
+
+def test_lifecycle_event_timestamp_epoch_ms_is_used_for_occurred_at() -> None:
+    event_timestamp_ms = START_TS_MS
+    normalized = normalize_retell_lifecycle_payload(
+        {
+            "event": "call_started",
+            "event_timestamp": event_timestamp_ms,
+            "call": {"call_id": "call-event-ts"},
+        },
+        clock=FixedClock(current_time=REFERENCE_NOW),
+    )
+
+    assert normalized["occurred_at"] == REFERENCE_NOW.isoformat()
+
+
+def test_retell_dashboard_lifecycle_is_persisted_via_http() -> None:
+    repository = FakeVoiceCallRepository()
+    service = RetellCallLifecycleService(repository=repository)
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: _hmac_verifier()
+    app.dependency_overrides[get_retell_call_lifecycle_service] = lambda: service
+
+    raw_body = _retell_dashboard_lifecycle_payload()
+    body_bytes = _json_bytes(raw_body)
+    signature = sign_retell_body(
+        raw_body=body_bytes,
+        secret=WEBHOOK_SECRET,
+        timestamp_ms=TIMESTAMP_MS,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            LIFECYCLE_WEBHOOK_PATH,
+            content=body_bytes,
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature=signature),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert len(repository.voice_calls) == 1
+
+
+def test_malformed_lifecycle_payload_returns_invalid_retell_payload_via_http() -> None:
+    app = create_app()
+    settings = make_secured_retell_settings()
+    configure_retell_for_tests(app, settings=settings)
+    app.dependency_overrides[get_retell_signature_verifier] = lambda: _hmac_verifier()
+
+    raw_body = {"event": "call_started"}
+    body_bytes = _json_bytes(raw_body)
+    signature = sign_retell_body(
+        raw_body=body_bytes,
+        secret=WEBHOOK_SECRET,
+        timestamp_ms=TIMESTAMP_MS,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            LIFECYCLE_WEBHOOK_PATH,
+            content=body_bytes,
+            headers={
+                "Content-Type": "application/json",
+                **retell_request_headers(signature=signature),
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_retell_payload"
 
 
 def test_native_tool_payload_preserves_explicit_tool_call_id() -> None:
