@@ -46,6 +46,7 @@ from app.services.appointment_holds import AppointmentHoldService
 from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.clinic_time import ClinicTimeService
 from app.services.clock import SystemClock
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationService
@@ -388,6 +389,12 @@ def get_appointment_rescheduling_service(
     )
 
 
+def get_clinic_time_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ClinicTimeService:
+    return ClinicTimeService.from_settings(settings, clock=SystemClock())
+
+
 def get_retell_tool_calling_adapter(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -408,6 +415,7 @@ def get_retell_tool_calling_adapter(
         AppointmentReschedulingService,
         Depends(get_appointment_rescheduling_service),
     ],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -420,6 +428,7 @@ def get_retell_tool_calling_adapter(
         appointment_cancellation=appointment_cancellation,
         appointment_rescheduling=appointment_rescheduling,
         appointments=SQLAlchemyAppointmentRepository(db),
+        clinic_time_service=clinic_time_service,
     )
 
 
