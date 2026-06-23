@@ -154,6 +154,8 @@ Recommended agent instructions for Retell dashboard / system prompt configuratio
 4. **Backend tools are the source of truth** for availability, holds, booking, cancellation, and rescheduling. Do not confirm an appointment time until a hold or booking tool succeeds.
 5. **Do not offer unavailable times.** If `check_availability` returns no slots or a scheduling error, ask the caller for another day or time window within business hours.
 
+Copy these rules into the Retell dashboard agent prompt when configuring the public demo. Step-by-step dashboard setup is in [Retell Dashboard Setup](../operations/retell-dashboard-setup.md).
+
 Legacy `start_from` / `start_to` remain supported for compatibility but are not the preferred contract.
 
 ## Safety Boundary
@@ -192,6 +194,5 @@ The implementation includes:
 
 ## Future Work
 
-- Retell dashboard prompt template checked into repo
 - Written chat reschedule with the same structured expression contract
 - Per-clinic configuration API for multi-tenant deployments
