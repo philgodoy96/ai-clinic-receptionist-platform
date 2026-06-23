@@ -1,0 +1,329 @@
+# Public Demo Deployment Runbook
+
+This runbook describes how to deploy the hosted **public unauthenticated demo** for the fictional clinic receptionist platform. It is intended for portfolio-style deployments on a managed platform (Railway, Render, Fly.io, ECS, etc.), not for a full production clinic system.
+
+Use `.env.demo.example` as the environment checklist and [Configuration](../configuration.md) for variable reference.
+
+## Deployment Architecture
+
+```mermaid
+flowchart TB
+    subgraph clients [Clients]
+        Browser[Browser / chat UI]
+        Retell[Retell voice platform]
+    end
+
+    subgraph platform [Your hosting platform]
+        API[API service<br/>uvicorn]
+        Worker[Email worker<br/>run_email_worker]
+    end
+
+    subgraph data [Managed data services]
+        PG[(PostgreSQL)]
+        Redis[(Redis)]
+        RMQ[(RabbitMQ)]
+    end
+
+    subgraph optional [Optional]
+        OTEL[OTEL collector]
+    end
+
+    subgraph external [External providers]
+        Groq[Groq LLM]
+        Resend[Resend email]
+        RetellAPI[Retell API / webhooks]
+    end
+
+    Browser --> API
+    Retell --> API
+    API --> PG
+    API --> Redis
+    API --> RMQ
+    Worker --> PG
+    Worker --> RMQ
+    Worker --> Resend
+    API --> Groq
+    API --> Resend
+    API -.-> OTEL
+    Worker -.-> OTEL
+    API --> RetellAPI
+```
+
+| Component | Role | Required for public demo |
+|-----------|------|------------------------|
+| **API service** | FastAPI app: chat, scheduling, Retell tools, health | Yes |
+| **Email worker** | RabbitMQ consumer that processes durable `EmailJob` records | Yes when `EMAIL_JOB_DISPATCH_ENABLED=true` |
+| **PostgreSQL** | Durable conversations, appointments, email jobs, audit logs | Yes |
+| **Redis** | Appointment holds, demo guardrails, rate-limit counters | Yes when guardrails enabled |
+| **RabbitMQ** | Wake-up queue for email job processing | Yes when dispatch enabled |
+| **OTEL collector** | Optional traces/metrics export | No (not wired in env template yet) |
+| **Groq** | Optional real LLM analysis / phrasing | No (fake LLM works for smoke tests) |
+| **Resend** | Optional real confirmation email delivery | No (fake email works for smoke tests) |
+| **Retell** | Optional voice tool + lifecycle webhooks | No (chat-only demo is valid) |
+
+Deploy **one API container** and **one or more worker containers** from the **same Docker image** with different commands. Infrastructure (Postgres, Redis, RabbitMQ) is usually managed services, not sidecars in the app image.
+
+## Required Environment Variables
+
+Copy values from `.env.demo.example` into your platform secret manager. At minimum for a production-like public demo:
+
+### Always required (public demo)
+
+| Variable | Notes |
+|----------|-------|
+| `APP_ENV` | `production` (or your platform label; must not be `local`/`test`/`development` for production rules) |
+| `APP_DEBUG` | `false` |
+| `PUBLIC_DEMO_MODE` | `true` |
+| `PUBLIC_DEMO_GUARDRAILS_ENABLED` | `true` (auto-defaults when unset and `PUBLIC_DEMO_MODE=true`) |
+| `DATABASE_URL` | Managed PostgreSQL URL (**non-localhost**) |
+| `REDIS_URL` | Managed Redis URL (**non-localhost**) |
+| `TRUST_PROXY_HEADERS` | `true` when behind a reverse proxy / load balancer |
+
+### Required when email dispatch is enabled
+
+| Variable | Notes |
+|----------|-------|
+| `EMAIL_JOB_DISPATCH_ENABLED` | `true` for hosted demo with real email jobs |
+| `RABBITMQ_URL` | Managed RabbitMQ URL |
+| `EMAIL_JOB_QUEUE_NAME` | Default `email_jobs` |
+
+### Required only when a provider is enabled
+
+| Provider | Enable with | Also required |
+|----------|-------------|---------------|
+| **Groq** | `LLM_PRIMARY_PROVIDER=groq` or `LLM_PROVIDER=groq` | `GROQ_API_KEY`, `GROQ_MODEL` |
+| **Resend** | `EMAIL_PROVIDER=resend` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
+| **Retell** | `RETELL_ENABLED=true` | `RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true` |
+| **Bedrock** | `LLM_PRIMARY_PROVIDER=bedrock` | `BEDROCK_MODEL_ID`, runtime AWS credentials |
+
+Safe smoke-test defaults (no external provider keys):
+
+```env
+LLM_PROVIDER=fake
+EMAIL_PROVIDER=fake
+RETELL_ENABLED=false
+```
+
+Startup validation rejects incomplete provider configuration and unsafe production settings (for example `RETELL_ALLOW_INSECURE_WEBHOOKS=true` in production-like `APP_ENV`).
+
+## Pre-deploy: Database Migrations
+
+Run once per release **before** or **during** deploy, with network access to Postgres and the application code (including the `migrations/` directory):
+
+```bash
+python -m alembic upgrade head
+```
+
+Recommended pattern:
+
+1. Run migrations from a one-off release job or CI step.
+2. Then roll out API and worker containers.
+
+Optional seed for demo scheduling data:
+
+```bash
+python -m scripts.seed_demo_data
+```
+
+Do not run migrations automatically on API startup.
+
+## API Command
+
+Production command (also the Docker default):
+
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Docker example (same image, default CMD):
+
+```yaml
+command: sh -c "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+```
+
+Do **not** use `--reload` in hosted environments.
+
+## Worker Command
+
+Production email worker (RabbitMQ consumer):
+
+```bash
+python -m scripts.run_email_worker
+```
+
+Docker example (same image, different command):
+
+```yaml
+command: python -m scripts.run_email_worker
+```
+
+Requirements:
+
+- `EMAIL_JOB_DISPATCH_ENABLED=true` on the **API** so booking flows publish wake-up messages.
+- Worker reachable to Postgres, RabbitMQ, and the configured email provider.
+- At least one worker replica; scale horizontally for throughput.
+
+Polling fallback (local or emergency only):
+
+```bash
+python -m scripts.run_email_job_worker
+```
+
+## Health and Readiness Checks
+
+| Endpoint | Purpose | Expected |
+|----------|---------|----------|
+| `GET /health` | Liveness | `200`, `"status": "ok"` |
+| `GET /health/dependencies` | Readiness (database) | `200`, `"status": "ok"` when Postgres is reachable; `"status": "degraded"` when database check fails |
+
+Notes:
+
+- Dependency health currently checks **PostgreSQL only**. Redis and RabbitMQ are not probed on this endpoint yet.
+- When `PUBLIC_DEMO_GUARDRAILS_ENABLED=true`, protected routes **fail closed** if Redis is unavailable (`503`, `demo_guardrail_store_unavailable`).
+- Configure platform health checks against `/health` for liveness and `/health/dependencies` for readiness before receiving traffic.
+
+## Smoke Test Checklist
+
+After deploy, verify:
+
+- [ ] `GET /health` returns `200` with `"status": "ok"`.
+- [ ] `GET /health/dependencies` returns `200` with `"dependencies.database.status": "ok"`.
+- [ ] Migrations applied: `python -m alembic current` shows expected head revision.
+- [ ] (Optional) Demo data seeded if you rely on pre-created availability slots.
+- [ ] `POST /api/v1/chat/messages` with a simple greeting returns `200` and a `conversation_id`.
+- [ ] Redis guardrails active: repeated chat requests eventually return `429` when limits are exceeded (only in load test environments).
+- [ ] With `EMAIL_JOB_DISPATCH_ENABLED=true`, book an appointment in chat and confirm a worker log line such as `email_job_consumer_started` / job processing.
+- [ ] With `EMAIL_PROVIDER=fake`, email jobs reach `sent` in Postgres without external mail.
+- [ ] With `RETELL_ENABLED=false`, Retell routes return `503` with `retell_disabled` (expected until voice is configured).
+
+## Rollback Notes
+
+1. **Application rollback:** redeploy the previous known-good container image tag for API and worker.
+2. **Database rollback:** prefer **forward-fix** migrations. Alembic downgrade is available (`python -m alembic downgrade -1`) but review migration diffs before using in shared environments.
+3. **Configuration rollback:** revert environment variables in the secret manager; restart API and worker.
+4. **Provider rollback:** switch `LLM_PROVIDER=fake` and/or `EMAIL_PROVIDER=fake` to remove external dependency without code rollback.
+5. **Traffic:** remove the new revision from the load balancer if readiness checks fail; keep worker running until in-flight email jobs finish or reach terminal state.
+
+## Secret Handling
+
+- Never commit `.env`, real API keys, or webhook secrets to Git.
+- Store secrets in the platform secret manager; reference `.env.demo.example` for key names only.
+- Required secret groups when providers are enabled:
+  - `GROQ_API_KEY`
+  - `RESEND_API_KEY`
+  - `RETELL_WEBHOOK_SECRET`, `RETELL_API_KEY`
+  - Database, Redis, and RabbitMQ connection URLs with embedded credentials
+- Settings fields for API keys use `repr=False` so secrets are not exposed in model repr output.
+- Rotate Retell webhook secrets and provider keys on compromise; update deployment env and restart services.
+
+## Demo Safety Notes
+
+- Enable **`PUBLIC_DEMO_GUARDRAILS_ENABLED=true`** for any internet-facing demo.
+- Set **`TRUST_PROXY_HEADERS=true`** when the platform terminates TLS and forwards `X-Forwarded-For`; otherwise all clients may appear as the proxy IP.
+- Use **`APP_DEBUG=false`** in hosted environments.
+- Keep **`RETELL_ALLOW_INSECURE_WEBHOOKS=false`** outside local/test/development.
+- Treat all data as **fictional demo data**; do not load real patient information.
+- Confirmation email quotas may skip outbound mail while still allowing bookings — this is intentional abuse protection.
+- Review demo limit env vars (`DEMO_*`) before launch; defaults are conservative but not a substitute for edge WAF/CAPTCHA.
+
+## Intentionally Not Production-Ready
+
+This deployment target is a **portfolio public demo**, not a HIPAA-ready clinic product:
+
+| Area | Current scope |
+|------|----------------|
+| **Patient data** | Fictional demo clinic only; no real PHI |
+| **Authentication / RBAC** | Public chat and Retell tool routes are unauthenticated; internal admin APIs are not hardened for open internet |
+| **Abuse protection** | Redis-backed demo guardrails and quotas — not a full abuse platform, WAF, or bot management |
+| **Retell dashboard** | Agent prompts, phone numbers, and Retell project setup are **out of scope for this repo phase**; backend routes exist but you must configure Retell separately |
+| **Observability** | Structured JSON logs to stdout; optional OTEL collector not configured in template |
+| **Email delivery** | At-least-once semantics; not guaranteed exactly-once across Postgres and Resend |
+| **Multi-tenancy / SLA** | Single demo clinic tenant |
+
+## Troubleshooting
+
+### Database connection failures
+
+**Symptoms:** `/health/dependencies` shows `"database": {"status": "unavailable"}`; API errors on chat/booking.
+
+**Checks:**
+
+- Verify `DATABASE_URL` format: `postgresql+psycopg://user:pass@host:5432/dbname`
+- Confirm migrations ran: `python -m alembic upgrade head`
+- Confirm network/firewall from API and worker to Postgres
+- Check connection pool limits on small managed tiers
+
+### Redis connection failures
+
+**Symptoms:** `503` on chat or Retell tools with `demo_guardrail_store_unavailable`; holds may fail.
+
+**Checks:**
+
+- Verify `REDIS_URL` (non-localhost in production public demo)
+- Confirm Redis is reachable from API (not only from worker)
+- Check TLS/`rediss://` requirements from your Redis provider
+
+### RabbitMQ connection failures
+
+**Symptoms:** Worker exits or cannot start; email jobs stay `pending` after booking.
+
+**Checks:**
+
+- Verify `RABBITMQ_URL` and vhost/user permissions
+- Confirm queue `EMAIL_JOB_QUEUE_NAME` exists (worker declares it on startup)
+- Ensure `EMAIL_JOB_DISPATCH_ENABLED=true` on the API
+- Confirm API and worker use the same queue name
+
+### Missing provider keys
+
+**Symptoms:** Process fails at startup with validation errors (`GROQ_API_KEY`, `RESEND_API_KEY`, `RETELL_WEBHOOK_SECRET`, etc.).
+
+**Checks:**
+
+- Provider keys are required **only when that provider is enabled**
+- For smoke tests, use `LLM_PROVIDER=fake`, `EMAIL_PROVIDER=fake`, `RETELL_ENABLED=false`
+- See `.env.demo.example` comments for conditional requirements
+
+### Email worker not processing
+
+**Symptoms:** Jobs remain `pending` in Postgres; no `email_worker_iteration_completed` / consumer logs.
+
+**Checks:**
+
+- Worker command is `python -m scripts.run_email_worker` (not the API command)
+- `EMAIL_JOB_DISPATCH_ENABLED=true` on API
+- RabbitMQ consumer is running and connected
+- Job `next_attempt_at` is in the past (retries are schedule-driven in Postgres)
+- Polling fallback: `python -m scripts.run_email_job_worker` processes due jobs without RabbitMQ wake-up
+
+### Groq fallback mode
+
+**Symptoms:** LLM analysis fails or latency spikes; chat still responds.
+
+**Behavior:**
+
+- Default demo config keeps `LLM_FALLBACK_ENABLED=false`
+- Primary Groq failures fall back to **deterministic** receptionist behavior and structured repair paths inside the reliability layer
+- Optional `LLM_FALLBACK_PROVIDER` (for example `fake` or `bedrock`) requires explicit `LLM_FALLBACK_ENABLED=true`
+- For deterministic demo without Groq outages, use `LLM_PROVIDER=fake`
+
+See [Groq LLM Provider](../architecture/groq-llm-provider.md) and [LLM Reliability Orchestration](../architecture/llm-reliability-orchestration.md).
+
+### Retell disabled route behavior
+
+**Symptoms:** Retell tool or lifecycle webhook returns `503`.
+
+**Expected when `RETELL_ENABLED=false`:**
+
+- Protected Retell routes reject with `503` and code `retell_disabled`
+- Chat and scheduling APIs continue to work
+- To enable voice: set `RETELL_ENABLED=true`, configure `RETELL_WEBHOOK_SECRET`, deploy with signature verification, then configure tools in the Retell dashboard (outside this repo)
+
+See [Retell Webhook Security](../architecture/retell-webhook-security.md).
+
+## Related Documentation
+
+- [Configuration](../configuration.md)
+- [Local Development](local-development.md)
+- [Public Demo Guardrails](../architecture/public-demo-guardrails.md)
+- [Email Dispatch Reliability](../architecture/email-dispatch-reliability.md)

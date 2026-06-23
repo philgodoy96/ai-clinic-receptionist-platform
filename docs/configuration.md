@@ -2,7 +2,7 @@
 
 Application settings are loaded from environment variables and an optional local `.env` file through Pydantic settings.
 
-See `.env.example` for a safe local template.
+See `.env.example` for a safe local template and `.env.demo.example` for a hosted public demo deployment template.
 
 ## Application
 
@@ -248,3 +248,14 @@ TRUST_PROXY_HEADERS=true
 Enabling `PUBLIC_DEMO_MODE=true` without `PUBLIC_DEMO_GUARDRAILS_ENABLED=true` is allowed but unsafe for production because the demo is exposed without rate limits.
 
 See also: [Public Demo Guardrails](architecture/public-demo-guardrails.md).
+
+## Deployment Environment Templates
+
+| File | Purpose |
+|------|---------|
+| `.env.example` | Safe local development and CI defaults with fake providers |
+| `.env.demo.example` | Hosted public demo deployment template with grouped settings |
+
+Copy `.env.example` to `.env` for local work. Use `.env.demo.example` as a checklist when configuring a production-like public demo in your secret manager or hosting platform. Never commit real API keys or webhook secrets.
+
+For deploy steps, health checks, and troubleshooting, see [Public Demo Deployment Runbook](operations/public-demo-deployment.md).

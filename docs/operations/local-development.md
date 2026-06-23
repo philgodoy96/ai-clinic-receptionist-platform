@@ -30,7 +30,13 @@ Default credentials:
 
 ## Run API
 
+Local development with auto-reload:
+
     python -m uvicorn app.main:app --reload
+
+Production-style API command (also used as the Docker default):
+
+    python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
 
 ## Run Email Job Worker Once
 
@@ -39,6 +45,19 @@ Default credentials:
 ## Run RabbitMQ Email Consumer
 
     python -m scripts.run_email_job_consumer
+
+## Production Container Commands
+
+The Docker image defaults to the API command above without dev reload. Use the same
+image with a different `command` for background workers:
+
+    python -m scripts.run_email_worker
+
+For local polling fallback instead of the RabbitMQ consumer:
+
+    python -m scripts.run_email_job_worker
+
+See [Public Demo Deployment Runbook](public-demo-deployment.md) for hosted deploy steps, health checks, smoke tests, and troubleshooting.
 
 ## Email Dispatch Configuration
 
