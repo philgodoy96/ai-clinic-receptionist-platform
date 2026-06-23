@@ -161,9 +161,7 @@ def create_guarded_chat_app(
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_appointment_hold_service] = override_hold_service
     app.dependency_overrides[get_email_job_service] = override_email_job_service
-    app.dependency_overrides[get_email_job_dispatch_publisher] = (
-        lambda: _NoopDispatchPublisher()
-    )
+    app.dependency_overrides[get_email_job_dispatch_publisher] = lambda: _NoopDispatchPublisher()
 
     return app, redis, tracked_email_jobs
 
@@ -198,15 +196,11 @@ def create_local_chat_app(
     app.dependency_overrides[get_demo_guardrail_service] = override_guardrails
     app.dependency_overrides[get_chat_receptionist_service] = override_chat_service
     app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[get_appointment_hold_service] = (
-        lambda: FakeAppointmentHoldService()
+    app.dependency_overrides[get_appointment_hold_service] = lambda: FakeAppointmentHoldService()
+    app.dependency_overrides[get_email_job_service] = lambda: cast(
+        EmailJobService, _NoopEmailJobService()
     )
-    app.dependency_overrides[get_email_job_service] = (
-        lambda: cast(EmailJobService, _NoopEmailJobService())
-    )
-    app.dependency_overrides[get_email_job_dispatch_publisher] = (
-        lambda: _NoopDispatchPublisher()
-    )
+    app.dependency_overrides[get_email_job_dispatch_publisher] = lambda: _NoopDispatchPublisher()
 
     return app
 

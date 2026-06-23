@@ -62,8 +62,7 @@ class RetellSchedulingToolAdapter:
 
     def list_specialties(self) -> RetellToolResponse:
         specialties = [
-            self._specialty_to_result(specialty)
-            for specialty in self.service.list_specialties()
+            self._specialty_to_result(specialty) for specialty in self.service.list_specialties()
         ]
 
         return self._success({"specialties": specialties})
@@ -85,10 +84,7 @@ class RetellSchedulingToolAdapter:
 
         return self._success(
             {
-                "doctors": [
-                    self._doctor_to_result(doctor)
-                    for doctor in doctors
-                ],
+                "doctors": [self._doctor_to_result(doctor) for doctor in doctors],
             },
         )
 
@@ -126,10 +122,7 @@ class RetellSchedulingToolAdapter:
         return self._success(
             {
                 "doctor_id": str(doctor_id),
-                "available_slots": [
-                    self._availability_slot_to_result(slot)
-                    for slot in slots
-                ],
+                "available_slots": [self._availability_slot_to_result(slot) for slot in slots],
             },
         )
 
@@ -201,8 +194,7 @@ class RetellSchedulingToolAdapter:
                 "patient_found": True,
                 "patient": self._patient_to_result(patient),
                 "appointments": [
-                    self._appointment_to_result(appointment)
-                    for appointment in appointments
+                    self._appointment_to_result(appointment) for appointment in appointments
                 ],
             },
         )

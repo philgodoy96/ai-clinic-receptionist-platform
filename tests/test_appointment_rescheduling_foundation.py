@@ -156,9 +156,7 @@ def test_foundation_explicit_confirmation_is_required() -> None:
             _build_request(context, explicit_confirmation=False),
         )
 
-    assert exc_info.value.failure_code == (
-        AppointmentReschedulingFailureCode.MISSING_CONFIRMATION
-    )
+    assert exc_info.value.failure_code == (AppointmentReschedulingFailureCode.MISSING_CONFIRMATION)
 
 
 def test_foundation_successful_reschedule() -> None:
@@ -200,9 +198,12 @@ def test_foundation_traceability_between_old_and_new_appointment_is_preserved() 
     assert successor is not None
     assert successor.rescheduled_from_appointment_id == original.id
     assert successor.patient_id == original.patient_id
-    assert context.appointment_repository.find_by_rescheduled_from(
-        appointment_id=original.id,
-    ) == successor
+    assert (
+        context.appointment_repository.find_by_rescheduled_from(
+            appointment_id=original.id,
+        )
+        == successor
+    )
 
 
 def test_foundation_missing_appointment_is_rejected() -> None:

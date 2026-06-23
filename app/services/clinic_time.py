@@ -109,6 +109,13 @@ class ClinicTimeService:
     def clinic_today(self) -> date:
         return self.clinic_now().date()
 
+    @property
+    def timezone(self) -> ZoneInfo:
+        return self._timezone
+
+    def is_within_business_hours(self, time_value: str) -> bool:
+        return self._is_within_business_hours(time_value)
+
     def get_current_clinic_context(self) -> ClinicContext:
         today = self.clinic_today()
         return ClinicContext(

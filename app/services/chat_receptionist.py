@@ -20,8 +20,15 @@ from app.domain.human_escalations import (
     HumanEscalationSource,
 )
 from app.domain.receptionist.enums import ReceptionistResponseMode
+from app.domain.scheduling.expressions import (
+    DateExpression,
+    DateExpressionKind,
+    DateResolutionStatus,
+)
 from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import AvailabilitySlot, Doctor, Patient, Specialty
+from app.schemas.retell_tools import CheckAvailabilityToolArguments
+from app.schemas.scheduling_expressions import DateExpressionSchema
 from app.services.appointment_booking import (
     AppointmentBookingRequest,
     AppointmentBookingService,
@@ -38,6 +45,7 @@ from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.clinic_time import ClinicTimeService
 from app.services.conversation_health import (
     ConversationHealthResult,
     ConversationHealthService,
@@ -74,6 +82,7 @@ from app.services.scheduling import (
     PatientLookupCriteria,
     SchedulingService,
 )
+from app.services.scheduling_availability import SchedulingAvailabilityResolver
 from app.services.slot_filling import (
     LLMChatSlotFillingService,
     SlotFillingRejectedField,
@@ -161,8 +170,7 @@ _PATIENT_IDENTITY_FIELD_LABELS = {
 _SLOT_FILLING_MIN_CONFIDENCE = 0.65
 _RECENT_MESSAGES_LIMIT = 25
 _HUMAN_HANDOFF_MESSAGE = (
-    "I'll mark this conversation for human follow-up. "
-    "A human receptionist can review it."
+    "I'll mark this conversation for human follow-up. A human receptionist can review it."
 )
 _HANDOFF_CONTEXT_KEYS = (
     "hold_id",
@@ -171,12 +179,9 @@ _HANDOFF_CONTEXT_KEYS = (
     "requested_date",
     "selected_start_time",
 )
-_ESCALATION_SUGGESTION_SUFFIX = (
-    " If you prefer, I can transfer this to a human receptionist."
-)
+_ESCALATION_SUGGESTION_SUFFIX = " If you prefer, I can transfer this to a human receptionist."
 _DATE_CLARIFICATION_MESSAGE = (
-    "Please provide a specific date in YYYY-MM-DD or say something like "
-    "tomorrow or next Monday."
+    "Please provide a specific date in YYYY-MM-DD or say something like tomorrow or next Monday."
 )
 _TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "Please specify a time-of-day preference such as morning, afternoon, or "
@@ -465,6 +470,7 @@ class ChatReceptionistService:
         human_handoff_notifications: HumanHandoffNotificationService | None = None,
         date_parser: NaturalLanguageDateParser | None = None,
         time_preference_parser: TimePreferenceParser | None = None,
+        clinic_time_service: ClinicTimeService | None = None,
         response_generator: ReceptionistResponseGenerator | None = None,
         response_generation_mode: ReceptionistResponseMode = (
             ReceptionistResponseMode.DETERMINISTIC
@@ -482,9 +488,8 @@ class ChatReceptionistService:
         self.human_handoff_notifications = human_handoff_notifications
         self.date_parser = date_parser
         self.time_preference_parser = time_preference_parser
-        self.response_generator = (
-            response_generator or DeterministicReceptionistResponseGenerator()
-        )
+        self.clinic_time_service = clinic_time_service
+        self.response_generator = response_generator or DeterministicReceptionistResponseGenerator()
         self.response_generation_mode = response_generation_mode
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
@@ -639,9 +644,7 @@ class ChatReceptionistService:
         if human_escalation_metadata is not None:
             assistant_metadata["human_escalation"] = human_escalation_metadata
         if human_handoff_notification_metadata is not None:
-            assistant_metadata["human_handoff_notification"] = (
-                human_handoff_notification_metadata
-            )
+            assistant_metadata["human_handoff_notification"] = human_handoff_notification_metadata
         if reply.date_parsing is not None:
             assistant_metadata["date_parsing"] = reply.date_parsing
         if reply.time_preference_parsing is not None:
@@ -662,9 +665,7 @@ class ChatReceptionistService:
         )
 
         booking_confirmed = reply.booking_confirmed
-        appointment_id = (
-            UUID(reply.appointment_id) if reply.appointment_id is not None else None
-        )
+        appointment_id = UUID(reply.appointment_id) if reply.appointment_id is not None else None
 
         return ChatMessageResult(
             conversation=conversation,
@@ -678,9 +679,7 @@ class ChatReceptionistService:
             booked_patient_id=reply.booked_patient_id,
             booked_appointment_start_time=reply.booked_appointment_start_time,
             pending_hold_release=reply.pending_hold_release,
-            human_handoff_notification_email_job_id=(
-                human_handoff_notification_email_job_id
-            ),
+            human_handoff_notification_email_job_id=(human_handoff_notification_email_job_id),
         )
 
     def _apply_conversation_health(
@@ -776,10 +775,8 @@ class ChatReceptionistService:
         notification_email_job_id: UUID | None = None
 
         if self.human_handoff_notifications is not None:
-            notification_result = (
-                self.human_handoff_notifications.create_or_get_notification_job(
-                    escalation=escalation,
-                )
+            notification_result = self.human_handoff_notifications.create_or_get_notification_job(
+                escalation=escalation,
             )
             notification_email_job_id = notification_result.email_job_id
             notification_metadata = {
@@ -972,8 +969,7 @@ class ChatReceptionistService:
                 ChatReceptionistReply(
                     intent=ChatReceptionistIntent.INVALID_DATE,
                     content=(
-                        "That date does not look valid. "
-                        "Please provide a date in YYYY-MM-DD format."
+                        "That date does not look valid. Please provide a date in YYYY-MM-DD format."
                     ),
                 ),
             )
@@ -987,8 +983,7 @@ class ChatReceptionistService:
                 ChatReceptionistReply(
                     intent=ChatReceptionistIntent.INVALID_DATE,
                     content=(
-                        "That date does not look valid. "
-                        "Please provide a date in YYYY-MM-DD format."
+                        "That date does not look valid. Please provide a date in YYYY-MM-DD format."
                     ),
                 ),
             )
@@ -1087,12 +1082,16 @@ class ChatReceptionistService:
                 ),
             )
 
-        if self._is_availability_request(normalized_message) or (
-            self._should_enter_availability_flow(
-                normalized_message,
-                merged_context,
+        if (
+            self._is_availability_request(normalized_message)
+            or (
+                self._should_enter_availability_flow(
+                    normalized_message,
+                    merged_context,
+                )
             )
-        ) or completing_availability:
+            or completing_availability
+        ):
             return finish(
                 self._handle_availability_flow(
                     merged_context=merged_context,
@@ -1363,8 +1362,7 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_HOLD_MISSING,
                 content=(
-                    "Please choose an available time and hold it first "
-                    "before confirming a booking."
+                    "Please choose an available time and hold it first before confirming a booking."
                 ),
                 chat_context_updates=identity_updates if has_identity_fields else context_updates,
                 booking_attempted=True,
@@ -1377,9 +1375,7 @@ class ChatReceptionistService:
                 )
                 return ChatReceptionistReply(
                     intent=ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
-                    content=(
-                        f"I've noted your details. I still need your {missing_text}."
-                    ),
+                    content=(f"I've noted your details. I still need your {missing_text}."),
                     chat_context_updates=identity_updates,
                 )
 
@@ -1462,8 +1458,7 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_HOLD_MISSING,
                 content=(
-                    "Please choose an available time and hold it first "
-                    "before confirming a booking."
+                    "Please choose an available time and hold it first before confirming a booking."
                 ),
                 chat_context_updates=identity_updates,
                 hold_id=hold_id,
@@ -1665,9 +1660,20 @@ class ChatReceptionistService:
                 chat_context_updates=context_updates,
             )
 
+        parsed_requested_date = date.fromisoformat(str(requested_date))
+        scheduling_validation = self._validate_scheduling_date(parsed_requested_date)
+        if scheduling_validation is not None:
+            return replace(
+                scheduling_validation,
+                chat_context_updates={
+                    **context_updates,
+                    **scheduling_validation.chat_context_updates,
+                },
+            )
+
         slots = self._query_availability(
             doctor_id=UUID(str(selected_doctor_id)),
-            requested_date=date.fromisoformat(str(requested_date)),
+            requested_date=parsed_requested_date,
         )
         doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
         requested_time_window = merged_context.get("requested_time_window")
@@ -1744,12 +1750,70 @@ class ChatReceptionistService:
             "You can ask for our doctor list or mention a specialty."
         )
 
+    def _validate_scheduling_date(
+        self,
+        requested_date: date,
+    ) -> ChatReceptionistReply | None:
+        if self.clinic_time_service is None:
+            return None
+
+        resolved_date = self.clinic_time_service.resolve_date(
+            DateExpression(
+                kind=DateExpressionKind.EXACT_DATE,
+                exact_date=requested_date,
+            ),
+        )
+        if resolved_date.status is DateResolutionStatus.RESOLVED:
+            return None
+
+        if resolved_date.status is DateResolutionStatus.CLOSED_DAY:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.INVALID_DATE,
+                content=(
+                    "The clinic is closed on that day. "
+                    "Please choose a weekday during business hours."
+                ),
+                chat_context_updates={},
+            )
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.INVALID_DATE,
+            content=(
+                "That date is in the past or cannot be used for scheduling. "
+                "Please provide a future clinic business day."
+            ),
+            chat_context_updates={},
+        )
+
     def _query_availability(
         self,
         *,
         doctor_id: UUID,
         requested_date: date,
     ) -> Sequence[AvailabilitySlot]:
+        if self.clinic_time_service is not None:
+            availability_window = SchedulingAvailabilityResolver(
+                self.clinic_time_service,
+                date_parser=self.date_parser,
+            ).resolve_check_availability(
+                CheckAvailabilityToolArguments(
+                    date_expression=DateExpressionSchema(
+                        kind=DateExpressionKind.EXACT_DATE,
+                        exact_date=requested_date,
+                    ),
+                ),
+                {},
+            )
+            if availability_window.is_resolved:
+                assert availability_window.start_from is not None
+                assert availability_window.end_to is not None
+                return self.scheduling.check_availability(
+                    doctor_id=doctor_id,
+                    start_from=availability_window.start_from,
+                    start_to=availability_window.end_to,
+                )
+            return []
+
         start_from = datetime(
             requested_date.year,
             requested_date.month,
@@ -1791,9 +1855,7 @@ class ChatReceptionistService:
         suffix = ""
 
         if len(slots) > _MAX_OFFERED_SLOTS:
-            suffix = (
-                f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
-            )
+            suffix = f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
 
         return (
             f"Open times for {doctor_name} on {requested_date}: {times_text}.{suffix} "
@@ -1878,10 +1940,7 @@ class ChatReceptionistService:
         parse_result = self.time_preference_parser.parse(message)
         metadata = parse_result.to_metadata()
 
-        if (
-            parse_result.status == TimePreferenceStatus.PARSED
-            and parse_result.window is not None
-        ):
+        if parse_result.status == TimePreferenceStatus.PARSED and parse_result.window is not None:
             window = parse_result.window
             return _TimePreferenceExtraction(
                 window={
@@ -2030,8 +2089,7 @@ class ChatReceptionistService:
             return False
 
         return bool(
-            merged_context.get("selected_doctor_id")
-            or merged_context.get("requested_date"),
+            merged_context.get("selected_doctor_id") or merged_context.get("requested_date"),
         )
 
     def _should_complete_availability_from_context(
@@ -2089,8 +2147,7 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY,
                 content=(
-                    "Please check availability first so I can hold one of the "
-                    "available times."
+                    "Please check availability first so I can hold one of the available times."
                 ),
                 chat_context_updates=context_updates,
                 hold_created=False,
@@ -2117,8 +2174,7 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.HOLD_REQUEST,
                 content=(
-                    "Please choose one of the listed times so I can hold it for you "
-                    "temporarily."
+                    "Please choose one of the listed times so I can hold it for you temporarily."
                 ),
                 chat_context_updates=context_updates,
                 hold_created=False,
@@ -2279,10 +2335,7 @@ class ChatReceptionistService:
         )
 
         for specialty in specialties:
-            if any(
-                term in normalized_message
-                for term in self._specialty_match_terms(specialty)
-            ):
+            if any(term in normalized_message for term in self._specialty_match_terms(specialty)):
                 return specialty
 
         return None

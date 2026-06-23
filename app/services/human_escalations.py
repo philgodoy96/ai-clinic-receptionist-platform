@@ -138,13 +138,9 @@ class HumanEscalationService:
         if limit < 1 or limit > 100:
             raise InvalidHumanEscalationLimitError("limit must be between 1 and 100")
 
-        decoded_cursor = (
-            decode_human_escalation_cursor(cursor) if cursor is not None else None
-        )
+        decoded_cursor = decode_human_escalation_cursor(cursor) if cursor is not None else None
         normalized_filters = filters or HumanEscalationListFilters()
-        list_now = (
-            self._clock.now() if normalized_filters.overdue is not None else None
-        )
+        list_now = self._clock.now() if normalized_filters.overdue is not None else None
         fetched_items = list(
             self.repository.list(
                 limit=limit + 1,
@@ -273,10 +269,7 @@ class HumanEscalationService:
                 "Only open or acknowledged escalations can be assigned.",
             )
 
-        if (
-            escalation.assigned_to is not None
-            and escalation.assigned_to == normalized_assigned_to
-        ):
+        if escalation.assigned_to is not None and escalation.assigned_to == normalized_assigned_to:
             return escalation
 
         now = self._clock.now()

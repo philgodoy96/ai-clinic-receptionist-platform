@@ -207,6 +207,12 @@ def get_receptionist_response_generator(
     return build_receptionist_response_generator_from_settings(settings)
 
 
+def get_clinic_time_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ClinicTimeService:
+    return ClinicTimeService.from_settings(settings, clock=SystemClock())
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -256,6 +262,7 @@ def get_chat_receptionist_service(
         ReceptionistResponseGenerator,
         Depends(get_receptionist_response_generator),
     ],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
@@ -270,6 +277,7 @@ def get_chat_receptionist_service(
         human_handoff_notifications=human_handoff_notifications,
         date_parser=date_parser,
         time_preference_parser=time_preference_parser,
+        clinic_time_service=clinic_time_service,
         response_generator=response_generator,
         response_generation_mode=settings.receptionist_response_mode,
     )
@@ -387,12 +395,6 @@ def get_appointment_rescheduling_service(
         conversations=ConversationService(repository=conversation_repository),
         email_jobs=email_jobs,
     )
-
-
-def get_clinic_time_service(
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> ClinicTimeService:
-    return ClinicTimeService.from_settings(settings, clock=SystemClock())
 
 
 def get_retell_tool_calling_adapter(

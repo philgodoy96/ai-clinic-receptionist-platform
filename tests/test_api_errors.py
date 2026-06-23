@@ -181,8 +181,7 @@ class FakeEmailJobRepository:
             (
                 email_job
                 for email_job in self.email_jobs
-                if email_job.job_type == job_type
-                and email_job.idempotency_key == idempotency_key
+                if email_job.job_type == job_type and email_job.idempotency_key == idempotency_key
             ),
             None,
         )

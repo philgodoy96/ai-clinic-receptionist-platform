@@ -243,9 +243,7 @@ class FakeConversationRepository:
         limit: int,
     ) -> Sequence[ConversationMessage]:
         messages = [
-            message
-            for message in self.messages
-            if message.conversation_id == conversation_id
+            message for message in self.messages if message.conversation_id == conversation_id
         ]
 
         return messages[:limit]

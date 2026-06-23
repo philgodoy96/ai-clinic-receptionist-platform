@@ -125,8 +125,8 @@ def test_valid_signature_allows_route_to_continue() -> None:
     timestamp_ms = 1_700_000_000_000
     settings = make_secured_retell_settings()
     configure_retell_for_tests(app, settings=settings)
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(EmptySchedulingService())
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(EmptySchedulingService())
     )
     app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
         secret="test-webhook-secret",
@@ -161,8 +161,8 @@ def test_malformed_json_after_valid_signature_returns_400() -> None:
     timestamp_ms = 1_700_000_000_000
     settings = make_secured_retell_settings()
     configure_retell_for_tests(app, settings=settings)
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(EmptySchedulingService())
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(EmptySchedulingService())
     )
     app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
         secret="test-webhook-secret",
@@ -304,8 +304,8 @@ def test_unsupported_content_type_is_rejected_safely() -> None:
     configure_retell_for_tests(app, settings=settings)
     install_fake_retell_verifier(app, accept_all=True)
     tracking_service = TrackingSchedulingService()
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(tracking_service)
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(tracking_service)
     )
 
     with TestClient(app) as client:
@@ -348,8 +348,8 @@ def test_invalid_payload_schema_after_valid_signature_returns_400() -> None:
     app = create_app()
     settings = make_secured_retell_settings()
     configure_retell_for_tests(app, settings=settings)
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(EmptySchedulingService())
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(EmptySchedulingService())
     )
     app.dependency_overrides[get_retell_signature_verifier] = lambda: HmacRetellSignatureVerifier(
         secret=WEBHOOK_SECRET,

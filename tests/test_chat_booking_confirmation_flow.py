@@ -40,9 +40,7 @@ from tests.test_scheduling_services import (
     create_demo_scheduling_service_with_emily_july_availability,
 )
 
-FULL_IDENTITY_MESSAGE = (
-    "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"
-)
+FULL_IDENTITY_MESSAGE = "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"
 FULL_IDENTITY_WITH_CONFIRM = f"{FULL_IDENTITY_MESSAGE}. Please confirm."
 
 
@@ -148,9 +146,7 @@ def test_partial_identity_is_stored_in_chat_context(
         ChatMessageInput(message="jane.doe@example.com"),
     )
 
-    patient_identity = result.conversation.conversation_metadata["chat_context"][
-        "patient_identity"
-    ]
+    patient_identity = result.conversation.conversation_metadata["chat_context"]["patient_identity"]
 
     assert patient_identity["email"] == "jane.doe@example.com"
     assert "full_name" not in patient_identity
@@ -424,9 +420,7 @@ def test_dispatch_publish_failure_does_not_rollback_booking() -> None:
         EmailJobService,
         email_jobs,
     )
-    app.dependency_overrides[get_email_job_dispatch_publisher] = (
-        lambda: FailingDispatchPublisher()
-    )
+    app.dependency_overrides[get_email_job_dispatch_publisher] = lambda: FailingDispatchPublisher()
 
     with TestClient(app) as client:
         availability = client.post(

@@ -335,9 +335,7 @@ def render_deterministic_template(
 
     if template_type == ReceptionistTemplateType.ASK_FOR_DATE:
         if specialty_name is not None:
-            return (
-                f"Please provide the appointment date you prefer for {specialty_name}."
-            )
+            return f"Please provide the appointment date you prefer for {specialty_name}."
         return "Please provide the appointment date you prefer."
 
     if template_type == ReceptionistTemplateType.ASK_FOR_TIME_PREFERENCE:
@@ -374,20 +372,14 @@ def render_deterministic_template(
 
     if template_type == ReceptionistTemplateType.ASK_FOR_PATIENT_IDENTITY:
         return (
-            "To continue, please provide the patient's full name, date of birth, "
-            "phone, and email."
+            "To continue, please provide the patient's full name, date of birth, phone, and email."
         )
 
     if template_type == ReceptionistTemplateType.ASK_FOR_CONFIRMATION:
-        return (
-            "I have your patient details on file. Please confirm to book the held "
-            "appointment."
-        )
+        return "I have your patient details on file. Please confirm to book the held appointment."
 
     if template_type == ReceptionistTemplateType.BOOKING_SUCCEEDED:
-        return (
-            f"Your appointment is confirmed. Reference: {appointment_id}."
-        )
+        return f"Your appointment is confirmed. Reference: {appointment_id}."
 
     if template_type == ReceptionistTemplateType.BOOKING_FAILED:
         if failure_reason is not None:
@@ -418,8 +410,7 @@ def render_deterministic_template(
 
     if template_type == ReceptionistTemplateType.HUMAN_ESCALATION:
         return (
-            "I'll mark this conversation for human follow-up. A human receptionist "
-            "can review it."
+            "I'll mark this conversation for human follow-up. A human receptionist can review it."
         )
 
     if template_type == ReceptionistTemplateType.UNSUPPORTED_REQUEST:
@@ -429,10 +420,7 @@ def render_deterministic_template(
         )
 
     if template_type == ReceptionistTemplateType.GENERIC_ERROR:
-        return (
-            "Something went wrong while handling your request. Please try again in a "
-            "moment."
-        )
+        return "Something went wrong while handling your request. Please try again in a moment."
 
     msg = f"unsupported template type: {template_type}"
     raise ValueError(msg)

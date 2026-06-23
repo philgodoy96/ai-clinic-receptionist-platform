@@ -87,9 +87,7 @@ class SQLAlchemyVoiceCallRepository:
         idempotency_key: str,
     ) -> VoiceCallEvent | None:
         statement = (
-            select(VoiceCallEvent)
-            .where(VoiceCallEvent.idempotency_key == idempotency_key)
-            .limit(1)
+            select(VoiceCallEvent).where(VoiceCallEvent.idempotency_key == idempotency_key).limit(1)
         )
 
         return self.session.scalars(statement).first()

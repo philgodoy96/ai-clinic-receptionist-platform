@@ -152,9 +152,7 @@ class EmailJobWorkerService:
                 processed=False,
                 job_id=email_job_id,
                 status=(
-                    claim_result.email_job.status
-                    if claim_result.email_job is not None
-                    else None
+                    claim_result.email_job.status if claim_result.email_job is not None else None
                 ),
                 skip_reason="not_claimable",
             )
@@ -390,6 +388,5 @@ class EmailJobWorkerService:
 
     def _owns_processing_lock(self, email_job: EmailJob) -> bool:
         return (
-            email_job.status == EmailJobStatus.PROCESSING
-            and email_job.locked_by == self.worker_id
+            email_job.status == EmailJobStatus.PROCESSING and email_job.locked_by == self.worker_id
         )

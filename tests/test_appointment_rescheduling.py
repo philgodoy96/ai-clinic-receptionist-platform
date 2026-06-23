@@ -148,10 +148,7 @@ def test_validate_request_requires_confirmation() -> None:
             _build_request(explicit_confirmation=False),
         )
 
-    assert (
-        exc_info.value.failure_code
-        == AppointmentReschedulingFailureCode.MISSING_CONFIRMATION
-    )
+    assert exc_info.value.failure_code == AppointmentReschedulingFailureCode.MISSING_CONFIRMATION
 
 
 def test_validate_request_requires_idempotency_key() -> None:
@@ -160,10 +157,7 @@ def test_validate_request_requires_idempotency_key() -> None:
             _build_request(idempotency_key="   "),
         )
 
-    assert (
-        exc_info.value.failure_code
-        == AppointmentReschedulingFailureCode.INVALID_IDEMPOTENCY_KEY
-    )
+    assert exc_info.value.failure_code == AppointmentReschedulingFailureCode.INVALID_IDEMPOTENCY_KEY
 
 
 def test_normalize_rescheduling_reason_trims_and_rejects_blank() -> None:

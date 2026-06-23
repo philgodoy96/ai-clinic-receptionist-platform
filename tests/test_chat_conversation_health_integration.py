@@ -333,9 +333,7 @@ def test_can_i_speak_to_a_real_person_creates_human_escalation_with_handoff_meta
     assert metadata["status"] == "open"
     assert metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
 
-    notification_metadata = result.assistant_message.message_metadata[
-        "human_handoff_notification"
-    ]
+    notification_metadata = result.assistant_message.message_metadata["human_handoff_notification"]
     assert notification_metadata["created"] is True
     assert notification_metadata["email_job_id"] == str(email_job.id)
 
@@ -552,9 +550,7 @@ def test_repeated_human_request_reuses_active_human_escalation(
     assert second_metadata["created"] is False
     assert second_metadata["escalation_id"] == str(escalation_repository.escalations[0].id)
 
-    second_notification = second.assistant_message.message_metadata[
-        "human_handoff_notification"
-    ]
+    second_notification = second.assistant_message.message_metadata["human_handoff_notification"]
     assert second_notification["created"] is False
     assert second_notification["email_job_id"] == str(email_job_repository.email_jobs[0].id)
 
@@ -733,9 +729,7 @@ def test_immediate_human_request_enqueues_one_notification_job(
     assert email_job.job_type == EmailJobType.HUMAN_ESCALATION_NOTIFICATION
     assert result.human_handoff_notification_email_job_id == email_job.id
 
-    notification_metadata = result.assistant_message.message_metadata[
-        "human_handoff_notification"
-    ]
+    notification_metadata = result.assistant_message.message_metadata["human_handoff_notification"]
     assert notification_metadata["created"] is True
     assert notification_metadata["email_job_id"] == str(email_job.id)
     assert email_job.payload["priority"] == "high"
@@ -769,12 +763,8 @@ def test_repeated_human_request_reuses_existing_notification_job(
     assert first.human_handoff_notification_email_job_id == email_job.id
     assert second.human_handoff_notification_email_job_id == email_job.id
 
-    first_notification = first.assistant_message.message_metadata[
-        "human_handoff_notification"
-    ]
-    second_notification = second.assistant_message.message_metadata[
-        "human_handoff_notification"
-    ]
+    first_notification = first.assistant_message.message_metadata["human_handoff_notification"]
+    second_notification = second.assistant_message.message_metadata["human_handoff_notification"]
     assert first_notification["created"] is True
     assert second_notification["created"] is False
     assert second_notification["email_job_id"] == first_notification["email_job_id"]

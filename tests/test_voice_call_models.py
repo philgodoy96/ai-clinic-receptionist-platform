@@ -204,7 +204,8 @@ def test_voice_call_event_relationship(db_session: Session) -> None:
 def test_voice_call_indexes_exist() -> None:
     voice_call_indexes = {index.name for index in VoiceCall.__table__.indexes}  # type: ignore[attr-defined]
     voice_call_event_indexes = {
-        index.name for index in VoiceCallEvent.__table__.indexes  # type: ignore[attr-defined]
+        index.name
+        for index in VoiceCallEvent.__table__.indexes  # type: ignore[attr-defined]
     }
 
     assert "ix_voice_calls_status_created_at" in voice_call_indexes

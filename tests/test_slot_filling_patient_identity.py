@@ -102,8 +102,7 @@ def test_existing_identity_fields_are_preserved() -> None:
         "patient_identity.phone",
     }
     assert all(
-        rejected.reason == "conflicts_with_existing_context"
-        for rejected in result.rejected_fields
+        rejected.reason == "conflicts_with_existing_context" for rejected in result.rejected_fields
     )
 
 

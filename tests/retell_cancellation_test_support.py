@@ -19,6 +19,7 @@ from app.services.conversations import ConversationService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.test_appointment_booking_service import create_booking_context
 from tests.test_appointment_cancellation_service import create_cancellation_context
 from tests.test_conversations import FakeConversationRepository
@@ -144,6 +145,7 @@ def create_retell_cancellation_tool_context(
         conversations=conversations,
         appointment_cancellation=tracking_cancellation,
         appointments=cancellation_context.appointment_repository,
+        clinic_time_service=make_test_clinic_time_service(),
     )
 
     return {

@@ -75,8 +75,8 @@ from app.domain.voice_cancellation import (
     validate_cancel_appointment_conversation_context,
 )
 from app.domain.voice_conversation import (
+    merge_check_availability_identity_fields,
     read_voice_context,
-    resolve_check_availability_arguments,
 )
 from app.domain.voice_rescheduling import (
     VOICE_RESCHEDULING_SOURCE,
@@ -117,6 +117,7 @@ from app.services.scheduling import (
     AvailabilitySlotUnavailableError,
     PatientLookupCriteria,
 )
+from app.services.scheduling_availability import SchedulingAvailabilityResolver
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 
 logger = logging.getLogger("app.retell_tool_adapter")
@@ -414,7 +415,34 @@ class RetellToolCallingAdapter:
         voice_session = self._ensure_voice_conversation(parsed)
         voice_context = voice_session.voice_context if voice_session is not None else {}
 
-        resolved_arguments = resolve_check_availability_arguments(arguments, voice_context)
+        if self.clinic_time_service is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="clinic_time_unavailable",
+            )
+
+        availability_resolver = SchedulingAvailabilityResolver(self.clinic_time_service)
+        availability_window = availability_resolver.resolve_check_availability(
+            arguments,
+            voice_context,
+        )
+        if not availability_window.is_resolved:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=availability_window.error_code or "invalid_scheduling_expression",
+            )
+
+        resolved_arguments = merge_check_availability_identity_fields(
+            arguments.model_copy(
+                update={
+                    "start_from": availability_window.start_from,
+                    "start_to": availability_window.end_to,
+                },
+            ),
+            voice_context,
+        )
         if resolved_arguments is None:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
@@ -465,9 +493,7 @@ class RetellToolCallingAdapter:
         owner_id = self._resolve_hold_owner_id(
             provider_call_id=parsed.provider_call_id,
             owner_id=arguments.owner_id,
-            conversation_id=(
-                voice_session.conversation.id if voice_session is not None else None
-            ),
+            conversation_id=(voice_session.conversation.id if voice_session is not None else None),
         )
 
         if owner_id is None:
@@ -481,6 +507,16 @@ class RetellToolCallingAdapter:
             slot = self.scheduling_service.get_available_slot_for_hold(
                 arguments.availability_slot_id,
             )
+            if self.clinic_time_service is not None:
+                slot_validation = SchedulingAvailabilityResolver(
+                    self.clinic_time_service,
+                ).validate_slot_start_time(slot.start_time)
+                if not slot_validation.is_valid:
+                    return build_failed_tool_call_response(
+                        tool_name=parsed.tool_name.value,
+                        tool_call_id=parsed.tool_call_id,
+                        error_code=slot_validation.error_code or "invalid_scheduling_expression",
+                    )
             hold = self.hold_service.create_hold(
                 availability_slot_id=slot.id,
                 doctor_id=slot.doctor_id,
@@ -558,9 +594,7 @@ class RetellToolCallingAdapter:
         owner_id = self._resolve_hold_owner_id(
             provider_call_id=parsed.provider_call_id,
             owner_id=arguments.owner_id,
-            conversation_id=(
-                voice_session.conversation.id if voice_session is not None else None
-            ),
+            conversation_id=(voice_session.conversation.id if voice_session is not None else None),
         )
 
         if owner_id is None:
@@ -922,6 +956,32 @@ class RetellToolCallingAdapter:
                 tool_call_id=parsed.tool_call_id,
                 error_code=target_error,
             )
+
+        if new_slot_id is not None and self.clinic_time_service is not None:
+            try:
+                slot = self.scheduling_service.get_available_slot_for_hold(new_slot_id)
+            except AvailabilitySlotNotFoundError:
+                return build_failed_tool_call_response(
+                    tool_name=parsed.tool_name.value,
+                    tool_call_id=parsed.tool_call_id,
+                    error_code="availability_slot_not_found",
+                )
+            except AvailabilitySlotUnavailableError:
+                return build_failed_tool_call_response(
+                    tool_name=parsed.tool_name.value,
+                    tool_call_id=parsed.tool_call_id,
+                    error_code="availability_slot_unavailable",
+                )
+
+            slot_validation = SchedulingAvailabilityResolver(
+                self.clinic_time_service,
+            ).validate_slot_start_time(slot.start_time)
+            if not slot_validation.is_valid:
+                return build_failed_tool_call_response(
+                    tool_name=parsed.tool_name.value,
+                    tool_call_id=parsed.tool_call_id,
+                    error_code=slot_validation.error_code or "invalid_scheduling_expression",
+                )
 
         owner_id: str | None = None
         if hold_id is not None:

@@ -27,6 +27,7 @@ from app.services.scheduling import (
     DoctorNotFoundError,
     PatientLookupCriteria,
 )
+from tests.clinic_time_test_support import make_test_clinic_time_service
 
 
 @pytest.fixture()
@@ -41,7 +42,7 @@ def slot_id() -> UUID:
 
 @pytest.fixture()
 def availability_slot(doctor_id: UUID, slot_id: UUID) -> AvailabilitySlot:
-    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    start_time = datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
 
     return AvailabilitySlot(
         id=slot_id,
@@ -88,6 +89,7 @@ def adapter_bundle(
         scheduling_service=scheduling_service,
         hold_service=hold_service,
         voice_calls=voice_calls,
+        clinic_time_service=make_test_clinic_time_service(),
     )
 
     return AdapterBundle(
@@ -189,8 +191,8 @@ def test_adapter_dispatches_check_availability_to_scheduling_service(
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(adapter_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                     "limit": 1,
                 },
             },
@@ -325,8 +327,8 @@ def test_domain_failures_return_safe_failed_response(
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(adapter_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         ),
@@ -345,8 +347,8 @@ def test_no_booking_service_is_called(adapter_bundle: AdapterBundle) -> None:
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(adapter_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         ),
@@ -460,8 +462,8 @@ def test_check_availability_has_no_side_effects(adapter_bundle: AdapterBundle) -
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(adapter_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         ),
