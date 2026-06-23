@@ -7,7 +7,11 @@ from typing import Annotated
 from fastapi import Depends, Request, status
 
 from app.api.dependencies import get_demo_guardrail_service
-from app.api.errors import APIError
+from app.api.errors import (
+    VOICE_DEMO_RATE_LIMITED_CODE,
+    VOICE_DEMO_TEMPORARY_FAILURE_CODE,
+    APIError,
+)
 from app.core.config import Settings, get_settings
 from app.core.request_context import get_correlation_id, get_request_id
 from app.services.client_ip import get_client_ip
@@ -52,6 +56,57 @@ def enforce_retell_tool_allowed(
         lambda: guardrails.check_retell_tool_allowed(client_ip),
         request=request,
     )
+
+
+def enforce_voice_web_call_allowed(
+    request: Request,
+    settings: Settings,
+    guardrails: DemoGuardrailService,
+) -> str:
+    client_ip = get_client_ip(
+        request,
+        trust_proxy_headers=settings.trust_proxy_headers,
+    )
+
+    try:
+        guardrails.check_voice_web_call_allowed(client_ip)
+    except DemoGuardrailLimitExceeded as exc:
+        logger.warning(
+            "voice_demo_rate_limited",
+            extra={
+                "event": "voice_demo_rate_limited",
+                "limit_name": exc.limit_name,
+                "endpoint": request.url.path,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
+        )
+        raise APIError(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            code=VOICE_DEMO_RATE_LIMITED_CODE,
+            message="Voice demo rate limit exceeded.",
+            details={
+                "limit_name": exc.limit_name,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
+        ) from exc
+    except DemoGuardrailStoreUnavailable as exc:
+        logger.error(
+            "voice_demo_guardrail_store_unavailable",
+            extra={
+                "event": "voice_demo_guardrail_store_unavailable",
+                "endpoint": request.url.path,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
+        )
+        raise APIError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code=VOICE_DEMO_TEMPORARY_FAILURE_CODE,
+            message="Voice demo is temporarily unavailable.",
+        ) from exc
+
+    return client_ip
 
 
 def require_retell_tool_guardrail(

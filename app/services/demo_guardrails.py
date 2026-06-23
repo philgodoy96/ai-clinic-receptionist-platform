@@ -112,6 +112,9 @@ class DemoGuardrailService:
             self._seconds_until_end_of_utc_day(now),
         )
 
+    def check_voice_web_call_allowed(self, ip: str) -> None:
+        self.check_retell_tool_allowed(ip)
+
     def check_appointment_creation_allowed(self, ip: str) -> None:
         if not self._guardrails_enabled():
             return
