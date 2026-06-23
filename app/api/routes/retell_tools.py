@@ -15,6 +15,7 @@ from app.api.dependencies import (
     get_retell_tool_calling_adapter,
 )
 from app.api.retell_webhook_security import require_retell_webhook_security, retell_tool_payload
+from app.integrations.retell.payload_normalization import normalize_retell_tool_payload
 from app.schemas.retell_tools import (
     RetellBookAppointmentRequest,
     RetellCheckAvailabilityRequest,
@@ -43,7 +44,12 @@ router = APIRouter(
 def execute_retell_tool(
     payload: Annotated[
         RetellToolCallRequest,
-        Depends(retell_tool_payload(RetellToolCallRequest)),
+        Depends(
+            retell_tool_payload(
+                RetellToolCallRequest,
+                normalizer=normalize_retell_tool_payload,
+            ),
+        ),
     ],
     adapter: Annotated[
         RetellToolCallingAdapter,

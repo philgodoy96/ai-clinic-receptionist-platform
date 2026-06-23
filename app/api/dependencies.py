@@ -59,12 +59,17 @@ from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     build_llm_receptionist_analysis_service_from_settings,
 )
+from app.services.public_demo_voice_session import PublicDemoVoiceSessionService
 from app.services.receptionist_response_generator import (
     ReceptionistResponseGenerator,
     build_receptionist_response_generator_from_settings,
 )
 from app.services.retell_call_lifecycle import RetellCallLifecycleService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
+from app.services.retell_web_call import (
+    RetellWebCallService,
+    create_retell_web_call_service_from_settings,
+)
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
@@ -469,4 +474,35 @@ def get_retell_appointment_booking_tool_adapter(
         audit_logs=audit_logs,
         email_jobs=email_jobs,
         email_job_dispatch=email_job_dispatch,
+    )
+
+
+def get_retell_web_call_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+) -> RetellWebCallService:
+    return create_retell_web_call_service_from_settings(
+        settings,
+        clinic_time_service=clinic_time_service,
+    )
+
+
+def get_public_demo_voice_session_service(
+    db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+) -> PublicDemoVoiceSessionService:
+    conversation_repository = SQLAlchemyConversationRepository(db)
+    return PublicDemoVoiceSessionService(
+        retell_web_call_service=create_retell_web_call_service_from_settings(
+            settings,
+            clinic_time_service=clinic_time_service,
+        ),
+        voice_calls=SQLAlchemyVoiceCallRepository(db),
+        voice_conversation_bridge=VoiceConversationBridgeService(
+            voice_calls=SQLAlchemyVoiceCallRepository(db),
+            conversations=conversation_repository,
+            conversation_service=ConversationService(repository=conversation_repository),
+        ),
+        conversations=ConversationService(repository=conversation_repository),
     )

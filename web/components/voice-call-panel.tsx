@@ -2,35 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { createRetellWebCall } from "@/lib/api-client";
 import { publicConfig } from "@/lib/config";
 import {
-  requestMicrophone,
-  stopMediaStream,
+  loadDemoConversationId,
+  saveDemoConversationId,
+} from "@/lib/demo-session";
+import { loadRetellWebClient, type RetellVoiceClient } from "@/lib/retell-voice-client";
+import { toSafeVoiceErrorMessage } from "@/lib/voice-api-errors";
+import {
   VOICE_CALL_STATE_LABELS,
-  VoiceCallState,
-  wait,
-} from "@/lib/voice-call-mock";
+  type VoiceCallState,
+} from "@/lib/voice-call";
 
 type VoiceCallPanelProps = {
   onExit: () => void;
 };
-
-function toSafeMicrophoneError(error: unknown): string {
-  if (error instanceof DOMException) {
-    if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
-      return "Microphone permission was denied. Allow access to try the voice demo.";
-    }
-    if (error.name === "NotFoundError") {
-      return "No microphone was found on this device.";
-    }
-  }
-
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-
-  return "Unable to start the voice demo. Please try again.";
-}
 
 function VoiceDisabledState({ onExit }: { onExit: () => void }) {
   return (
@@ -60,14 +47,15 @@ function VoiceDisabledState({ onExit }: { onExit: () => void }) {
 function VoiceEnabledState({ onExit }: { onExit: () => void }) {
   const [callState, setCallState] = useState<VoiceCallState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const [isAgentTalking, setIsAgentTalking] = useState(false);
   const sessionActiveRef = useRef(false);
+  const retellClientRef = useRef<RetellVoiceClient | null>(null);
 
   useEffect(() => {
     return () => {
       sessionActiveRef.current = false;
-      stopMediaStream(mediaStreamRef.current);
-      mediaStreamRef.current = null;
+      retellClientRef.current?.stopCall();
+      retellClientRef.current = null;
     };
   }, []);
 
@@ -77,44 +65,110 @@ function VoiceEnabledState({ onExit }: { onExit: () => void }) {
     callState === "connected" ||
     callState === "ending";
 
+  function detachRetellListeners(client: RetellVoiceClient) {
+    client.removeAllListeners();
+  }
+
+  function handleRetellCallEnded() {
+    sessionActiveRef.current = false;
+    setIsAgentTalking(false);
+
+    if (retellClientRef.current) {
+      detachRetellListeners(retellClientRef.current);
+      retellClientRef.current = null;
+    }
+
+    setCallState("ended");
+  }
+
   async function handleStartCall() {
     if (callInProgress) {
       return;
     }
 
     setErrorMessage(null);
+    setIsAgentTalking(false);
     sessionActiveRef.current = true;
-    setCallState("requesting_microphone");
+    setCallState("connecting");
 
     try {
-      const stream = await requestMicrophone();
-      if (!sessionActiveRef.current) {
-        stopMediaStream(stream);
-        return;
-      }
-
-      mediaStreamRef.current = stream;
-      setCallState("connecting");
-      await wait(1200);
+      const conversationId = loadDemoConversationId();
+      const webCall = await createRetellWebCall({
+        conversation_id: conversationId,
+      });
 
       if (!sessionActiveRef.current) {
         return;
       }
 
-      setCallState("connected");
+      if (webCall.conversation_id) {
+        saveDemoConversationId(webCall.conversation_id);
+      }
+
+      const client = await loadRetellWebClient();
+      if (!sessionActiveRef.current) {
+        client.stopCall();
+        return;
+      }
+
+      retellClientRef.current = client;
+
+      client.on("call_started", () => {
+        if (!sessionActiveRef.current) {
+          return;
+        }
+
+        setCallState("connected");
+      });
+
+      client.on("call_ended", () => {
+        handleRetellCallEnded();
+      });
+
+      client.on("agent_start_talking", () => {
+        if (sessionActiveRef.current) {
+          setIsAgentTalking(true);
+        }
+      });
+
+      client.on("agent_stop_talking", () => {
+        setIsAgentTalking(false);
+      });
+
+      client.on("error", () => {
+        if (!sessionActiveRef.current) {
+          return;
+        }
+
+        sessionActiveRef.current = false;
+        setIsAgentTalking(false);
+        detachRetellListeners(client);
+        retellClientRef.current = null;
+        setErrorMessage(
+          "Unable to connect the voice call. Please try again.",
+        );
+        setCallState("error");
+      });
+
+      setCallState("requesting_microphone");
+      await client.startCall({
+        accessToken: webCall.access_token,
+      });
     } catch (error) {
       if (!sessionActiveRef.current) {
         return;
       }
 
-      stopMediaStream(mediaStreamRef.current);
-      mediaStreamRef.current = null;
-      setErrorMessage(toSafeMicrophoneError(error));
+      sessionActiveRef.current = false;
+      retellClientRef.current?.stopCall();
+      retellClientRef.current = null;
+      setIsAgentTalking(false);
+      setErrorMessage(toSafeVoiceErrorMessage(error));
       setCallState("error");
     }
   }
 
-  async function handleEndCall() {
+  function handleEndCall() {
     if (
       callState === "idle" ||
       callState === "ended" ||
@@ -126,14 +180,19 @@ function VoiceEnabledState({ onExit }: { onExit: () => void }) {
 
     sessionActiveRef.current = false;
     setCallState("ending");
-    stopMediaStream(mediaStreamRef.current);
-    mediaStreamRef.current = null;
-    await wait(600);
+    setIsAgentTalking(false);
+
+    if (retellClientRef.current) {
+      retellClientRef.current.stopCall();
+      return;
+    }
+
     setCallState("ended");
   }
 
   function handleRetry() {
     setErrorMessage(null);
+    setIsAgentTalking(false);
     setCallState("idle");
   }
 
@@ -146,11 +205,14 @@ function VoiceEnabledState({ onExit }: { onExit: () => void }) {
         <p className="mt-1 text-sm font-medium text-zinc-900">
           {VOICE_CALL_STATE_LABELS[callState]}
         </p>
+        {callState === "connected" && isAgentTalking ? (
+          <p className="mt-2 text-sm text-teal-800">Receptionist is speaking</p>
+        ) : null}
       </div>
 
       <p className="text-sm leading-6 text-zinc-600">
-        This is a placeholder voice session. A future Retell Web SDK integration
-        will replace the mock connection without changing the public demo flow.
+        Start a live voice session with the clinic receptionist. Your microphone
+        is used only during an active call.
       </p>
 
       {errorMessage ? (
@@ -176,7 +238,7 @@ function VoiceEnabledState({ onExit }: { onExit: () => void }) {
         {callInProgress ? (
           <button
             type="button"
-            onClick={() => void handleEndCall()}
+            onClick={handleEndCall}
             disabled={callState === "ending"}
             className="inline-flex h-12 items-center justify-center rounded-full border border-zinc-300 bg-white px-6 text-sm font-medium text-zinc-900 transition-colors hover:border-zinc-400 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -217,7 +279,7 @@ export function VoiceCallPanel({ onExit }: VoiceCallPanelProps) {
           <h2 className="text-lg font-semibold text-white-900">Voice demo</h2>
           <p className="text-sm text-white-500">
             {voiceEnabled
-              ? "Feature flag enabled — mock call flow only."
+              ? "Live Retell voice session via the public demo API."
               : "Feature flag disabled — configuration in progress."}
           </p>
         </div>

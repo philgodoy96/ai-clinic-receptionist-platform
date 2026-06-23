@@ -30,7 +30,10 @@ const BACKEND_UNAVAILABLE_CODES = new Set([
   "demo_guardrail_store_unavailable",
 ]);
 
-const RATE_LIMITED_CODES = new Set(["demo_guardrail_limit_exceeded"]);
+const RATE_LIMITED_CODES = new Set([
+  "demo_guardrail_limit_exceeded",
+  "rate_limited",
+]);
 
 const KNOWN_SAFE_CODES: Record<string, string> = {
   conversation_not_found:

@@ -32,6 +32,7 @@ See also:
 - [Retell Voice Appointment Cancellation](retell-voice-cancellation.md)
 - [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md)
 - [Public Demo Guardrails](public-demo-guardrails.md)
+- [Retell Dashboard Setup](../operations/retell-dashboard-setup.md)
 - [Appointment Slot Holds](appointment-holds.md)
 
 ## Supported Tools
@@ -85,6 +86,12 @@ The adapter delegates scheduling and hold work to existing services. `book_appoi
 
 Public demo guardrails run after signature verification and before adapter execution on protected Retell tool routes.
 
+## Dashboard Configuration
+
+Retell custom functions must call the unified tool route with the exact allowlisted `tool_name` values above. **Backend tools are the source of truth** for scheduling outcomes; dashboard prompt text must not instruct the agent to calculate relative dates or confirm appointments without tool success.
+
+Operational setup (agent, webhooks, web calls, smoke tests) is documented in [Retell Dashboard Setup](../operations/retell-dashboard-setup.md). Prompt and `get_clinic_context` contracts are documented in [Clinic Time Context and Tool Contracts](clinic-time-context-and-tool-contracts.md).
+
 ## Idempotency
 
 Side-effecting tool calls use `provider_call_id` and `tool_call_id` when available.
@@ -107,3 +114,5 @@ Future implementation phases may add:
 
 - transcript summary persistence
 - voice-specific operational metrics
+
+Dashboard agent setup and web-call browser integration are documented in [Retell Dashboard Setup](../operations/retell-dashboard-setup.md) and the `web/` frontend.

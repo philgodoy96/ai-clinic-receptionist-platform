@@ -92,6 +92,14 @@ class Settings(BaseSettings):
         ge=1,
         alias="RETELL_REQUEST_MAX_BODY_BYTES",
     )
+    retell_web_call_enabled: bool = Field(default=False, alias="RETELL_WEB_CALL_ENABLED")
+    retell_agent_id: str = Field(default="", alias="RETELL_AGENT_ID")
+    retell_agent_version: str | None = Field(default=None, alias="RETELL_AGENT_VERSION")
+    retell_web_call_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        alias="RETELL_WEB_CALL_TIMEOUT_SECONDS",
+    )
 
     email_provider: str = Field(default="fake", alias="EMAIL_PROVIDER")
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY", repr=False)
@@ -350,6 +358,22 @@ class Settings(BaseSettings):
         if self.retell_allow_insecure_webhooks and self.is_production_like:
             raise ValueError(
                 "RETELL_ALLOW_INSECURE_WEBHOOKS cannot be true in production-like APP_ENV",
+            )
+
+        self._validate_retell_web_call_settings()
+
+    def _validate_retell_web_call_settings(self) -> None:
+        if not self.retell_web_call_enabled:
+            return
+
+        if not self.retell_api_key.strip():
+            raise ValueError(
+                "RETELL_API_KEY is required when RETELL_WEB_CALL_ENABLED is true",
+            )
+
+        if not self.retell_agent_id.strip():
+            raise ValueError(
+                "RETELL_AGENT_ID is required when RETELL_WEB_CALL_ENABLED is true",
             )
 
     @staticmethod

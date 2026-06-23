@@ -150,7 +150,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration, Redis holds, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
+Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration, Redis holds, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, Retell web call service and public demo voice endpoint, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
 
 Configuration and deployment:
 
@@ -209,7 +209,7 @@ The API handles chat, scheduling, and Retell routes. The worker consumes RabbitM
 
 - **Groq** — optional real LLM for analysis and phrasing; fake provider remains valid for smoke tests
 - **Resend** — optional real confirmation email delivery; fake provider records jobs in memory
-- **Retell** — backend tool routes, webhook verification, and call lifecycle are implemented; Retell dashboard / agent setup is a later phase outside this repo
+- **Retell** — voice tool routes, webhooks, server-side web calls, and call lifecycle; agent and webhook setup: [`docs/operations/retell-dashboard-setup.md`](docs/operations/retell-dashboard-setup.md)
 
 ### Demo safety
 
@@ -230,8 +230,10 @@ The `web/` app is a minimal Next.js frontend for the portfolio public demo. It d
 
 - Landing page with demo disclaimer
 - Backend-powered chat panel (`POST /api/v1/chat/messages` via same-origin proxy)
-- Feature-flagged voice entry point (mock call flow until Retell Web SDK is wired)
-- Public env vars only — no provider keys in the browser
+- Feature-flagged voice demo (`NEXT_PUBLIC_VOICE_DEMO_ENABLED`)
+- Public env vars only — no Retell or provider keys in the browser
+
+**Voice demo:** When `NEXT_PUBLIC_VOICE_DEMO_ENABLED=true` and the API has `RETELL_WEB_CALL_ENABLED=true`, **Call the clinic** requests a short-lived token from `POST /api/v1/demo/voice/retell-web-call`, then connects via the Retell Web SDK after the user clicks **Start call** (microphone permission at that point only). With the flag off, the panel shows a configuration preview and never requests the microphone. Retell agent setup: [`docs/operations/retell-dashboard-setup.md`](docs/operations/retell-dashboard-setup.md).
 
 **Quick start** (backend must be running on port 8000):
 

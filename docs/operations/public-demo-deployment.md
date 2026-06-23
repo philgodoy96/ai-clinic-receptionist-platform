@@ -62,7 +62,7 @@ flowchart TB
 | **OTEL collector** | Optional traces/metrics export | No (not wired in env template yet) |
 | **Groq** | Optional real LLM analysis / phrasing | No (fake LLM works for smoke tests) |
 | **Resend** | Optional real confirmation email delivery | No (fake email works for smoke tests) |
-| **Retell** | Optional voice tool + lifecycle webhooks | No (chat-only demo is valid) |
+| **Retell** | Optional voice tool + lifecycle webhooks + server-side web calls | No (chat-only demo is valid); see [Retell Dashboard Setup](retell-dashboard-setup.md) |
 
 Deploy **one API container** and **one or more worker containers** from the **same Docker image** with different commands. Optionally deploy the **`web/`** Next.js app as a separate service for the browser UI. Infrastructure (Postgres, Redis, RabbitMQ) is usually managed services, not sidecars in the app image.
 
@@ -91,7 +91,7 @@ Only **`NEXT_PUBLIC_*`** vars belong in the web deployment. Do not put backend s
 | `API_PROXY_TARGET` | Recommended when API is on another host | Server-only; Next.js rewrites `/api/v1/*` to this origin |
 | `NEXT_PUBLIC_GITHUB_URL` | Optional | Footer / landing link |
 | `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Optional | Footer / landing link |
-| `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | Optional | `false` = voice configuration preview; `true` = mock call UI (no Retell SDK yet) |
+| `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | Optional | `false` = voice configuration preview; `true` = live Retell Web SDK voice demo (requires backend `RETELL_WEB_CALL_ENABLED`) |
 
 Example (split deployment):
 
@@ -113,7 +113,41 @@ The FastAPI app does **not** include CORS middleware today. If you bypass rewrit
 - [ ] **Talk to the receptionist** opens chat; a greeting returns an assistant reply.
 - [ ] Demo disclaimer is visible (fictional clinic; no real patient data).
 - [ ] With `NEXT_PUBLIC_VOICE_DEMO_ENABLED=false`, **Call the clinic** shows the configuration preview and does not request a microphone.
+- [ ] With `NEXT_PUBLIC_VOICE_DEMO_ENABLED=true` and backend `RETELL_WEB_CALL_ENABLED=true`, **Call the clinic** starts a web call via the public demo API and Retell Web SDK (see [Retell Dashboard Setup](retell-dashboard-setup.md)).
 - [ ] `npm run check:env-safety` passes in CI or before release (no forbidden `NEXT_PUBLIC_*` secret names).
+
+## Enabling Voice Demo
+
+Voice requires **both** backend web-call configuration and the frontend feature flag. Retell agent, tool, and webhook setup is documented in [Retell Dashboard Setup](retell-dashboard-setup.md) — not duplicated here.
+
+### Backend environment variables (web calls)
+
+| Variable | Required when | Notes |
+|----------|---------------|-------|
+| `RETELL_WEB_CALL_ENABLED` | Browser web calls | `true` to allow `POST /api/v1/demo/voice/retell-web-call` |
+| `RETELL_API_KEY` | `RETELL_WEB_CALL_ENABLED=true` | Server-side only; never expose to the browser |
+| `RETELL_AGENT_ID` | `RETELL_WEB_CALL_ENABLED=true` | Must match the Retell dashboard agent |
+| `RETELL_AGENT_VERSION` | Optional | Pin agent version when set |
+| `RETELL_WEB_CALL_TIMEOUT_SECONDS` | Optional | Provider HTTP timeout |
+
+For tool callbacks and lifecycle webhooks during voice calls, also set `RETELL_ENABLED=true` with webhook verification (`RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true`).
+
+### Frontend environment variable
+
+| Variable | Notes |
+|----------|-------|
+| `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | `false` (default): configuration preview, no microphone. `true`: live voice UI; requires backend `RETELL_WEB_CALL_ENABLED=true`. |
+
+### Recommended deployment order
+
+1. Deploy API with chat and guardrails working (`PUBLIC_DEMO_MODE`, Redis, migrations).
+2. Configure Retell agent, tools, and webhooks per [Retell Dashboard Setup](retell-dashboard-setup.md).
+3. Set backend `RETELL_ENABLED=true`, `RETELL_WEB_CALL_ENABLED=true`, `RETELL_API_KEY`, and `RETELL_AGENT_ID`; redeploy API.
+4. Smoke-test `POST /api/v1/demo/voice/retell-web-call` — response should include `call_id` and `access_token` only (no API keys).
+5. Set `NEXT_PUBLIC_VOICE_DEMO_ENABLED=true` on the web service; redeploy `web/`.
+6. Verify end-to-end browser voice (microphone only after **Start call**, agent tools reach the API).
+
+Chat-only demos can skip steps 2–6 with `RETELL_ENABLED=false`, `RETELL_WEB_CALL_ENABLED=false`, and `NEXT_PUBLIC_VOICE_DEMO_ENABLED=false`.
 
 ## Required Environment Variables
 
@@ -145,7 +179,8 @@ Copy values from `.env.demo.example` into your platform secret manager. At minim
 |----------|-------------|---------------|
 | **Groq** | `LLM_PRIMARY_PROVIDER=groq` or `LLM_PROVIDER=groq` | `GROQ_API_KEY`, `GROQ_MODEL` |
 | **Resend** | `EMAIL_PROVIDER=resend` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
-| **Retell** | `RETELL_ENABLED=true` | `RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true` |
+| **Retell** | `RETELL_ENABLED=true` | `RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true`; `RETELL_API_KEY` for web calls |
+| **Retell web calls** | `RETELL_WEB_CALL_ENABLED=true` | `RETELL_API_KEY`, `RETELL_AGENT_ID`; optional `RETELL_AGENT_VERSION`, `RETELL_WEB_CALL_TIMEOUT_SECONDS` |
 | **Bedrock** | `LLM_PRIMARY_PROVIDER=bedrock` | `BEDROCK_MODEL_ID`, runtime AWS credentials |
 
 Safe smoke-test defaults (no external provider keys):
@@ -248,6 +283,7 @@ After deploy, verify:
 - [ ] With `EMAIL_JOB_DISPATCH_ENABLED=true`, book an appointment in chat and confirm a worker log line such as `email_job_consumer_started` / job processing.
 - [ ] With `EMAIL_PROVIDER=fake`, email jobs reach `sent` in Postgres without external mail.
 - [ ] With `RETELL_ENABLED=false`, Retell routes return `503` with `retell_disabled` (expected until voice is configured).
+- [ ] (Optional) With `RETELL_WEB_CALL_ENABLED=true` and frontend voice flag on, `POST /api/v1/demo/voice/retell-web-call` returns `access_token` and `call_id` without exposing API keys in the response body.
 
 ## Rollback Notes
 
@@ -288,7 +324,7 @@ This deployment target is a **portfolio public demo**, not a HIPAA-ready clinic 
 | **Patient data** | Fictional demo clinic only; no real PHI |
 | **Authentication / RBAC** | Public chat and Retell tool routes are unauthenticated; internal admin APIs are not hardened for open internet |
 | **Abuse protection** | Redis-backed demo guardrails and quotas — not a full abuse platform, WAF, or bot management |
-| **Retell dashboard** | Agent prompts, phone numbers, and Retell project setup are **out of scope for this repo phase**; backend routes exist but you must configure Retell separately |
+| **Retell dashboard** | Agent, prompts, and custom functions are configured in the Retell console; see [Retell Dashboard Setup](retell-dashboard-setup.md) |
 | **Observability** | Structured JSON logs to stdout; optional OTEL collector not configured in template |
 | **Email delivery** | At-least-once semantics; not guaranteed exactly-once across Postgres and Resend |
 | **Multi-tenancy / SLA** | Single demo clinic tenant |
@@ -370,7 +406,7 @@ See [Groq LLM Provider](../architecture/groq-llm-provider.md) and [LLM Reliabili
 
 - Protected Retell routes reject with `503` and code `retell_disabled`
 - Chat and scheduling APIs continue to work
-- To enable voice: set `RETELL_ENABLED=true`, configure `RETELL_WEBHOOK_SECRET`, deploy with signature verification, then configure tools in the Retell dashboard (outside this repo)
+- To enable voice: set `RETELL_ENABLED=true`, configure `RETELL_WEBHOOK_SECRET`, deploy with signature verification, configure tools and webhooks in the Retell dashboard ([runbook](retell-dashboard-setup.md))
 
 See [Retell Webhook Security](../architecture/retell-webhook-security.md).
 
@@ -378,6 +414,7 @@ See [Retell Webhook Security](../architecture/retell-webhook-security.md).
 
 - [Configuration](../configuration.md)
 - [Local Development](local-development.md)
+- [Retell Dashboard Setup](retell-dashboard-setup.md)
 - [Public demo web frontend](../../web/README.md)
 - [Public Demo Guardrails](../architecture/public-demo-guardrails.md)
 - [Email Dispatch Reliability](../architecture/email-dispatch-reliability.md)
