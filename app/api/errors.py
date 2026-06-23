@@ -29,6 +29,12 @@ UNSUPPORTED_RETELL_TOOL_CODE = "unsupported_retell_tool"
 RETELL_TOOL_PROVIDER_CALL_ID_REQUIRED_CODE = "retell_tool_provider_call_id_required"
 RETELL_TOOL_ARGUMENTS_INVALID_CODE = "retell_tool_arguments_invalid"
 
+VOICE_DEMO_DISABLED_CODE = "voice_demo_disabled"
+VOICE_DEMO_RATE_LIMITED_CODE = "rate_limited"
+VOICE_DEMO_PROVIDER_UNAVAILABLE_CODE = "provider_unavailable"
+VOICE_DEMO_CONFIGURATION_ERROR_CODE = "configuration_error"
+VOICE_DEMO_TEMPORARY_FAILURE_CODE = "temporary_failure"
+
 
 def error_detail(
     *,

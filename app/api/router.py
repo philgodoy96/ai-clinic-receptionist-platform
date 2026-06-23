@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     audit_logs,
     chat,
+    demo_voice,
     email_jobs,
     health,
     human_escalations,
@@ -16,6 +17,7 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(scheduling.router)
 api_router.include_router(chat.router)
+api_router.include_router(demo_voice.router)
 api_router.include_router(retell_tools.router)
 api_router.include_router(retell_lifecycle.router)
 api_router.include_router(internal_voice_calls.router)

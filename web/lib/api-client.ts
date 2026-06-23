@@ -118,3 +118,70 @@ export async function sendChatMessage(
 
   return (await response.json()) as ChatMessageResponse;
 }
+
+export type RetellWebCallRequest = {
+  demo_session_id?: string | null;
+  conversation_id?: string | null;
+};
+
+export type RetellWebCallResponse = {
+  provider: string;
+  call_id: string;
+  access_token: string;
+  expires_in_seconds: number;
+  conversation_id: string | null;
+};
+
+export async function createRetellWebCall(
+  payload: RetellWebCallRequest = {},
+  options?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<RetellWebCallResponse> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const { signal, clear } = createRequestSignal(timeoutMs, options?.signal);
+
+  let response: Response;
+
+  try {
+    response = await fetch(`${getApiBasePath()}/demo/voice/retell-web-call`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        demo_session_id: payload.demo_session_id ?? null,
+        conversation_id: payload.conversation_id ?? null,
+      }),
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiClientError(0, "timeout", "Request timed out.");
+    }
+
+    throw new ApiClientError(0, "network_error", "Network request failed.");
+  } finally {
+    clear();
+  }
+
+  if (!response.ok) {
+    let body: ApiErrorBody | null = null;
+
+    try {
+      body = (await response.json()) as ApiErrorBody;
+    } catch {
+      body = null;
+    }
+
+    throw new ApiClientError(
+      response.status,
+      body?.error?.code ?? "request_failed",
+      body?.error?.message ?? "Request failed.",
+    );
+  }
+
+  return (await response.json()) as RetellWebCallResponse;
+}
