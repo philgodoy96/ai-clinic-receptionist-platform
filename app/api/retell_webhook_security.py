@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Request, status
 from pydantic import BaseModel, ValidationError
@@ -19,6 +19,7 @@ from app.api.errors import (
     APIError,
 )
 from app.core.config import Settings, get_settings
+from app.integrations.retell.payload_normalization import RetellPayloadNormalizationError
 from app.integrations.retell.signature import (
     RetellInvalidSignatureError,
     RetellMissingSignatureError,
@@ -94,6 +95,8 @@ async def require_retell_webhook_security(
 
 def retell_tool_payload[T: BaseModel](
     model: type[T],
+    *,
+    normalizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> Callable[..., Awaitable[T]]:
     async def _parse_payload(request: Request) -> T:
         raw_body = getattr(request.state, _RETELL_RAW_BODY_STATE_KEY, None)
@@ -119,6 +122,16 @@ def retell_tool_payload[T: BaseModel](
                 code=INVALID_RETELL_PAYLOAD_CODE,
                 message="Retell payload must be a JSON object.",
             )
+
+        if normalizer is not None:
+            try:
+                parsed = normalizer(parsed)
+            except RetellPayloadNormalizationError as exc:
+                raise APIError(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    code=INVALID_RETELL_PAYLOAD_CODE,
+                    message=exc.args[0] if exc.args else "Retell payload is invalid.",
+                ) from exc
 
         try:
             return model.model_validate(parsed)
