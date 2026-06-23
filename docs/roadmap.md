@@ -123,6 +123,7 @@ Implemented:
 - LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, offline evaluation runner, metrics grouped by prompt version, and optional provider-run evaluation mode
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
 - LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
+- Receptionist response generator with `ResponsePlan`, deterministic templates, optional LLM phrasing, output validation, deterministic fallback, chat integration, and optional voice `suggested_response_text` (see `docs/architecture/receptionist-response-generator.md`)
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
 - Retell webhook security with configuration validation, centralized signature verification, protected callback/tool routes, and standardized rejection for missing or invalid signatures
 - Retell call lifecycle with durable `VoiceCall` and `VoiceCallEvent` records, idempotent verified webhook ingestion, conservative status transitions, safe event metadata storage, and internal/debug inspection APIs
@@ -136,6 +137,7 @@ Implemented:
 
 Upcoming:
 
+- richer response-quality evaluation dataset for receptionist phrasing
 - Prompt regression reports
 - Clinic timezone settings
 - Voice provider transfer integration

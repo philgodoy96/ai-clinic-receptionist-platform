@@ -111,6 +111,8 @@ LLM retry/fallback cannot:
 - bypass confirmation
 - bypass emergency handling
 
+Receptionist response phrasing uses a separate generator boundary. See [Receptionist Response Generator](receptionist-response-generator.md).
+
 ## Future Work
 
 Future implementation phases may add:
@@ -121,4 +123,4 @@ Future implementation phases may add:
 - per-provider cost budgets
 - prompt regression reports
 
-See also: [Groq LLM Provider](groq-llm-provider.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Provider Foundation](llm-provider-foundation.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [Groq LLM Provider](groq-llm-provider.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Provider Foundation](llm-provider-foundation.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [Receptionist Response Generator](receptionist-response-generator.md).
