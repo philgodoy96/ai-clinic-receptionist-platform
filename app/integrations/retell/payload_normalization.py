@@ -19,6 +19,25 @@ _LIFECYCLE_CALL_METADATA_FIELDS = (
     "end_reason",
 )
 
+_LIFECYCLE_STRING_METADATA_FIELDS = frozenset(
+    {
+        "agent_id",
+        "agent_version",
+        "call_status",
+        "call_type",
+        "disconnect_reason",
+        "disconnection_reason",
+        "end_reason",
+        "occurred_at_source",
+    },
+)
+
+_LIFECYCLE_BLOCKED_METADATA_FIELDS = frozenset(
+    {
+        "access_token",
+    },
+)
+
 _TOOL_CALL_ID_FIELDS = (
     "tool_call_id",
     "tool_callId",
@@ -220,16 +239,22 @@ def _normalize_native_lifecycle_payload(
 
     for field_name in _LIFECYCLE_CALL_METADATA_FIELDS:
         if field_name in raw:
-            normalized[field_name] = raw[field_name]
+            source_value = raw[field_name]
         elif field_name in call:
-            normalized[field_name] = call[field_name]
+            source_value = call[field_name]
+        else:
+            continue
+
+        coerced_value = _coerce_lifecycle_metadata_field(field_name, source_value)
+        if coerced_value is not None:
+            normalized[field_name] = coerced_value
 
     if call:
         normalized["call"] = {
             "call_id": call_id,
-            "direction": call.get("direction"),
-            "from_number": call.get("from_number"),
-            "to_number": call.get("to_number"),
+            "direction": _optional_string(call.get("direction")),
+            "from_number": _optional_string(call.get("from_number")),
+            "to_number": _optional_string(call.get("to_number")),
         }
 
     return normalized
@@ -247,6 +272,7 @@ def _resolve_lifecycle_occurred_at(
     if event == "call_started":
         timestamp_candidates.extend(
             [
+                raw.get("event_timestamp"),
                 call.get("start_timestamp"),
                 raw.get("start_timestamp"),
             ],
@@ -254,15 +280,15 @@ def _resolve_lifecycle_occurred_at(
     elif event in {"call_ended", "call_analyzed"}:
         timestamp_candidates.extend(
             [
+                raw.get("event_timestamp"),
                 call.get("end_timestamp"),
                 raw.get("end_timestamp"),
-                call.get("start_timestamp"),
-                raw.get("start_timestamp"),
             ],
         )
     else:
         timestamp_candidates.extend(
             [
+                raw.get("event_timestamp"),
                 call.get("end_timestamp"),
                 call.get("start_timestamp"),
                 raw.get("end_timestamp"),
@@ -308,6 +334,31 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
     return None
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _coerce_lifecycle_metadata_field(field_name: str, value: object) -> object | None:
+    if field_name in _LIFECYCLE_BLOCKED_METADATA_FIELDS:
+        return None
+
+    if field_name in _LIFECYCLE_STRING_METADATA_FIELDS:
+        return _optional_string(value)
+
+    if field_name in {"duration_ms", "duration_seconds"}:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        return None
+
+    return value
 
 
 def _extract_call_id(call: Any) -> str | None:

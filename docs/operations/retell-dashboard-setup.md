@@ -172,7 +172,7 @@ Legacy per-tool routes under `/api/v1/retell/tools/*` remain for compatibility; 
 | **Verification** | **Must stay enabled** — `RETELL_WEBHOOK_VERIFICATION_ENABLED=true` |
 | **Secret** | Copy into `RETELL_WEBHOOK_SECRET` |
 
-Retell sends native lifecycle payloads (`event`, `call.call_id`, `call.start_timestamp` / `call.end_timestamp`). The backend verifies the signature on the raw body, normalizes timestamps (epoch ms/s or ISO) into `occurred_at`, then persists via the existing lifecycle pipeline. Manual tests may still send the normalized internal shape.
+Retell sends native lifecycle payloads (`event`, `call.call_id`, `call.start_timestamp` / `call.end_timestamp`, top-level `event_timestamp`, and provider metadata such as `agent_version`). The backend verifies the signature on the raw body, coerces provider metadata to the internal schema (for example `agent_version: 0` → `"0"`), normalizes timestamps (epoch ms/s or ISO) into `occurred_at`, drops sensitive fields like `access_token`, then persists via the existing lifecycle pipeline. Manual tests may still send the normalized internal shape.
 
 Lifecycle events create/update `VoiceCall` and `VoiceCallEvent` records. They do **not** execute scheduling tools.
 
