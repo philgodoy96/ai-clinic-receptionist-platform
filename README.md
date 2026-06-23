@@ -150,12 +150,14 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration with structured date expressions and business-hours enforcement, Redis holds, shared appointment rescheduling foundation via `AppointmentReschedulingService`, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, a receptionist response generator with deterministic default and optional LLM phrasing, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration, Redis holds, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, production-oriented configuration validation, Docker service commands, and a public demo deployment runbook.
 
-Configuration reference:
+Configuration and deployment:
 
-- `docs/configuration.md`
-- `.env.example`
+- [`docs/configuration.md`](docs/configuration.md)
+- [`.env.example`](.env.example) — local development
+- [`.env.demo.example`](.env.demo.example) — hosted public demo template
+- [`docs/operations/public-demo-deployment.md`](docs/operations/public-demo-deployment.md) — deploy runbook
 
 Architecture docs:
 
@@ -178,50 +180,42 @@ Architecture docs:
 - `docs/architecture/retell-voice-rescheduling.md`
 - `docs/architecture/appointment-rescheduling-foundation.md`
 
-## Local Mode vs Public Demo Mode
+## Public Demo Deployment
 
-**Local mode** is the default for development and CI:
+This repo supports two deployment profiles:
 
-- `PUBLIC_DEMO_MODE=false`
-- `PUBLIC_DEMO_GUARDRAILS_ENABLED=false`
-- `LLM_PROVIDER=fake` or `LLM_PRIMARY_PROVIDER=fake`
-- `LLM_MAX_PRIMARY_ATTEMPTS=2`
-- `LLM_FALLBACK_ENABLED=false`
-- `RECEPTIONIST_RESPONSE_MODE=deterministic`
-- `EMAIL_PROVIDER=fake`
-- `RETELL_ENABLED=false`
-- no Groq, Bedrock, Resend, or Retell API keys required
-- Docker Compose for PostgreSQL, Redis, and RabbitMQ
+| | **Local mode** | **Public demo mode** |
+|---|---|---|
+| **Purpose** | Development and CI | Hosted unauthenticated portfolio demo |
+| **Config template** | [`.env.example`](.env.example) | [`.env.demo.example`](.env.demo.example) |
+| **Providers** | Fake LLM and fake email by default | Optional real Groq / Resend; Retell backend routes ready |
+| **Guardrails** | Disabled | Redis-backed rate limits and quotas |
+| **Patient data** | Fictional demo clinic only | Fictional demo clinic only — no real PHI |
 
-**Groq public demo mode** is intended for a hosted unauthenticated demo with real LLM analysis:
+**Local mode** needs no external API keys. Use Docker Compose for PostgreSQL, Redis, and RabbitMQ. See [`docs/operations/local-development.md`](docs/operations/local-development.md).
 
-- `PUBLIC_DEMO_MODE=true`
-- `PUBLIC_DEMO_GUARDRAILS_ENABLED=true`
-- `LLM_PRIMARY_PROVIDER=groq`
-- `GROQ_API_KEY=...` and `GROQ_MODEL=...`
-- `GROQ_RESPONSE_FORMAT=json_schema`
-- `LLM_MAX_PRIMARY_ATTEMPTS=2`
-- `LLM_FALLBACK_ENABLED=false`
-- optional `RECEPTIONIST_RESPONSE_MODE=llm` for natural-language phrasing with the same backend safety boundary
-- optional `EMAIL_PROVIDER=resend` for real confirmation emails
+**Public demo mode** enables bounded internet-facing access with `PUBLIC_DEMO_MODE=true` and guardrails enabled. Startup validation rejects unsafe production configuration (for example missing managed Postgres/Redis URLs, disabled guardrails, or insecure Retell webhooks).
 
-Groq output still flows through the same parse, repair, validation, and safety checks as fake and Bedrock providers. LLM suggestions never create holds, appointments, emails, or escalations directly. Optional response phrasing uses a separate generator boundary and still falls back to deterministic wording on failure.
+### API and worker
 
-**Receptionist response mode:** `RECEPTIONIST_RESPONSE_MODE=deterministic` is the default for local development and CI. Set `RECEPTIONIST_RESPONSE_MODE=llm` only when you want the backend to request LLM phrasing for safe replies. Critical flows such as emergency guidance, human escalation, and booking confirmation remain controlled regardless of mode.
+Deploy as **two processes** from the same Docker image:
 
-**Email mode:** `EMAIL_PROVIDER=fake` records outbound messages in memory for workers and tests. No Resend API key is required. Set `EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` only for a hosted public demo that sends real mail.
+- **API:** `python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`
+- **Email worker:** `python -m scripts.run_email_worker`
 
-Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, RabbitMQ wake-up messages only trigger workers, and retry timing is controlled by `next_attempt_at`. Resend idempotency keys reduce duplicate-send risk but do not guarantee exactly-once delivery across the external provider.
+The API handles chat, scheduling, and Retell routes. The worker consumes RabbitMQ wake-up messages and processes durable `EmailJob` records from PostgreSQL.
 
-**Public demo guardrails** apply when hosting the unauthenticated demo:
+### Optional providers
 
-- `PUBLIC_DEMO_MODE=true`
-- `PUBLIC_DEMO_GUARDRAILS_ENABLED=true`
-- Redis-backed per-IP and global quotas on chat, Retell tools, appointments, and confirmation emails
-- standardized `429` responses when limits are exceeded
-- protected endpoints fail closed when guardrails are enabled but Redis is unavailable
-- use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
+- **Groq** — optional real LLM for analysis and phrasing; fake provider remains valid for smoke tests
+- **Resend** — optional real confirmation email delivery; fake provider records jobs in memory
+- **Retell** — backend tool routes, webhook verification, and call lifecycle are implemented; Retell dashboard / agent setup is a later phase outside this repo
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `get_clinic_context`, `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, `cancel_appointment`, and `reschedule_appointment` via `POST /api/v1/retell/tools`. Voice agents should call `get_clinic_context` for authoritative calendar context and pass structured `date_expression` arguments to `check_availability`; the backend resolves and enforces clinic business days and hours regardless of provider prompt behavior. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Voice rescheduling requires explicit reschedule confirmation, original appointment reference, and target hold or new slot before delegating to `AppointmentReschedulingService`. Written chat reschedule is not wired yet. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/clinic-time-context-and-tool-contracts.md` for timezone model, expression contracts, and prompt guidance, `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency, `docs/architecture/retell-voice-rescheduling.md` for voice rescheduling validation and idempotency, and `docs/architecture/appointment-rescheduling-foundation.md` for the shared rescheduling service boundary.
+### Demo safety
 
-See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.
+- Redis-backed **public demo guardrails** on chat, Retell tools, appointments, and confirmation emails
+- **Fake/local providers** for development without real keys
+- **No real patient data** — fictional US clinic scenario only
+- No auth/RBAC for public routes in the current demo scope
+
+Full deploy steps, health checks, smoke tests, rollback, and troubleshooting: [`docs/operations/public-demo-deployment.md`](docs/operations/public-demo-deployment.md).
