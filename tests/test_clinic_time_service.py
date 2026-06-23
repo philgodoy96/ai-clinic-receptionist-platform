@@ -22,6 +22,7 @@ REFERENCE_NOW_UTC = datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
 @pytest.fixture()
 def clinic_time_service() -> ClinicTimeService:
     return ClinicTimeService(
+        clinic_name="Demo Clinic",
         timezone="America/New_York",
         business_days="monday,tuesday,wednesday,thursday,friday",
         business_hours_start="09:00",
@@ -125,6 +126,7 @@ def test_exact_time_outside_hours_rejected(clinic_time_service: ClinicTimeServic
 
 def test_timezone_conversion_from_utc_to_america_new_york() -> None:
     service = ClinicTimeService(
+        clinic_name="Demo Clinic",
         timezone="America/New_York",
         business_days="monday,tuesday,wednesday,thursday,friday",
         business_hours_start="09:00",

@@ -108,6 +108,7 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldOwnerError,
     InvalidAppointmentHoldWindowError,
 )
+from app.services.clinic_time import ClinicTimeService
 from app.services.receptionist_response_planning import build_suggested_retell_response_text
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
 from app.services.retell_tool_registry import is_side_effecting_retell_tool
@@ -286,6 +287,7 @@ class RetellToolCallingAdapter:
         appointment_cancellation: AppointmentCancellationForRetell | None = None,
         appointment_rescheduling: AppointmentReschedulingForRetell | None = None,
         appointments: AppointmentRepositoryForRetellToolCalling | None = None,
+        clinic_time_service: ClinicTimeService | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
         self.scheduling_service = scheduling_service
@@ -300,6 +302,7 @@ class RetellToolCallingAdapter:
         self.appointment_cancellation = appointment_cancellation
         self.appointment_rescheduling = appointment_rescheduling
         self.appointments = appointments
+        self.clinic_time_service = clinic_time_service
         self.provider = provider
 
     def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
@@ -359,6 +362,9 @@ class RetellToolCallingAdapter:
         return response
 
     def _dispatch(self, parsed: ParsedRetellToolCall) -> RetellToolCallResponse:
+        if parsed.tool_name is RetellSupportedToolName.GET_CLINIC_CONTEXT:
+            return self._execute_get_clinic_context(parsed)
+
         if parsed.tool_name is RetellSupportedToolName.CHECK_AVAILABILITY:
             return self._execute_check_availability(parsed)
 
@@ -381,6 +387,23 @@ class RetellToolCallingAdapter:
             tool_name=parsed.tool_name.value,
             tool_call_id=parsed.tool_call_id,
             error_code=UNSUPPORTED_RETELL_TOOL_CODE,
+        )
+
+    def _execute_get_clinic_context(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        if self.clinic_time_service is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="clinic_time_unavailable",
+            )
+
+        return build_succeeded_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            result=self.clinic_time_service.get_current_clinic_context().to_tool_result(),
         )
 
     def _execute_check_availability(

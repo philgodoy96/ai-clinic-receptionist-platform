@@ -94,6 +94,10 @@ class RetellToolCallResponse(BaseModel):
     duplicate: bool = False
 
 
+class GetClinicContextToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class CheckAvailabilityToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

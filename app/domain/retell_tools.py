@@ -11,6 +11,7 @@ from app.schemas.retell_tools import (
     BookAppointmentToolArguments,
     CancelAppointmentToolArguments,
     CheckAvailabilityToolArguments,
+    GetClinicContextToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
     RescheduleAppointmentToolArguments,
@@ -21,7 +22,9 @@ from app.schemas.retell_tools import (
 _ARGUMENT_MODEL_BY_TOOL: dict[
     RetellSupportedToolName,
     type[
-        CheckAvailabilityToolArguments
+        GetClinicContextToolArguments
+        | CheckAvailabilityToolArguments
+        | GetClinicContextToolArguments
         | HoldAppointmentSlotToolArguments
         | ReleaseAppointmentHoldToolArguments
         | BookAppointmentToolArguments
@@ -32,6 +35,7 @@ _ARGUMENT_MODEL_BY_TOOL: dict[
 
 
 class RetellSupportedToolName(StrEnum):
+    GET_CLINIC_CONTEXT = "get_clinic_context"
     CHECK_AVAILABILITY = "check_availability"
     HOLD_APPOINTMENT_SLOT = "hold_appointment_slot"
     RELEASE_APPOINTMENT_HOLD = "release_appointment_hold"
@@ -59,7 +63,8 @@ class UnsupportedRetellToolNameError(RetellToolCallValidationError):
 
 
 RetellToolArguments = (
-    CheckAvailabilityToolArguments
+    GetClinicContextToolArguments
+    | CheckAvailabilityToolArguments
     | HoldAppointmentSlotToolArguments
     | ReleaseAppointmentHoldToolArguments
     | BookAppointmentToolArguments
@@ -199,6 +204,7 @@ _SUPPORTED_TOOL_NAME_VALUES = frozenset(item.value for item in RetellSupportedTo
 
 _ARGUMENT_MODEL_BY_TOOL.update(
     {
+        RetellSupportedToolName.GET_CLINIC_CONTEXT: GetClinicContextToolArguments,
         RetellSupportedToolName.CHECK_AVAILABILITY: CheckAvailabilityToolArguments,
         RetellSupportedToolName.HOLD_APPOINTMENT_SLOT: HoldAppointmentSlotToolArguments,
         RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD: ReleaseAppointmentHoldToolArguments,

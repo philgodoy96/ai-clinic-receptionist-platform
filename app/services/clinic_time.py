@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from app.domain.scheduling.expressions import (
@@ -16,6 +18,9 @@ from app.domain.scheduling.expressions import (
     Weekday,
 )
 from app.services.clock import Clock, SystemClock
+
+if TYPE_CHECKING:
+    from app.core.config import Settings
 
 _HH_MM_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _WEEKDAY_TO_INDEX = {
@@ -35,18 +40,45 @@ _STANDARD_TIME_WINDOWS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ClinicContext:
+    clinic_name: str
+    clinic_timezone: str
+    current_date: str
+    current_weekday: str
+    business_days: list[str]
+    business_hours_start: str
+    business_hours_end: str
+
+    def to_tool_result(self) -> dict[str, Any]:
+        return {
+            "clinic_name": self.clinic_name,
+            "clinic_timezone": self.clinic_timezone,
+            "current_date": self.current_date,
+            "current_weekday": self.current_weekday,
+            "business_days": self.business_days,
+            "business_hours": {
+                "start": self.business_hours_start,
+                "end": self.business_hours_end,
+            },
+        }
+
+
 class ClinicTimeService:
     def __init__(
         self,
         *,
+        clinic_name: str,
         timezone: str,
         business_days: str,
         business_hours_start: str,
         business_hours_end: str,
         clock: Clock | None = None,
     ) -> None:
+        self._clinic_name = clinic_name.strip()
+        self._timezone_name = timezone.strip()
         self._clock = clock or SystemClock()
-        self._timezone = ZoneInfo(timezone)
+        self._timezone = ZoneInfo(self._timezone_name)
         self._business_days = frozenset(
             day.strip().lower() for day in business_days.split(",") if day.strip()
         )
@@ -55,11 +87,42 @@ class ClinicTimeService:
         self._business_hours_start_minutes = _minutes_from_hhmm(self._business_hours_start)
         self._business_hours_end_minutes = _minutes_from_hhmm(self._business_hours_end)
 
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        clock: Clock | None = None,
+    ) -> ClinicTimeService:
+        return cls(
+            clinic_name=settings.clinic_name,
+            timezone=settings.clinic_timezone,
+            business_days=settings.clinic_business_days,
+            business_hours_start=settings.clinic_business_hours_start,
+            business_hours_end=settings.clinic_business_hours_end,
+            clock=clock,
+        )
+
     def clinic_now(self) -> datetime:
         return self._clock.now().astimezone(self._timezone)
 
     def clinic_today(self) -> date:
         return self.clinic_now().date()
+
+    def get_current_clinic_context(self) -> ClinicContext:
+        today = self.clinic_today()
+        return ClinicContext(
+            clinic_name=self._clinic_name,
+            clinic_timezone=self._timezone_name,
+            current_date=today.isoformat(),
+            current_weekday=_INDEX_TO_WEEKDAY_NAME[today.weekday()],
+            business_days=self._ordered_business_days(),
+            business_hours_start=self._business_hours_start,
+            business_hours_end=self._business_hours_end,
+        )
+
+    def _ordered_business_days(self) -> list[str]:
+        return [day for day in _INDEX_TO_WEEKDAY_NAME if day in self._business_days]
 
     def resolve_date(self, expression: DateExpression) -> ResolvedDate:
         if expression.kind == DateExpressionKind.UNKNOWN:

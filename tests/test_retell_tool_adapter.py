@@ -134,6 +134,7 @@ class AdapterBundle:
 def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
     assert RETELL_TOOL_ALLOWLIST == frozenset(
         {
+            RetellSupportedToolName.GET_CLINIC_CONTEXT,
             RetellSupportedToolName.CHECK_AVAILABILITY,
             RetellSupportedToolName.HOLD_APPOINTMENT_SLOT,
             RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD,
@@ -142,6 +143,7 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
             RetellSupportedToolName.RESCHEDULE_APPOINTMENT,
         },
     )
+    assert RetellSupportedToolName.GET_CLINIC_CONTEXT not in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.CHECK_AVAILABILITY not in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.HOLD_APPOINTMENT_SLOT in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.RELEASE_APPOINTMENT_HOLD in SIDE_EFFECTING_RETELL_TOOLS
