@@ -57,6 +57,8 @@ For local polling fallback instead of the RabbitMQ consumer:
 
     python -m scripts.run_email_job_worker
 
+See [Public Demo Deployment Runbook](public-demo-deployment.md) for hosted deploy steps, health checks, smoke tests, and troubleshooting.
+
 ## Email Dispatch Configuration
 
 RabbitMQ dispatch is controlled by:
