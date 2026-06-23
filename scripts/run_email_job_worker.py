@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import time
 from datetime import timedelta
 from uuid import uuid4
@@ -13,9 +14,24 @@ from app.email.factory import create_email_provider_from_settings
 from app.services.email_job_worker import EmailJobWorkerResult, EmailJobWorkerService
 
 logger = logging.getLogger("app.email_job_worker")
+_shutdown_requested = False
+
+
+def _request_shutdown(signum: int, _frame: object | None) -> None:
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info(
+        "email_worker_shutdown_requested",
+        extra={
+            "event": "email_worker_shutdown_requested",
+            "signal": signum,
+        },
+    )
 
 
 def main() -> None:
+    global _shutdown_requested
+
     parser = argparse.ArgumentParser(description="Run the email job worker.")
     parser.add_argument("--once", action="store_true", help="Process one job and exit.")
     parser.add_argument(
@@ -37,7 +53,10 @@ def main() -> None:
     lock_duration = timedelta(seconds=settings.email_job_lock_ttl_seconds)
     provider = create_email_provider_from_settings(settings)
 
-    while True:
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
+    while not _shutdown_requested:
         worker = EmailJobWorkerService(
             session_factory=SessionLocal,
             delivery_provider=provider,

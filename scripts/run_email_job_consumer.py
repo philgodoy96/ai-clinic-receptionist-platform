@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 from datetime import timedelta
 from uuid import uuid4
 
@@ -82,10 +83,26 @@ def main() -> None:
         },
     )
 
+    def request_shutdown(signum: int, _frame: object | None) -> None:
+        logger.info(
+            "email_job_consumer_shutdown_requested",
+            extra={
+                "event": "email_job_consumer_shutdown_requested",
+                "signal": signum,
+                "worker_id": worker_id,
+            },
+        )
+        if channel.is_open:
+            channel.stop_consuming()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
+
     try:
         channel.start_consuming()
     finally:
-        connection.close()
+        if connection.is_open:
+            connection.close()
 
 
 if __name__ == "__main__":
