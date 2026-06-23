@@ -107,6 +107,24 @@ See [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context
 
 Register **custom functions** (or equivalent HTTP tools) in the Retell dashboard pointing at your **public API origin**. Use the unified tool executor unless you rely on legacy per-tool routes.
 
+### Retell payload envelope (use Retell defaults)
+
+Custom Functions should use Retell’s **default payload envelope** — do **not** set **Payload: args only** in the Retell dashboard.
+
+Retell sends native tool callbacks shaped like:
+
+```json
+{
+  "name": "get_clinic_context",
+  "call": { "call_id": "call_..." },
+  "args": {}
+}
+```
+
+The backend verifies the raw `x-retell-signature` on that body, then **normalizes** Retell-native fields into the internal tool contract (`tool_name`, `provider_call_id`, `arguments`, `tool_call_id`) before running the existing adapter. Your agent **prompt** controls tool behavior and `args` content; it does **not** define the HTTP envelope. The backend owns the provider integration boundary.
+
+Manual `curl` tests may still send the normalized internal shape; both are accepted after signature verification.
+
 ### Unified tool endpoint (recommended)
 
 | Setting | Value |
@@ -134,7 +152,8 @@ Do **not** register tools that bypass this allowlist. Unsupported tools return `
 ### Per-tool checklist
 
 - [ ] Tool name matches the backend allowlist exactly (snake_case).
-- [ ] Request body includes `tool_name`, `arguments`, and `call` / `provider_call_id` as required by Retell’s callback shape (see [Retell Tool API](../api/retell-tools.md)).
+- [ ] Custom Function payload mode is **Retell default envelope** (not **Payload: args only**).
+- [ ] Retell sends `name`, `call.call_id`, and `args`; backend normalizes these automatically.
 - [ ] Tool URL uses HTTPS and matches the deployed API host.
 - [ ] Retell project webhook secret matches `RETELL_WEBHOOK_SECRET`.
 - [ ] `get_clinic_context` is available and invoked before relative date discussion in prompt tests.
@@ -152,6 +171,8 @@ Legacy per-tool routes under `/api/v1/retell/tools/*` remain for compatibility; 
 | **URL** | `https://<api-host>/api/v1/retell/webhooks/lifecycle` |
 | **Verification** | **Must stay enabled** — `RETELL_WEBHOOK_VERIFICATION_ENABLED=true` |
 | **Secret** | Copy into `RETELL_WEBHOOK_SECRET` |
+
+Retell sends native lifecycle payloads (`event`, `call.call_id`, `call.start_timestamp` / `call.end_timestamp`). The backend verifies the signature on the raw body, normalizes timestamps (epoch ms/s or ISO) into `occurred_at`, then persists via the existing lifecycle pipeline. Manual tests may still send the normalized internal shape.
 
 Lifecycle events create/update `VoiceCall` and `VoiceCallEvent` records. They do **not** execute scheduling tools.
 
