@@ -23,7 +23,7 @@ Planned artifacts:
 
 ## Stage 2 — Project Scaffold
 
-Status: Planned
+Status: In progress
 
 Goals:
 
@@ -32,6 +32,14 @@ Goals:
 - Add configuration management
 - Add health endpoint
 - Add basic test setup
+
+Implemented:
+
+- FastAPI app with `/health` and `/health/dependencies`
+- Pydantic settings with local and public demo env templates
+- pytest suite
+- Docker Compose for PostgreSQL, Redis, and RabbitMQ
+- Production Docker image with separate API and email worker commands
 
 Planned components:
 
@@ -135,6 +143,7 @@ Implemented:
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService`, original appointment validation, target slot/hold validation, explicit confirmation, idempotency, safe audit logging, and safe conversation metadata updates (see `docs/architecture/appointment-rescheduling-foundation.md`)
 - Clinic time configuration with validated `CLINIC_*` settings, `ClinicTimeService`, structured date/time expressions, business-day and business-hours enforcement on scheduling tools, and `get_clinic_context` Retell tool (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
+- Public demo deployment runbook, `.env.demo.example`, production configuration validation, and deployment safety tests
 
 Upcoming:
 
@@ -174,6 +183,7 @@ Upcoming:
 
 - written chat reschedule flow
 - Tool call recording
+- Retell dashboard / agent prompt setup (outside repo)
 
 ## Stage 8 — Background Email Jobs
 
@@ -223,10 +233,20 @@ Goals:
 Implemented:
 
 - API error response standardization
+- Structured JSON logs with request and correlation IDs
+- Dependency health endpoint for PostgreSQL readiness
 
 ## Stage 10 — Production Hardening
 
-Status: Future hardening
+Status: In progress
+
+Implemented:
+
+- Production-like settings validation for public demo deployments
+- `.env.demo.example` deployment template
+- [`docs/operations/public-demo-deployment.md`](operations/public-demo-deployment.md) runbook
+- Production Docker commands for API and email worker
+- Deployment configuration safety tests
 
 Potential work:
 
@@ -236,4 +256,5 @@ Potential work:
 - DLQ support
 - OpenAI provider adapter
 - Grafana dashboard
-- Deployment documentation
+- Retell dashboard configuration guide
+- Demo reset / cleanup automation
