@@ -257,3 +257,5 @@ See also: [Public Demo Guardrails](architecture/public-demo-guardrails.md).
 | `.env.demo.example` | Hosted public demo deployment template with grouped settings |
 
 Copy `.env.example` to `.env` for local work. Use `.env.demo.example` as a checklist when configuring a production-like public demo in your secret manager or hosting platform. Never commit real API keys or webhook secrets.
+
+For deploy steps, health checks, and troubleshooting, see [Public Demo Deployment Runbook](operations/public-demo-deployment.md).
