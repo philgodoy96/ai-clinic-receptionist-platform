@@ -144,6 +144,7 @@ Implemented:
 - Clinic time configuration with validated `CLINIC_*` settings, `ClinicTimeService`, structured date/time expressions, business-day and business-hours enforcement on scheduling tools, and `get_clinic_context` Retell tool (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 - Public demo deployment runbook, `.env.demo.example`, production configuration validation, and deployment safety tests
+- Public web demo shell in `web/` (Next.js landing, backend-powered chat panel, feature-flagged voice entry, safe API error handling)
 
 Upcoming:
 
@@ -247,6 +248,7 @@ Implemented:
 - [`docs/operations/public-demo-deployment.md`](operations/public-demo-deployment.md) runbook
 - Production Docker commands for API and email worker
 - Deployment configuration safety tests
+- Public web demo shell (`web/`): Next.js landing, chat demo panel, voice feature flag, env safety check
 
 Potential work:
 
@@ -257,4 +259,5 @@ Potential work:
 - OpenAI provider adapter
 - Grafana dashboard
 - Retell dashboard configuration guide
+- Retell Web SDK integration in `web/` (replace mock voice call flow)
 - Demo reset / cleanup automation
