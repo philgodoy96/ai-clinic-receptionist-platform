@@ -10,6 +10,7 @@ from app.api.dependencies import get_retell_call_lifecycle_service
 from app.api.errors import INVALID_RETELL_PAYLOAD_CODE, APIError
 from app.api.retell_webhook_security import require_retell_webhook_security, retell_tool_payload
 from app.db.session import get_db
+from app.integrations.retell.payload_normalization import normalize_retell_lifecycle_payload
 from app.schemas.retell_lifecycle import (
     RetellLifecycleWebhookRequest,
     RetellLifecycleWebhookResponse,
@@ -38,7 +39,12 @@ router = APIRouter(
 def ingest_retell_lifecycle_event(
     payload: Annotated[
         RetellLifecycleWebhookRequest,
-        Depends(retell_tool_payload(RetellLifecycleWebhookRequest)),
+        Depends(
+            retell_tool_payload(
+                RetellLifecycleWebhookRequest,
+                normalizer=normalize_retell_lifecycle_payload,
+            ),
+        ),
     ],
     service: Annotated[
         RetellCallLifecycleService,

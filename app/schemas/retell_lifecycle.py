@@ -18,6 +18,7 @@ _SAFE_METADATA_FIELD_NAMES = (
     "duration_ms",
     "duration_seconds",
     "end_reason",
+    "occurred_at_source",
 )
 
 
@@ -59,6 +60,7 @@ class RetellLifecycleWebhookRequest(BaseModel):
     end_reason: str | None = Field(default=None, max_length=120)
     duration_ms: int | None = None
     duration_seconds: int | None = None
+    occurred_at_source: str | None = Field(default=None, max_length=120)
 
     @model_validator(mode="after")
     def validate_call_reference(self) -> RetellLifecycleWebhookRequest:

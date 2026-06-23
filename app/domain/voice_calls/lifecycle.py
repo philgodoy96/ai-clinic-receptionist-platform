@@ -35,6 +35,7 @@ _SAFE_EVENT_METADATA_KEYS = frozenset(
         "duration_ms",
         "duration_seconds",
         "end_reason",
+        "occurred_at_source",
     },
 )
 
