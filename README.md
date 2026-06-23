@@ -150,7 +150,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration, Redis holds, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, production-oriented configuration validation, Docker service commands, and a public demo deployment runbook.
+Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration, Redis holds, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
 
 Configuration and deployment:
 
@@ -219,3 +219,27 @@ The API handles chat, scheduling, and Retell routes. The worker consumes RabbitM
 - No auth/RBAC for public routes in the current demo scope
 
 Full deploy steps, health checks, smoke tests, rollback, and troubleshooting: [`docs/operations/public-demo-deployment.md`](docs/operations/public-demo-deployment.md).
+
+## Public Web Demo
+
+The `web/` app is a minimal Next.js frontend for the portfolio public demo. It does not implement clinic business logic; chat and scheduling rules stay on the FastAPI backend.
+
+**Safety:** The demo models a **fictional US clinic**. Do not enter real patient names, contact details, or medical information.
+
+**What it includes:**
+
+- Landing page with demo disclaimer
+- Backend-powered chat panel (`POST /api/v1/chat/messages` via same-origin proxy)
+- Feature-flagged voice entry point (mock call flow until Retell Web SDK is wired)
+- Public env vars only — no provider keys in the browser
+
+**Quick start** (backend must be running on port 8000):
+
+```bash
+cd web
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). Full setup, env reference, build, and deployment notes: [`web/README.md`](web/README.md).
