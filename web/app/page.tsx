@@ -1,9 +1,5 @@
-import { DemoLanding } from "@/components/demo-landing";
+import { DemoPage } from "@/components/demo-page";
 
 export default function Home() {
-  return (
-    <main className="flex flex-1 flex-col">
-      <DemoLanding />
-    </main>
-  );
+  return <DemoPage />;
 }

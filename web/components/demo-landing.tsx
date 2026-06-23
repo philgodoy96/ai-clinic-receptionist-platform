@@ -36,7 +36,11 @@ function ExternalLink({
   );
 }
 
-export function DemoLanding() {
+type DemoLandingProps = {
+  onStartChat: () => void;
+};
+
+export function DemoLanding({ onStartChat }: DemoLandingProps) {
   const voiceAvailable = publicConfig.voiceDemoEnabled;
 
   return (
@@ -60,9 +64,8 @@ export function DemoLanding() {
       <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
           type="button"
-          disabled
-          title="Interactive chat UI coming in a later phase"
-          className="inline-flex h-12 items-center justify-center rounded-full bg-teal-700 px-6 text-sm font-medium text-white transition-colors enabled:hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={onStartChat}
+          className="inline-flex h-12 items-center justify-center rounded-full bg-teal-700 px-6 text-sm font-medium text-white transition-colors hover:bg-teal-800"
         >
           Talk to the receptionist
         </button>
@@ -82,8 +85,8 @@ export function DemoLanding() {
 
       <p className="mt-4 text-sm text-zinc-500">
         {voiceAvailable
-          ? "Chat and voice entry points will connect to the backend in a later phase."
-          : "Chat entry point coming soon. Voice remains disabled for this deployment."}
+          ? "Chat connects to the backend API. Voice remains a later phase."
+          : "Chat connects to the backend API. Voice remains disabled for this deployment."}
       </p>
 
       <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-sm">
