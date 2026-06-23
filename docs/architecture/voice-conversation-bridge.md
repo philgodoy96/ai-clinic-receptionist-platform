@@ -19,6 +19,7 @@ The implementation includes:
 - `VoiceConversationBridgeService`
 - safe voice conversation context
 - Retell tool adapter integration with conversation context
+- optional deterministic `suggested_response_text` on successful scheduling tool results
 - voice booking context resolution for `book_appointment`
 - voice cancellation context resolution for `cancel_appointment`
 - voice rescheduling context resolution for `reschedule_appointment`
@@ -34,6 +35,7 @@ See also:
 - [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md)
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Conversation Domain](conversation-domain.md)
+- [Receptionist Response Generator](receptionist-response-generator.md)
 
 ## Architecture
 
@@ -113,6 +115,8 @@ Before executing supported scheduling tools, the Retell tool adapter ensures the
 `cancel_appointment` resolves the target appointment from tool arguments or linked `voice_context`, requires explicit cancellation confirmation, and on success updates `appointment_status` to `cancelled` while clearing active hold fields when present.
 
 `reschedule_appointment` resolves the original appointment from tool arguments or linked `voice_context`, validates the target hold or new slot, requires explicit reschedule confirmation, and on success updates `voice_context` with the new successor appointment reference, `rescheduled_from_appointment_id`, and cleared hold fields. On recoverable reschedule failure, useful hold context is preserved so the caller can retry without re-holding.
+
+Successful scheduling tool results may include `suggested_response_text`. That field is generated deterministically from backend facts and is intended as optional wording guidance for Retell. It does not execute tools or change business state.
 
 ## Internal Debug Endpoint
 

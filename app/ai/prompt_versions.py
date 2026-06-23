@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION = "receptionist-analysis-v1"
+CURRENT_RECEPTIONIST_RESPONSE_PROMPT_VERSION = "receptionist-response-v1"
 
 
 class PromptVersionNotFoundError(ValueError):
@@ -40,6 +41,14 @@ PROMPT_REGISTRY: dict[str, PromptMetadata] = {
         created_for="chat_receptionist_assistive_analysis",
         prompt_module="app.ai.prompts.receptionist_analysis_v1",
     ),
+    "receptionist-response-v1": PromptMetadata(
+        name="receptionist-response",
+        version="receptionist-response-v1",
+        description="Phrase patient-facing receptionist replies from a response plan.",
+        schema_name="ReceptionistLLMPhrasedResponse",
+        created_for="receptionist_response_generation",
+        prompt_module="app.ai.prompts.receptionist_response_v1",
+    ),
 }
 
 
@@ -54,6 +63,10 @@ def get_prompt_metadata(version: str) -> PromptMetadata:
 
 def get_current_receptionist_analysis_prompt_metadata() -> PromptMetadata:
     return get_prompt_metadata(CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION)
+
+
+def get_current_receptionist_response_prompt_metadata() -> PromptMetadata:
+    return get_prompt_metadata(CURRENT_RECEPTIONIST_RESPONSE_PROMPT_VERSION)
 
 
 def list_prompt_versions() -> list[str]:
