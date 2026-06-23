@@ -53,10 +53,10 @@ export function DemoLanding({ onStartChat, onStartVoice }: DemoLandingProps) {
       </div>
 
       <div className="mt-8 space-y-4">
-        <h2 className="text-3xl font-semibold tracking-tight text-zinc-900 sm:text-4xl sm:leading-tight">
+        <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl sm:leading-tight">
           AI receptionist for a fictional clinic
         </h2>
-        <p className="text-lg leading-8 text-zinc-600">
+        <p className="text-lg leading-8 text-white-250">
           See how patients can book and manage appointments through chat and
           voice — backed by a production-style FastAPI receptionist platform.
         </p>
@@ -79,7 +79,7 @@ export function DemoLanding({ onStartChat, onStartVoice }: DemoLandingProps) {
         </button>
       </div>
 
-      <p className="mt-4 text-sm text-zinc-500">
+      <p className="mt-4 text-sm text-white-400">
         {voiceEnabled
           ? "Chat connects to the backend API. Voice entry uses a mock call until Retell is configured."
           : "Chat connects to the backend API. Voice opens a configuration preview until the feature flag is enabled."}

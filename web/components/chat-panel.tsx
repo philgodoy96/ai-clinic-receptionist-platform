@@ -117,8 +117,8 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
     <section className="mx-auto flex h-full w-full max-w-3xl flex-1 flex-col px-4 py-6 sm:px-6">
       <div className="mb-4 flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-zinc-900">Demo chat</h2>
-          <p className="text-sm text-zinc-500">
+          <h2 className="text-lg font-semibold text-white-900">Demo chat</h2>
+          <p className="text-sm text-white-500">
             Messages are handled by the backend receptionist API.
           </p>
         </div>
