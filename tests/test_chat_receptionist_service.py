@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.domain.conversations.enums import ConversationChannel, ConversationMessageRole
+from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.models.scheduling import Doctor
 from app.services.appointment_booking import (
@@ -31,6 +32,7 @@ from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
+from app.services.receptionist_response_generator import ReceptionistResponseGenerator
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
@@ -145,6 +147,10 @@ def create_chat_receptionist_service(
     human_handoff_notifications: HumanHandoffNotificationService | None = None,
     date_parser: NaturalLanguageDateParser | None = None,
     time_preference_parser: TimePreferenceParser | None = None,
+    response_generator: ReceptionistResponseGenerator | None = None,
+    response_generation_mode: ReceptionistResponseMode = (
+        ReceptionistResponseMode.DETERMINISTIC
+    ),
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -164,6 +170,8 @@ def create_chat_receptionist_service(
         human_handoff_notifications=human_handoff_notifications,
         date_parser=date_parser,
         time_preference_parser=time_preference_parser,
+        response_generator=response_generator,
+        response_generation_mode=response_generation_mode,
     )
 
 
