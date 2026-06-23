@@ -144,7 +144,8 @@ Implemented:
 - Clinic time configuration with validated `CLINIC_*` settings, `ClinicTimeService`, structured date/time expressions, business-day and business-hours enforcement on scheduling tools, and `get_clinic_context` Retell tool (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 - Public demo deployment runbook, `.env.demo.example`, production configuration validation, and deployment safety tests
-- Public web demo shell in `web/` (Next.js landing, backend-powered chat panel, feature-flagged voice entry, safe API error handling)
+- Public web demo shell in `web/` (Next.js landing, backend-powered chat panel, Retell Web SDK voice demo behind feature flag, safe API error handling)
+- Retell web call creation service and public demo voice session API (`POST /api/v1/demo/voice/retell-web-call`)
 
 Upcoming:
 
@@ -179,12 +180,13 @@ Implemented:
 - Retell voice appointment cancellation with explicit confirmation, cancelable status validation, and shared `AppointmentCancellationService` delegation (see `docs/architecture/retell-voice-cancellation.md`)
 - Retell voice appointment rescheduling with explicit confirmation, original appointment and hold/slot validation, and shared `AppointmentReschedulingService` delegation (see `docs/architecture/retell-voice-rescheduling.md`)
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService` and attempt/audit support (see `docs/architecture/appointment-rescheduling-foundation.md`)
+- Retell dashboard setup runbook (`docs/operations/retell-dashboard-setup.md`)
+- Retell Web SDK integration in `web/` with server-issued access tokens (see `web/README.md`)
 
 Upcoming:
 
 - written chat reschedule flow
 - Tool call recording
-- Retell dashboard / agent prompt setup (outside repo)
 
 ## Stage 8 — Background Email Jobs
 
@@ -248,7 +250,8 @@ Implemented:
 - [`docs/operations/public-demo-deployment.md`](operations/public-demo-deployment.md) runbook
 - Production Docker commands for API and email worker
 - Deployment configuration safety tests
-- Public web demo shell (`web/`): Next.js landing, chat demo panel, voice feature flag, env safety check
+- Public web demo shell (`web/`): Next.js landing, chat demo panel, Retell Web SDK voice demo, env safety check
+- [`docs/operations/retell-dashboard-setup.md`](operations/retell-dashboard-setup.md) Retell dashboard runbook
 
 Potential work:
 
@@ -258,6 +261,4 @@ Potential work:
 - DLQ support
 - OpenAI provider adapter
 - Grafana dashboard
-- Retell dashboard configuration guide
-- Retell Web SDK integration in `web/` (replace mock voice call flow)
 - Demo reset / cleanup automation
