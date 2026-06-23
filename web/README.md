@@ -90,7 +90,7 @@ The backend does **not** ship CORS middleware. Prefer same-origin access via Nex
 | Value | Behavior |
 |-------|----------|
 | `false` (default) | **Call the clinic** opens a configuration preview: explains backend voice integration is prepared; **no microphone** access |
-| `true` | Shows **Start call** with a placeholder/mock call flow; microphone is requested only after the user clicks **Start call**; no Retell Web SDK or private API keys yet |
+| `true` | Shows **Start call**; requests a server-issued access token, then connects via the Retell Web SDK after the user starts the call; no Retell API keys in the browser |
 
 Backend Retell routes remain independent (`RETELL_ENABLED` in `.env.demo.example`).
 
@@ -112,7 +112,7 @@ This app is intentionally small:
 - Landing page, layout, and demo disclaimer
 - Public config helper in `lib/config.ts`
 - Backend-powered chat demo panel (`ChatPanel`) with safe API error handling
-- Feature-flagged voice demo entry point (`VoiceCallPanel`, mock connection)
+- Feature-flagged voice demo entry point (`VoiceCallPanel`, Retell Web SDK)
 - No dashboard, no Retell private keys, no real Retell web call yet
 
 Hosted deploy checklist: [`docs/operations/public-demo-deployment.md`](../docs/operations/public-demo-deployment.md).
