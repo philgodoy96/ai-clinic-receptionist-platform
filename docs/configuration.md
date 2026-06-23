@@ -13,6 +13,28 @@ See `.env.example` for a safe local template.
 | `APP_DEBUG` | `true` | FastAPI debug mode |
 | `API_V1_PREFIX` | `/api/v1` | API route prefix |
 
+## Clinic Time and Business Hours
+
+Clinic timezone and business hours are used for scheduling-aware receptionist behavior such as relative date resolution and hours-of-operation responses.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLINIC_TIMEZONE` | `America/New_York` | IANA timezone for clinic-local scheduling context |
+| `CLINIC_BUSINESS_DAYS` | `monday,tuesday,wednesday,thursday,friday` | Comma-separated weekday list (`monday`–`sunday`, case-insensitive, no duplicates) |
+| `CLINIC_BUSINESS_HOURS_START` | `09:00` | Clinic opening time in 24-hour `HH:MM` format |
+| `CLINIC_BUSINESS_HOURS_END` | `17:00` | Clinic closing time in 24-hour `HH:MM` format. Must be after start |
+| `CLINIC_NAME` | `Demo Clinic` | Optional display name for the fictional demo clinic |
+| `CLINIC_LOCALE` | `en-US` | Optional locale for clinic-facing formatting |
+
+For local development and CI, keep:
+
+```env
+CLINIC_TIMEZONE=America/New_York
+CLINIC_BUSINESS_DAYS=monday,tuesday,wednesday,thursday,friday
+CLINIC_BUSINESS_HOURS_START=09:00
+CLINIC_BUSINESS_HOURS_END=17:00
+```
+
 ## Database and Infrastructure
 
 | Variable | Default | Description |

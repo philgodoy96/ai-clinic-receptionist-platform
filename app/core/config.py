@@ -1,10 +1,17 @@
+import re
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.ai.llm_provider import GroqResponseFormat, LLMProviderName
 from app.domain.receptionist.enums import ReceptionistResponseMode
+
+_CLINIC_TIME_HH_MM_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_CLINIC_BUSINESS_WEEKDAYS = frozenset(
+    {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
+)
 
 
 class Settings(BaseSettings):
@@ -12,6 +19,19 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local", alias="APP_ENV")
     app_debug: bool = Field(default=True, alias="APP_DEBUG")
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
+
+    clinic_timezone: str = Field(default="America/New_York", alias="CLINIC_TIMEZONE")
+    clinic_business_days: str = Field(
+        default="monday,tuesday,wednesday,thursday,friday",
+        alias="CLINIC_BUSINESS_DAYS",
+    )
+    clinic_business_hours_start: str = Field(
+        default="09:00",
+        alias="CLINIC_BUSINESS_HOURS_START",
+    )
+    clinic_business_hours_end: str = Field(default="17:00", alias="CLINIC_BUSINESS_HOURS_END")
+    clinic_name: str = Field(default="Demo Clinic", alias="CLINIC_NAME")
+    clinic_locale: str = Field(default="en-US", alias="CLINIC_LOCALE")
 
     database_url: str = Field(
         default="postgresql+psycopg://clinic:clinic@localhost:5432/clinic_receptionist",
@@ -230,6 +250,54 @@ class Settings(BaseSettings):
     @property
     def resolved_receptionist_response_llm_provider(self) -> LLMProviderName:
         return self.receptionist_response_llm_provider or self.resolved_llm_primary_provider
+
+    @field_validator("clinic_timezone")
+    @classmethod
+    def validate_clinic_timezone(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("CLINIC_TIMEZONE must be a non-empty IANA timezone")
+        try:
+            ZoneInfo(normalized)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                f"CLINIC_TIMEZONE must be a valid IANA timezone: {normalized}",
+            ) from exc
+        return normalized
+
+    @field_validator("clinic_business_days")
+    @classmethod
+    def validate_clinic_business_days(cls, value: str) -> str:
+        days = [day.strip().lower() for day in value.split(",") if day.strip()]
+        if not days:
+            raise ValueError("CLINIC_BUSINESS_DAYS must contain at least one weekday")
+        invalid_days = [day for day in days if day not in _CLINIC_BUSINESS_WEEKDAYS]
+        if invalid_days:
+            invalid_list = ", ".join(invalid_days)
+            raise ValueError(f"CLINIC_BUSINESS_DAYS contains invalid weekday(s): {invalid_list}")
+        if len(days) != len(set(days)):
+            raise ValueError("CLINIC_BUSINESS_DAYS must not contain duplicate weekdays")
+        return ",".join(days)
+
+    @field_validator("clinic_business_hours_start", "clinic_business_hours_end")
+    @classmethod
+    def validate_clinic_business_hours_time(cls, value: str) -> str:
+        normalized = value.strip()
+        if _CLINIC_TIME_HH_MM_PATTERN.fullmatch(normalized) is None:
+            raise ValueError("Clinic business hours must use HH:MM format (24-hour)")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_clinic_business_hours_order(self) -> "Settings":
+        start_hour, start_minute = map(int, self.clinic_business_hours_start.split(":"))
+        end_hour, end_minute = map(int, self.clinic_business_hours_end.split(":"))
+        start_minutes = start_hour * 60 + start_minute
+        end_minutes = end_hour * 60 + end_minute
+        if start_minutes >= end_minutes:
+            raise ValueError(
+                "CLINIC_BUSINESS_HOURS_START must be before CLINIC_BUSINESS_HOURS_END",
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_llm_provider_settings(self) -> "Settings":
