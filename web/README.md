@@ -39,11 +39,12 @@ Do not add API keys, webhook secrets, or database URLs to this app.
 ## Scripts
 
 ```bash
-npm run dev        # local development server
-npm run lint       # ESLint
-npm run typecheck  # TypeScript (no emit)
-npm run build      # production build
-npm run start      # serve production build
+npm run dev             # local development server
+npm run lint            # ESLint
+npm run typecheck       # TypeScript (no emit)
+npm run check:env-safety # scan for forbidden public env names
+npm run build           # production build
+npm run start           # serve production build
 ```
 
 ## Scope
