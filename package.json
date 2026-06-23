@@ -1,0 +1,13 @@
+{
+  "name": "ai-clinic-receptionist-platform",
+  "private": true,
+  "description": "Root npm scripts delegate to the web/ Next.js frontend.",
+  "scripts": {
+    "dev": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "start": "npm --prefix web run start",
+    "lint": "npm --prefix web run lint",
+    "typecheck": "npm --prefix web run typecheck",
+    "check:env-safety": "npm --prefix web run check:env-safety"
+  }
+}

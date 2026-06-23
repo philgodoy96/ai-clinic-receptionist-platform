@@ -9,11 +9,12 @@ Use `.env.demo.example` as the environment checklist and [Configuration](../conf
 ```mermaid
 flowchart TB
     subgraph clients [Clients]
-        Browser[Browser / chat UI]
+        Browser[Browser / Next.js web demo]
         Retell[Retell voice platform]
     end
 
     subgraph platform [Your hosting platform]
+        Web[Web service<br/>Next.js]
         API[API service<br/>uvicorn]
         Worker[Email worker<br/>run_email_worker]
     end
@@ -34,7 +35,8 @@ flowchart TB
         RetellAPI[Retell API / webhooks]
     end
 
-    Browser --> API
+    Browser --> Web
+    Web -->|"/api/v1/* rewrite or edge proxy"| API
     Retell --> API
     API --> PG
     API --> Redis
@@ -51,6 +53,7 @@ flowchart TB
 
 | Component | Role | Required for public demo |
 |-----------|------|------------------------|
+| **Web service** | Next.js public demo UI: landing, chat panel, voice entry | Recommended for portfolio demo |
 | **API service** | FastAPI app: chat, scheduling, Retell tools, health | Yes |
 | **Email worker** | RabbitMQ consumer that processes durable `EmailJob` records | Yes when `EMAIL_JOB_DISPATCH_ENABLED=true` |
 | **PostgreSQL** | Durable conversations, appointments, email jobs, audit logs | Yes |
@@ -61,7 +64,56 @@ flowchart TB
 | **Resend** | Optional real confirmation email delivery | No (fake email works for smoke tests) |
 | **Retell** | Optional voice tool + lifecycle webhooks | No (chat-only demo is valid) |
 
-Deploy **one API container** and **one or more worker containers** from the **same Docker image** with different commands. Infrastructure (Postgres, Redis, RabbitMQ) is usually managed services, not sidecars in the app image.
+Deploy **one API container** and **one or more worker containers** from the **same Docker image** with different commands. Optionally deploy the **`web/`** Next.js app as a separate service for the browser UI. Infrastructure (Postgres, Redis, RabbitMQ) is usually managed services, not sidecars in the app image.
+
+## Frontend (Web) Deployment
+
+The public demo UI lives in [`web/`](../../web/). See [`web/README.md`](../../web/README.md) for local setup.
+
+### Build and start
+
+```bash
+cd web
+npm ci
+npm run build
+npm run start
+```
+
+Set the platform `PORT` if required. On Vercel, Railway, Render, etc., use the provider's Next.js preset or `npm run build` / `npm run start`.
+
+### Required frontend environment variables
+
+Only **`NEXT_PUBLIC_*`** vars belong in the web deployment. Do not put backend secrets in the frontend service.
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `NEXT_PUBLIC_API_BASE_URL` | Recommended | Public API origin (no trailing slash); used for display and as rewrite fallback |
+| `API_PROXY_TARGET` | Recommended when API is on another host | Server-only; Next.js rewrites `/api/v1/*` to this origin |
+| `NEXT_PUBLIC_GITHUB_URL` | Optional | Footer / landing link |
+| `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Optional | Footer / landing link |
+| `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | Optional | `false` = voice configuration preview; `true` = mock call UI (no Retell SDK yet) |
+
+Example (split deployment):
+
+```env
+NEXT_PUBLIC_API_BASE_URL=https://api.example.com
+API_PROXY_TARGET=https://api.example.com
+NEXT_PUBLIC_VOICE_DEMO_ENABLED=false
+```
+
+### CORS and origin reminder
+
+The web chat client calls **`/api/v1/chat/messages` on the frontend origin**. Next.js rewrites (via `API_PROXY_TARGET`) proxy to the API server-side, so **browser CORS is not required** for the default setup.
+
+The FastAPI app does **not** include CORS middleware today. If you bypass rewrites and point the browser directly at a cross-origin API URL, you must add CORS on the API or terminate both UI and `/api/v1` behind the same public domain.
+
+### Frontend smoke checks
+
+- [ ] Landing page loads over HTTPS.
+- [ ] **Talk to the receptionist** opens chat; a greeting returns an assistant reply.
+- [ ] Demo disclaimer is visible (fictional clinic; no real patient data).
+- [ ] With `NEXT_PUBLIC_VOICE_DEMO_ENABLED=false`, **Call the clinic** shows the configuration preview and does not request a microphone.
+- [ ] `npm run check:env-safety` passes in CI or before release (no forbidden `NEXT_PUBLIC_*` secret names).
 
 ## Required Environment Variables
 
@@ -191,6 +243,7 @@ After deploy, verify:
 - [ ] Migrations applied: `python -m alembic current` shows expected head revision.
 - [ ] (Optional) Demo data seeded if you rely on pre-created availability slots.
 - [ ] `POST /api/v1/chat/messages` with a simple greeting returns `200` and a `conversation_id`.
+- [ ] (Optional) Public web UI: chat panel returns a receptionist reply for a test message.
 - [ ] Redis guardrails active: repeated chat requests eventually return `429` when limits are exceeded (only in load test environments).
 - [ ] With `EMAIL_JOB_DISPATCH_ENABLED=true`, book an appointment in chat and confirm a worker log line such as `email_job_consumer_started` / job processing.
 - [ ] With `EMAIL_PROVIDER=fake`, email jobs reach `sent` in Postgres without external mail.
@@ -325,5 +378,6 @@ See [Retell Webhook Security](../architecture/retell-webhook-security.md).
 
 - [Configuration](../configuration.md)
 - [Local Development](local-development.md)
+- [Public demo web frontend](../../web/README.md)
 - [Public Demo Guardrails](../architecture/public-demo-guardrails.md)
 - [Email Dispatch Reliability](../architecture/email-dispatch-reliability.md)
