@@ -16,6 +16,8 @@ The backend plans the response. The LLM may phrase the response.
 
 The LLM does not decide scheduling outcomes, tool execution, or policy exceptions.
 
+Scheduling dates and business hours are resolved by `ClinicTimeService` and enforced by scheduling tools. Response generation may reference backend-provided facts such as offered slot times, but it does not compute relative dates or override clinic hours rules.
+
 ## Current Implementation
 
 The implementation includes:
@@ -159,4 +161,4 @@ This boundary is separate from LLM shadow analysis and slot-filling reliability 
 - real smoke testing
 - richer eval dataset for response quality
 
-See also: [LLM Reliability Orchestration](llm-reliability-orchestration.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [Voice Conversation Bridge](voice-conversation-bridge.md), [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md), [Chat API Foundation](chat-api-foundation.md).
+See also: [LLM Reliability Orchestration](llm-reliability-orchestration.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [Clinic Time Context and Tool Contracts](clinic-time-context-and-tool-contracts.md), [Voice Conversation Bridge](voice-conversation-bridge.md), [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md), [Chat API Foundation](chat-api-foundation.md).

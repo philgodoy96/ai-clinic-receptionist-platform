@@ -22,7 +22,8 @@ This project focuses on:
 - Voice AI architecture
 - Retell web voice integration
 - Retell voice call lifecycle persistence
-- Retell voice tool-calling adapter (availability, hold, release, booking with explicit confirmation, cancellation with explicit confirmation, rescheduling with explicit confirmation)
+- Retell voice tool-calling adapter (clinic context, availability with structured date expressions, hold, release, booking with explicit confirmation, cancellation with explicit confirmation, rescheduling with explicit confirmation)
+- Clinic time context with backend date resolution, business hours enforcement, and `get_clinic_context` tool
 - Voice conversation bridge linking Retell calls to shared `Conversation` state
 - Chat receptionist flow
 - Controlled natural-language response generation with deterministic default and optional LLM phrasing
@@ -106,14 +107,16 @@ The receptionist will support:
 - Specialty information
 - Availability lookup
 - Temporary appointment slot holding
-- Retell voice tools: availability check, slot hold, hold release, booking with explicit confirmation, cancellation with explicit confirmation, and rescheduling with explicit confirmation (via verified `POST /api/v1/retell/tools`)
+- Retell voice tools: `get_clinic_context`, availability check (structured `date_expression`), slot hold, hold release, booking with explicit confirmation, cancellation with explicit confirmation, and rescheduling with explicit confirmation (via verified `POST /api/v1/retell/tools`)
 - Voice conversation bridge: link Retell calls to shared `Conversation` state with safe `voice_context`
 - Human escalation case creation
 - Confirmation email jobs
 
 ## Demo Clinic Scenario
 
-The demo uses a fictional US clinic.
+The demo uses a fictional US clinic in the `America/New_York` timezone.
+
+Business hours default to Monday–Friday, 09:00–17:00 clinic local time. The backend resolves relative dates and enforces business rules; voice agents should call `get_clinic_context` rather than inferring the current date.
 
 The system avoids highly sensitive identifiers such as SSN.
 
@@ -147,7 +150,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, shared appointment rescheduling foundation via `AppointmentReschedulingService`, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, a receptionist response generator with deterministic default and optional LLM phrasing, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration with structured date expressions and business-hours enforcement, Redis holds, shared appointment rescheduling foundation via `AppointmentReschedulingService`, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, a receptionist response generator with deterministic default and optional LLM phrasing, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -168,6 +171,7 @@ Architecture docs:
 - `docs/architecture/retell-webhook-security.md`
 - `docs/architecture/retell-call-lifecycle.md`
 - `docs/architecture/retell-tool-calling-adapter.md`
+- `docs/architecture/clinic-time-context-and-tool-contracts.md`
 - `docs/architecture/voice-conversation-bridge.md`
 - `docs/architecture/retell-voice-booking-confirmation.md`
 - `docs/architecture/retell-voice-cancellation.md`
@@ -218,6 +222,6 @@ Email delivery is at-least-once: Postgres `EmailJob` is the source of truth, Rab
 - protected endpoints fail closed when guardrails are enabled but Redis is unavailable
 - use `EMAIL_PROVIDER=resend` only with guardrails enabled and confirmation email quotas configured
 
-**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, `cancel_appointment`, and `reschedule_appointment` via `POST /api/v1/retell/tools`. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Voice rescheduling requires explicit reschedule confirmation, original appointment reference, and target hold or new slot before delegating to `AppointmentReschedulingService`. Written chat reschedule is not wired yet. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency, `docs/architecture/retell-voice-rescheduling.md` for voice rescheduling validation and idempotency, and `docs/architecture/appointment-rescheduling-foundation.md` for the shared rescheduling service boundary.
+**Retell voice integration** is disabled by default. Protected Retell tool routes and lifecycle webhook routes require signature verification when enabled for a hosted demo. Verified lifecycle events are persisted as durable `VoiceCall` and `VoiceCallEvent` records before any voice business actions. Supported voice tools are `get_clinic_context`, `check_availability`, `hold_appointment_slot`, `release_appointment_hold`, `book_appointment`, `cancel_appointment`, and `reschedule_appointment` via `POST /api/v1/retell/tools`. Voice agents should call `get_clinic_context` for authoritative calendar context and pass structured `date_expression` arguments to `check_availability`; the backend resolves and enforces clinic business days and hours regardless of provider prompt behavior. Voice booking requires an active hold, validated patient identity, and explicit caller confirmation before delegating to `AppointmentBookingService`. Voice cancellation requires explicit cancellation confirmation and a cancelable appointment reference before delegating to `AppointmentCancellationService`. Voice rescheduling requires explicit reschedule confirmation, original appointment reference, and target hold or new slot before delegating to `AppointmentReschedulingService`. Written chat reschedule is not wired yet. Retell tools resolve safe voice conversation context through the voice conversation bridge. See `docs/architecture/clinic-time-context-and-tool-contracts.md` for timezone model, expression contracts, and prompt guidance, `docs/architecture/retell-webhook-security.md` for the verification flow, `docs/architecture/retell-call-lifecycle.md` for lifecycle ingestion and inspection APIs, `docs/architecture/retell-tool-calling-adapter.md` for tool execution and safety boundaries, `docs/architecture/voice-conversation-bridge.md` for `VoiceCall` to `Conversation` linkage and safe context rules, `docs/architecture/retell-voice-booking-confirmation.md` for voice booking validation and idempotency, `docs/architecture/retell-voice-cancellation.md` for voice cancellation validation and idempotency, `docs/architecture/retell-voice-rescheduling.md` for voice rescheduling validation and idempotency, and `docs/architecture/appointment-rescheduling-foundation.md` for the shared rescheduling service boundary.
 
 See `docs/architecture/groq-llm-provider.md` for Groq provider details, `docs/architecture/public-demo-guardrails.md` for guardrail design, `docs/architecture/email-dispatch-reliability.md` for email job reliability, and `docs/configuration.md` for all environment variables.

@@ -24,6 +24,7 @@ The implementation includes:
 
 See also:
 
+- [Clinic Time Context and Tool Contracts](clinic-time-context-and-tool-contracts.md)
 - [Retell Webhook Security](retell-webhook-security.md)
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
 - [Voice Conversation Bridge](voice-conversation-bridge.md)
@@ -37,7 +38,8 @@ See also:
 
 Current supported tools:
 
-- `check_availability`
+- `get_clinic_context` (read-only clinic calendar and business hours)
+- `check_availability` (prefers structured `date_expression`; legacy `start_from` / `start_to` supported)
 - `hold_appointment_slot`
 - `release_appointment_hold`
 - `book_appointment` (requires active hold, validated patient identity, and explicit caller confirmation)
@@ -62,6 +64,7 @@ Retell tool calls cannot directly:
 - mutate patient records
 - bypass appointment hold rules
 - bypass scheduling validation
+- bypass clinic business-day and business-hours enforcement on scheduling tools
 - bypass explicit booking confirmation
 - bypass explicit cancellation confirmation
 
@@ -74,10 +77,11 @@ The adapter delegates scheduling and hold work to existing services. `book_appoi
 3. The backend parses and validates the tool request.
 4. The adapter checks the explicit tool allowlist.
 5. The adapter validates tool-specific arguments.
-6. The adapter resolves or links the related voice `Conversation` through `VoiceConversationBridgeService`.
-7. The adapter delegates to existing backend services using safe voice conversation context when needed.
-8. The adapter merges safe scheduling context back into `conversation_metadata["voice_context"]` when appropriate.
-9. The adapter returns a provider-safe response.
+6. For scheduling tools, the adapter resolves dates and times through `ClinicTimeService` and `SchedulingAvailabilityResolver` when configured. Provider-supplied UTC windows are not trusted without clinic business-day and business-hours validation.
+7. The adapter resolves or links the related voice `Conversation` through `VoiceConversationBridgeService`.
+8. The adapter delegates to existing backend services using safe voice conversation context when needed.
+9. The adapter merges safe scheduling context back into `conversation_metadata["voice_context"]` when appropriate.
+10. The adapter returns a provider-safe response.
 
 Public demo guardrails run after signature verification and before adapter execution on protected Retell tool routes.
 

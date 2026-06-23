@@ -133,13 +133,13 @@ Implemented:
 - Retell voice appointment cancellation with explicit cancellation confirmation, cancelable status validation, idempotent provider callback handling, and delegation to `AppointmentCancellationService` (see `docs/architecture/retell-voice-cancellation.md`)
 - Retell voice appointment rescheduling with explicit reschedule confirmation, original appointment and hold/slot validation, idempotent provider callback handling, and delegation to `AppointmentReschedulingService` (see `docs/architecture/retell-voice-rescheduling.md`)
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService`, original appointment validation, target slot/hold validation, explicit confirmation, idempotency, safe audit logging, and safe conversation metadata updates (see `docs/architecture/appointment-rescheduling-foundation.md`)
+- Clinic time configuration with validated `CLINIC_*` settings, `ClinicTimeService`, structured date/time expressions, business-day and business-hours enforcement on scheduling tools, and `get_clinic_context` Retell tool (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 
 Upcoming:
 
 - richer response-quality evaluation dataset for receptionist phrasing
 - Prompt regression reports
-- Clinic timezone settings
 - Voice provider transfer integration
 - StaffUser/RBAC
 - Assignment notification job
@@ -162,7 +162,8 @@ Goals:
 Implemented:
 
 - Retell call lifecycle persistence and verified webhook ingestion (see `docs/architecture/retell-call-lifecycle.md`)
-- Retell tool-calling adapter with explicit allowlist, scheduling/hold delegation, idempotency, and provider-safe responses (see `docs/architecture/retell-tool-calling-adapter.md`)
+- Retell tool-calling adapter with explicit allowlist, scheduling/hold delegation, clinic time enforcement, idempotency, and provider-safe responses (see `docs/architecture/retell-tool-calling-adapter.md`)
+- Clinic time context and tool contracts with `get_clinic_context`, structured `date_expression`, and backend scheduling time enforcement (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
 - Voice conversation bridge with `VoiceCall` to `Conversation` linkage, safe voice context, Retell tool integration, and internal/debug context endpoint (see `docs/architecture/voice-conversation-bridge.md`)
 - Retell voice booking confirmation with hold, identity, and explicit confirmation validation (see `docs/architecture/retell-voice-booking-confirmation.md`)
 - Retell voice appointment cancellation with explicit confirmation, cancelable status validation, and shared `AppointmentCancellationService` delegation (see `docs/architecture/retell-voice-cancellation.md`)

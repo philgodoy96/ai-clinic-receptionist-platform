@@ -27,6 +27,7 @@ The implementation includes:
 
 See also:
 
+- [Clinic Time Context and Tool Contracts](clinic-time-context-and-tool-contracts.md)
 - [Retell Call Lifecycle](retell-call-lifecycle.md)
 - [Retell Tool-Calling Adapter](retell-tool-calling-adapter.md)
 - [Retell Voice Booking Confirmation](retell-voice-booking-confirmation.md)
@@ -104,7 +105,7 @@ Safe context may include scheduling-related fields such as:
 
 Before executing supported scheduling tools, the Retell tool adapter ensures the related `VoiceCall` is linked to a voice `Conversation`.
 
-`check_availability` may resolve partial arguments from stored voice context and write back safe criteria after a successful lookup.
+`check_availability` may resolve partial arguments from stored voice context and write back safe criteria after a successful lookup. Date and time values from `voice_context` are hints only; the backend resolves structured `date_expression` arguments and validates legacy windows through `ClinicTimeService` before querying availability.
 
 `hold_appointment_slot` merges hold details into `voice_context`.
 
