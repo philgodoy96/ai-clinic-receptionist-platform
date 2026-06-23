@@ -66,6 +66,21 @@ class StubRetellWebCallClient:
         return self.response
 
 
+class TrackingStubRetellWebCallClient(StubRetellWebCallClient):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.call_count = 0
+
+    def create_web_call(
+        self,
+        *,
+        payload: dict[str, Any],
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        return super().create_web_call(payload=payload, timeout_seconds=timeout_seconds)
+
+
 def build_service(
     *,
     enabled: bool = True,
