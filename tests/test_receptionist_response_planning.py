@@ -6,7 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.conversations.enums import ConversationChannel
-from app.domain.receptionist.enums import ReceptionistResponseSafetyLevel, ReceptionistResponseType
+from app.domain.receptionist.enums import (
+    ReceptionistResponseMode,
+    ReceptionistResponseSafetyLevel,
+    ReceptionistResponseType,
+)
 from app.domain.receptionist.response_planning import (
     FORBIDDEN_PROVIDER_PAYLOAD_FIELDS,
     GeneratedResponse,
@@ -157,6 +161,7 @@ def test_generated_response_has_no_raw_provider_payload_fields() -> None:
         response_type=ReceptionistResponseType.CONFIRMATION,
         channel=ConversationChannel.CHAT,
         used_fallback=False,
+        mode=ReceptionistResponseMode.DETERMINISTIC,
         facts={"appointment_id": "apt-123", "raw_provider_output": "strip me"},
         metadata={"generation_source": "deterministic", "provider_output": "strip me"},
     )
@@ -171,6 +176,7 @@ def test_generated_response_has_no_raw_provider_payload_fields() -> None:
                 "response_type": ReceptionistResponseType.INFORMATIONAL,
                 "channel": ConversationChannel.CHAT,
                 "used_fallback": False,
+                "mode": ReceptionistResponseMode.DETERMINISTIC,
                 "raw_provider_output": "forbidden",
             },
         )

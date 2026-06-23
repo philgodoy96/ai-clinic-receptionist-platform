@@ -5,7 +5,11 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.conversations.enums import ConversationChannel
-from app.domain.receptionist.enums import ReceptionistResponseSafetyLevel, ReceptionistResponseType
+from app.domain.receptionist.enums import (
+    ReceptionistResponseMode,
+    ReceptionistResponseSafetyLevel,
+    ReceptionistResponseType,
+)
 from app.domain.receptionist.response_planning import (
     GeneratedResponse,
     ResponsePlan,
@@ -71,6 +75,7 @@ class GeneratedResponseSchema(BaseModel):
     response_type: ReceptionistResponseType
     channel: ConversationChannel
     used_fallback: bool
+    mode: ReceptionistResponseMode
     safety_level: ReceptionistResponseSafetyLevel | None = None
     facts: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -89,6 +94,7 @@ class GeneratedResponseSchema(BaseModel):
             response_type=self.response_type,
             channel=self.channel,
             used_fallback=self.used_fallback,
+            mode=self.mode,
             safety_level=self.safety_level,
             facts=self.facts,
             metadata=self.metadata,
