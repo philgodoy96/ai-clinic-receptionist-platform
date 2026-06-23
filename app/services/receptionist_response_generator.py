@@ -1,9 +1,31 @@
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, Protocol
 
+from app.ai.llm_provider import (
+    LLMMessage,
+    LLMProvider,
+    LLMProviderError,
+    LLMProviderName,
+    LLMRequest,
+)
+from app.ai.prompt_versions import get_current_receptionist_response_prompt_metadata
+from app.ai.provider_factory import create_llm_provider_from_settings
+from app.ai.receptionist_response_output import ReceptionistLLMPhrasedResponse
+from app.ai.receptionist_response_prompt import build_receptionist_response_system_prompt
+from app.ai.response_output_validator import ResponseOutputValidationError, ResponseOutputValidator
+from app.ai.structured_output import (
+    StructuredOutputParseError,
+    StructuredOutputValidationError,
+    parse_structured_output_with_repair_flag,
+)
+from app.core.config import Settings
 from app.domain.receptionist.enums import (
     ReceptionistResponseMode,
+    ReceptionistResponseSafetyLevel,
+    ReceptionistResponseType,
     ReceptionistTemplateType,
 )
 from app.domain.receptionist.response_planning import (
@@ -11,6 +33,8 @@ from app.domain.receptionist.response_planning import (
     ResponsePlan,
     build_generated_response,
 )
+
+logger = logging.getLogger("app.receptionist_response_generator")
 
 MAX_DETERMINISTIC_RESPONSE_TEXT_LENGTH = 2000
 
@@ -67,6 +91,186 @@ class DeterministicReceptionistResponseGenerator:
                 "used_fallback": True,
             },
         )
+
+
+class LLMReceptionistResponseGenerator:
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        provider_name: LLMProviderName,
+        deterministic_generator: DeterministicReceptionistResponseGenerator,
+        max_tokens: int = 400,
+        temperature: float = 0.0,
+        validate_output: bool = True,
+        output_validator: ResponseOutputValidator | None = None,
+    ) -> None:
+        if max_tokens < 1:
+            msg = "max_tokens must be >= 1"
+            raise ValueError(msg)
+
+        self.provider = provider
+        self.provider_name = provider_name
+        self.deterministic_generator = deterministic_generator
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.validate_output = validate_output
+        self.output_validator = output_validator or ResponseOutputValidator()
+
+    def generate(self, plan: ResponsePlan) -> GeneratedResponse:
+        if should_use_deterministic_response(plan):
+            return self.deterministic_generator.generate(plan)
+
+        prompt_version = get_current_receptionist_response_prompt_metadata().version
+        llm_request = self._build_llm_request(plan=plan, prompt_version=prompt_version)
+
+        try:
+            provider_response = self.provider.complete(llm_request)
+            parse_outcome = parse_structured_output_with_repair_flag(
+                raw_output=provider_response.content,
+                model_type=ReceptionistLLMPhrasedResponse,
+            )
+            phrased = parse_outcome.value
+            text = phrased.text
+            if self.validate_output:
+                text = self.output_validator.validate(text=text, plan=plan)
+
+            return build_generated_response(
+                text=bound_response_text(text),
+                response_type=plan.response_type,
+                channel=plan.channel,
+                used_fallback=False,
+                mode=ReceptionistResponseMode.LLM,
+                safety_level=plan.safety_level,
+                facts=plan.facts,
+                metadata={
+                    "generation_source": "llm",
+                    "mode": ReceptionistResponseMode.LLM.value,
+                    "prompt_version": prompt_version,
+                    "provider": self.provider_name.value,
+                    "model": provider_response.model,
+                    "input_tokens": provider_response.input_tokens,
+                    "output_tokens": provider_response.output_tokens,
+                    "estimated_cost_micros": provider_response.estimated_cost_micros,
+                },
+            )
+        except LLMProviderError as exc:
+            return self._deterministic_fallback(
+                plan,
+                failure_reason=type(exc).__name__,
+            )
+        except (StructuredOutputParseError, StructuredOutputValidationError) as exc:
+            return self._deterministic_fallback(
+                plan,
+                failure_reason=type(exc).__name__,
+            )
+        except ResponseOutputValidationError as exc:
+            return self._deterministic_fallback(
+                plan,
+                failure_reason=type(exc).__name__,
+            )
+        except Exception:
+            logger.exception(
+                "receptionist_response_generation_unknown_error",
+                extra={"event": "receptionist_response_generation_unknown_error"},
+            )
+            return self._deterministic_fallback(
+                plan,
+                failure_reason="unknown_error",
+            )
+
+    def _build_llm_request(self, *, plan: ResponsePlan, prompt_version: str) -> LLMRequest:
+        return LLMRequest(
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content=build_receptionist_response_system_prompt(),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=json.dumps(build_response_plan_payload(plan)),
+                ),
+            ],
+            response_format="json",
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            metadata={
+                "component": "receptionist_response_generator",
+                "prompt_version": prompt_version,
+            },
+        )
+
+    def _deterministic_fallback(
+        self,
+        plan: ResponsePlan,
+        *,
+        failure_reason: str,
+    ) -> GeneratedResponse:
+        deterministic = self.deterministic_generator.generate(plan)
+        metadata = {
+            "generation_source": "deterministic",
+            "mode": ReceptionistResponseMode.DETERMINISTIC.value,
+            "used_fallback": True,
+            "failure_reason": failure_reason,
+        }
+        if deterministic.metadata.get("template_type") is not None:
+            metadata["template_type"] = str(deterministic.metadata["template_type"])
+
+        return build_generated_response(
+            text=deterministic.text,
+            response_type=plan.response_type,
+            channel=plan.channel,
+            used_fallback=True,
+            mode=ReceptionistResponseMode.DETERMINISTIC,
+            safety_level=plan.safety_level,
+            facts=plan.facts,
+            metadata=metadata,
+        )
+
+
+def build_receptionist_response_generator_from_settings(
+    settings: Settings,
+) -> ReceptionistResponseGenerator:
+    deterministic_generator = DeterministicReceptionistResponseGenerator()
+    if settings.receptionist_response_mode == ReceptionistResponseMode.DETERMINISTIC:
+        return deterministic_generator
+
+    provider_name = settings.resolved_receptionist_response_llm_provider
+    provider = create_llm_provider_from_settings(settings, provider_name)
+    return LLMReceptionistResponseGenerator(
+        provider=provider,
+        provider_name=provider_name,
+        deterministic_generator=deterministic_generator,
+        max_tokens=settings.receptionist_response_max_tokens,
+        temperature=settings.receptionist_response_temperature,
+        validate_output=settings.receptionist_response_validate_output,
+    )
+
+
+def should_use_deterministic_response(plan: ResponsePlan) -> bool:
+    if plan.deterministic_behavior:
+        return True
+
+    if plan.response_type == ReceptionistResponseType.CRITICAL:
+        return True
+
+    if plan.safety_level == ReceptionistResponseSafetyLevel.CRITICAL:
+        return True
+
+    template_type = resolve_template_type(plan.facts)
+    return template_type == ReceptionistTemplateType.EMERGENCY_GUIDANCE
+
+
+def build_response_plan_payload(plan: ResponsePlan) -> dict[str, Any]:
+    return {
+        "response_type": plan.response_type.value,
+        "channel": plan.channel.value,
+        "fallback_text": plan.fallback_text,
+        "safety_level": plan.safety_level.value if plan.safety_level is not None else None,
+        "facts": plan.facts,
+        "metadata": plan.metadata,
+        "deterministic_behavior": plan.deterministic_behavior,
+    }
 
 
 def resolve_template_type(facts: dict[str, Any]) -> ReceptionistTemplateType | None:

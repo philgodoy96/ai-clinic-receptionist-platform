@@ -24,6 +24,7 @@ class ReceptionistTemplateType(StrEnum):
 
 class ReceptionistResponseMode(StrEnum):
     DETERMINISTIC = "deterministic"
+    LLM = "llm"
 
 
 class ReceptionistResponseType(StrEnum):

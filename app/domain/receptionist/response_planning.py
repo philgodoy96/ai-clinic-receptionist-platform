@@ -54,10 +54,16 @@ _SAFE_FACT_KEYS = frozenset(
 _SAFE_METADATA_KEYS = frozenset(
     {
         "deterministic_behavior",
+        "estimated_cost_micros",
+        "failure_reason",
         "generation_source",
+        "input_tokens",
         "mode",
+        "model",
+        "output_tokens",
         "plan_version",
         "prompt_version",
+        "provider",
         "template_type",
         "used_fallback",
     },
