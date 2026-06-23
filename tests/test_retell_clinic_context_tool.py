@@ -13,9 +13,9 @@ from app.integrations.retell.signature import HmacRetellSignatureVerifier
 from app.main import create_app
 from app.schemas.retell_tools import RetellToolCallRequest
 from app.services.appointment_holds import AppointmentHoldService
-from app.services.clinic_time import ClinicTimeService
 from app.services.clock import FixedClock
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.retell_webhook_support import (
     configure_retell_for_tests,
     make_retell_enabled_settings,
@@ -35,20 +35,6 @@ WEBHOOK_SECRET = "test-webhook-secret"
 TIMESTAMP_MS = 1_700_000_000_000
 
 
-def make_clinic_time_service(
-    *,
-    clock: FixedClock | None = None,
-) -> ClinicTimeService:
-    return ClinicTimeService(
-        clinic_name="Demo Clinic",
-        timezone="America/New_York",
-        business_days="monday,tuesday,wednesday,thursday,friday",
-        business_hours_start="09:00",
-        business_hours_end="17:00",
-        clock=clock or FixedClock(current_time=REFERENCE_NOW_UTC),
-    )
-
-
 def make_clinic_context_adapter(
     *,
     clock: FixedClock | None = None,
@@ -62,7 +48,7 @@ def make_clinic_context_adapter(
         ),
         hold_service=AppointmentHoldService(repository=hold_repository, ttl_seconds=300),
         voice_calls=TrackingVoiceCallRepository(),
-        clinic_time_service=make_clinic_time_service(clock=clock),
+        clinic_time_service=make_test_clinic_time_service(clock=clock),
     )
 
 

@@ -424,9 +424,7 @@ class FakeAppointmentRepository:
         start_from: datetime,
     ) -> list[Appointment]:
         return [
-            appointment
-            for appointment in self.appointments
-            if appointment.patient_id == patient_id
+            appointment for appointment in self.appointments if appointment.patient_id == patient_id
         ]
 
     def find_scheduled_conflict(

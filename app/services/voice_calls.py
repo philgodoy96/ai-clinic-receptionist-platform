@@ -103,9 +103,7 @@ class VoiceCallInspectionService:
         if self.repository.get_by_id(voice_call_id) is None:
             raise VoiceCallNotFoundError("voice call was not found")
 
-        decoded_cursor = (
-            decode_voice_call_event_cursor(cursor) if cursor is not None else None
-        )
+        decoded_cursor = decode_voice_call_event_cursor(cursor) if cursor is not None else None
         fetched_items = list(
             self.repository.list_events_for_call(
                 voice_call_id=voice_call_id,

@@ -157,9 +157,7 @@ class GroqLLMProvider:
         )
 
     def _build_chat_completion_payload(self, request: LLMRequest) -> dict[str, Any]:
-        temperature = (
-            request.temperature if request.temperature >= 0 else self._default_temperature
-        )
+        temperature = request.temperature if request.temperature >= 0 else self._default_temperature
         max_tokens = request.max_tokens or self._default_max_output_tokens
         payload: dict[str, Any] = {
             "model": self._model,

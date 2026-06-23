@@ -83,8 +83,8 @@ def test_regression_check_availability_still_works(adapter_bundle: AdapterBundle
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(adapter_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                     "limit": 1,
                 },
             },

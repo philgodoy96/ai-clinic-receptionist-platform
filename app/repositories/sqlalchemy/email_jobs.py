@@ -243,11 +243,7 @@ class SQLAlchemyEmailJobRepository:
         now: datetime,
         lock_duration: timedelta,
     ) -> EmailJob | None:
-        statement = (
-            select(EmailJob)
-            .where(EmailJob.id == email_job_id)
-            .with_for_update()
-        )
+        statement = select(EmailJob).where(EmailJob.id == email_job_id).with_for_update()
         email_job = self.session.scalars(statement).first()
 
         if email_job is None:
@@ -269,16 +265,12 @@ class SQLAlchemyEmailJobRepository:
 
     def _is_eligible_for_claim(self, email_job: EmailJob, now: datetime) -> bool:
         if email_job.status == EmailJobStatus.PENDING:
-            return (
-                email_job.next_attempt_at is None or email_job.next_attempt_at <= now
-            ) and (
+            return (email_job.next_attempt_at is None or email_job.next_attempt_at <= now) and (
                 email_job.locked_until is None or email_job.locked_until < now
             )
 
         if email_job.status == EmailJobStatus.PROCESSING:
-            return (
-                email_job.locked_until is not None and email_job.locked_until < now
-            )
+            return email_job.locked_until is not None and email_job.locked_until < now
 
         return False
 

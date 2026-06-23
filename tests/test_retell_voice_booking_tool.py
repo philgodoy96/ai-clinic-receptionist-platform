@@ -24,6 +24,7 @@ from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.retell_webhook_support import (
     NeverCalledRetellToolCallingAdapter,
     configure_retell_for_tests,
@@ -173,6 +174,7 @@ def create_retell_booking_tool_context() -> dict[str, Any]:
         conversations=conversations,
         voice_booking_confirmation=voice_booking_confirmation,
         appointments=booking_context.appointment_repository,
+        clinic_time_service=make_test_clinic_time_service(),
     )
 
     return {
@@ -377,9 +379,7 @@ def test_verified_route_booking_tool_returns_provider_safe_response() -> None:
     configure_retell_for_tests(app, settings=settings)
     install_fake_retell_verifier(app, accept_all=True)
 
-    app.dependency_overrides[get_retell_tool_calling_adapter] = (
-        lambda: booking_context["adapter"]
-    )
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: booking_context["adapter"]
 
     with TestClient(app) as client:
         response = post_retell_tool(

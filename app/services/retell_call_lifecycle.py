@@ -151,10 +151,7 @@ class RetellCallLifecycleService:
         normalized_event_type: NormalizedVoiceCallEventType,
     ) -> None:
         previous_last_event_at = voice_call.last_event_at
-        if (
-            voice_call.last_event_at is None
-            or payload.occurred_at > voice_call.last_event_at
-        ):
+        if voice_call.last_event_at is None or payload.occurred_at > voice_call.last_event_at:
             voice_call.last_event_at = payload.occurred_at
 
         if payload.direction is not None and voice_call.direction is None:
@@ -167,10 +164,7 @@ class RetellCallLifecycleService:
             voice_call.to_number_redacted = redact_phone_number(payload.to_number)
 
         if normalized_event_type == NormalizedVoiceCallEventType.CALL_STARTED:
-            if (
-                voice_call.started_at is None
-                or payload.occurred_at < voice_call.started_at
-            ):
+            if voice_call.started_at is None or payload.occurred_at < voice_call.started_at:
                 voice_call.started_at = payload.occurred_at
 
         if normalized_event_type in (
@@ -181,12 +175,15 @@ class RetellCallLifecycleService:
                 voice_call.ended_at = payload.occurred_at
 
         proposed_status = status_for_normalized_event(normalized_event_type)
-        if should_apply_status_update(
-            current_status=voice_call.status,
-            proposed_status=proposed_status,
-            event_occurred_at=payload.occurred_at,
-            previous_last_event_at=previous_last_event_at,
-        ) and proposed_status is not None:
+        if (
+            should_apply_status_update(
+                current_status=voice_call.status,
+                proposed_status=proposed_status,
+                event_occurred_at=payload.occurred_at,
+                previous_last_event_at=previous_last_event_at,
+            )
+            and proposed_status is not None
+        ):
             voice_call.status = proposed_status
 
         voice_call.updated_at = datetime.now(UTC)

@@ -26,6 +26,7 @@ from app.models.voice_calls import VoiceCall
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.demo_guardrail_support import (
     create_guarded_retell_app,
     make_guardrail_settings,
@@ -56,7 +57,7 @@ def route_context() -> RouteContext:
     specialty_id = uuid4()
     doctor_id = uuid4()
     slot_id = uuid4()
-    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    start_time = datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
 
     specialty = Specialty(
         id=specialty_id,
@@ -93,6 +94,7 @@ def route_context() -> RouteContext:
         scheduling_service=cast(SchedulingService, scheduling_service),
         hold_service=hold_service,
         voice_calls=voice_calls,
+        clinic_time_service=make_test_clinic_time_service(),
     )
     booking_service = NeverCalledBookingService()
     email_service = NeverCalledEmailService()
@@ -192,8 +194,8 @@ def test_valid_check_availability_tool_call_returns_slots(
             "tool_name": "check_availability",
             "arguments": {
                 "doctor_id": str(route_context.doctor.id),
-                "start_from": "2026-07-01T09:00:00Z",
-                "start_to": "2026-07-01T12:00:00Z",
+                "start_from": "2026-07-01T13:00:00Z",
+                "start_to": "2026-07-01T17:00:00Z",
             },
         },
     )
@@ -221,8 +223,8 @@ def test_valid_signature_allows_adapter_call(
             "tool_name": "check_availability",
             "arguments": {
                 "doctor_id": str(route_context.doctor.id),
-                "start_from": "2026-07-01T09:00:00Z",
-                "start_to": "2026-07-01T12:00:00Z",
+                "start_from": "2026-07-01T13:00:00Z",
+                "start_to": "2026-07-01T17:00:00Z",
             },
         },
     )
@@ -283,8 +285,8 @@ def test_retell_disabled_rejects_unified_route() -> None:
                 "provider_call_id": "retell-call-123",
                 "tool_name": "check_availability",
                 "arguments": {
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         )
@@ -313,8 +315,8 @@ def test_response_does_not_expose_raw_payload_or_secrets(
             "tool_name": "check_availability",
             "arguments": {
                 "doctor_id": str(route_context.doctor.id),
-                "start_from": "2026-07-01T09:00:00Z",
-                "start_to": "2026-07-01T12:00:00Z",
+                "start_from": "2026-07-01T13:00:00Z",
+                "start_to": "2026-07-01T17:00:00Z",
             },
             "webhook_secret": secret,
             "transcript": "patient said secret things",
@@ -425,8 +427,8 @@ def test_check_availability_tool_call_has_no_side_effects(
             "tool_name": "check_availability",
             "arguments": {
                 "doctor_id": str(route_context.doctor.id),
-                "start_from": "2026-07-01T09:00:00Z",
-                "start_to": "2026-07-01T12:00:00Z",
+                "start_from": "2026-07-01T13:00:00Z",
+                "start_to": "2026-07-01T17:00:00Z",
             },
         },
     )
@@ -596,7 +598,7 @@ def test_invalid_signature_prevents_adapter_call(
                 b'{"provider_call_id":"retell-call-123","tool_name":"check_availability",'
                 b'"arguments":{"doctor_id":"'
                 + str(route_context.doctor.id).encode()
-                + b'","start_from":"2026-07-01T09:00:00Z","start_to":"2026-07-01T12:00:00Z"}}'
+                + b'","start_from":"2026-07-01T13:00:00Z","start_to":"2026-07-01T17:00:00Z"}}'
             ),
             headers={
                 "Content-Type": "application/json",
@@ -653,8 +655,8 @@ def test_booking_service_is_not_called(
             "tool_name": "check_availability",
             "arguments": {
                 "doctor_id": str(route_context.doctor.id),
-                "start_from": "2026-07-01T09:00:00Z",
-                "start_to": "2026-07-01T12:00:00Z",
+                "start_from": "2026-07-01T13:00:00Z",
+                "start_to": "2026-07-01T17:00:00Z",
             },
         },
     )
@@ -761,8 +763,8 @@ def test_cancel_appointment_route_does_not_call_email_service() -> None:
     configure_retell_for_tests(app, settings=settings)
     install_fake_retell_verifier(app, accept_all=True)
 
-    app.dependency_overrides[get_retell_tool_calling_adapter] = (
-        lambda: TrackingRetellToolCallingAdapter(context["adapter"])
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: (
+        TrackingRetellToolCallingAdapter(context["adapter"])
     )
     app.dependency_overrides[get_email_job_service] = lambda: email_service
 
@@ -796,8 +798,8 @@ def test_public_demo_guardrails_still_apply() -> None:
             "provider_call_id": "retell-call-guardrail",
             "tool_name": "check_availability",
             "arguments": {
-                "start_from": "2026-07-01T09:00:00Z",
-                "start_to": "2026-07-01T12:00:00Z",
+                "start_from": "2026-07-01T13:00:00Z",
+                "start_to": "2026-07-01T17:00:00Z",
             },
         }
         first = client.post("/api/v1/retell/tools", json=payload)

@@ -203,10 +203,10 @@ def assert_metadata_has_no_secrets(metadata: dict[str, object]) -> None:
 
 
 def assert_controlled_plan_uses_deterministic_behavior(
-  reply: ChatReplySnapshot,
-  *,
-  conversation: object,
-  response_mode: ReceptionistResponseMode,
+    reply: ChatReplySnapshot,
+    *,
+    conversation: object,
+    response_mode: ReceptionistResponseMode,
 ) -> None:
     plan = build_response_plan_from_chat_reply(
         reply,

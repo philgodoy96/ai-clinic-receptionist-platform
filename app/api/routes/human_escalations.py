@@ -83,9 +83,7 @@ def list_human_escalations(
         ) from exc
 
     return HumanEscalationListResponse(
-        items=[
-            _human_escalation_response(service, item) for item in result.items
-        ],
+        items=[_human_escalation_response(service, item) for item in result.items],
         next_cursor=result.next_cursor,
     )
 

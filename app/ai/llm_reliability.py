@@ -105,9 +105,7 @@ def classify_provider_error(message: str) -> LLMFailureReason:
     normalized = message.lower()
     if "timeout" in normalized or "timed out" in normalized:
         return LLMFailureReason.PROVIDER_TIMEOUT
-    if "throttl" in normalized or (
-        "rate" in normalized and "limit" in normalized
-    ):
+    if "throttl" in normalized or ("rate" in normalized and "limit" in normalized):
         return LLMFailureReason.PROVIDER_RATE_LIMITED
     if "did not include text" in normalized or "missing text content" in normalized:
         return LLMFailureReason.EMPTY_RESPONSE

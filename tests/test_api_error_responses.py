@@ -133,8 +133,8 @@ def test_retell_security_errors_use_standardized_envelope(
 def test_invalid_retell_payload_uses_standardized_envelope() -> None:
     app = create_app()
     _configure_secured_with_hmac(app)
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(EmptySchedulingService())
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(EmptySchedulingService())
     )
 
     raw_body = b"{not-json"

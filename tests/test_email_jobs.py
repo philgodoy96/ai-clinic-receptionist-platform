@@ -380,8 +380,7 @@ class FakeEmailJobRepository:
             (
                 email_job
                 for email_job in self.email_jobs
-                if email_job.job_type == job_type
-                and email_job.idempotency_key == idempotency_key
+                if email_job.job_type == job_type and email_job.idempotency_key == idempotency_key
             ),
             None,
         )
@@ -404,9 +403,7 @@ class FakeEmailJobRepository:
 
         if cursor is not None:
             jobs = [
-                item
-                for item in jobs
-                if (item.created_at, item.id) < (cursor.created_at, cursor.id)
+                item for item in jobs if (item.created_at, item.id) < (cursor.created_at, cursor.id)
             ]
 
         if job_type is not None:
@@ -467,17 +464,13 @@ class FakeEmailJobRepository:
             total_jobs=len(jobs),
             counts_by_status=EmailJobStatusCounts(
                 pending=len(pending_jobs),
-                processing=sum(
-                    1 for job in jobs if job.status == EmailJobStatus.PROCESSING
-                ),
+                processing=sum(1 for job in jobs if job.status == EmailJobStatus.PROCESSING),
                 sent=sum(1 for job in jobs if job.status == EmailJobStatus.SENT),
                 failed=len(failed_jobs),
                 dead_letter=len(dead_letter_jobs),
             ),
             locked_count=sum(
-                1
-                for job in jobs
-                if job.locked_until is not None and job.locked_until >= now
+                1 for job in jobs if job.locked_until is not None and job.locked_until >= now
             ),
             expired_lock_count=sum(
                 1
@@ -490,17 +483,10 @@ class FakeEmailJobRepository:
                 1
                 for job in jobs
                 if job.status == EmailJobStatus.PENDING
-                and (
-                    job.next_attempt_at is None
-                    or job.next_attempt_at <= now
-                )
+                and (job.next_attempt_at is None or job.next_attempt_at <= now)
             ),
-            oldest_pending_created_at=(
-                min((job.created_at for job in pending_jobs), default=None)
-            ),
-            oldest_failed_created_at=(
-                min((job.created_at for job in failed_jobs), default=None)
-            ),
+            oldest_pending_created_at=(min((job.created_at for job in pending_jobs), default=None)),
+            oldest_failed_created_at=(min((job.created_at for job in failed_jobs), default=None)),
             newest_dead_letter_created_at=(
                 max((job.created_at for job in dead_letter_jobs), default=None)
             ),

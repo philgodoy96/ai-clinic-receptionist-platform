@@ -186,9 +186,7 @@ class EmailJobService:
         if payload.appointment_id is not None:
             job_payload["appointment_id"] = str(payload.appointment_id)
 
-        normalized_payload = {
-            key: value for key, value in job_payload.items() if value is not None
-        }
+        normalized_payload = {key: value for key, value in job_payload.items() if value is not None}
         settings = get_settings()
         email_job = EmailJob(
             job_type=EmailJobType.HUMAN_ESCALATION_NOTIFICATION,

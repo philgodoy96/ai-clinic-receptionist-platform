@@ -26,6 +26,7 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
     DeterministicChatResponder,
 )
+from app.services.clinic_time import ClinicTimeService
 from app.services.conversation_health import ConversationHealthService
 from app.services.conversations import ConversationCreate, ConversationService
 from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
@@ -147,10 +148,9 @@ def create_chat_receptionist_service(
     human_handoff_notifications: HumanHandoffNotificationService | None = None,
     date_parser: NaturalLanguageDateParser | None = None,
     time_preference_parser: TimePreferenceParser | None = None,
+    clinic_time_service: ClinicTimeService | None = None,
     response_generator: ReceptionistResponseGenerator | None = None,
-    response_generation_mode: ReceptionistResponseMode = (
-        ReceptionistResponseMode.DETERMINISTIC
-    ),
+    response_generation_mode: ReceptionistResponseMode = (ReceptionistResponseMode.DETERMINISTIC),
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -170,6 +170,7 @@ def create_chat_receptionist_service(
         human_handoff_notifications=human_handoff_notifications,
         date_parser=date_parser,
         time_preference_parser=time_preference_parser,
+        clinic_time_service=clinic_time_service,
         response_generator=response_generator,
         response_generation_mode=response_generation_mode,
     )
@@ -381,15 +382,18 @@ def test_emergency_message_does_not_call_scheduling(
     service, _repository = scheduling_chat_service
     scheduling = service.scheduling
 
-    with patch.object(
-        SchedulingService,
-        "list_specialties",
-        wraps=scheduling.list_specialties,
-    ) as list_specialties_mock, patch.object(
-        SchedulingService,
-        "list_doctors",
-        wraps=scheduling.list_doctors,
-    ) as list_doctors_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "list_specialties",
+            wraps=scheduling.list_specialties,
+        ) as list_specialties_mock,
+        patch.object(
+            SchedulingService,
+            "list_doctors",
+            wraps=scheduling.list_doctors,
+        ) as list_doctors_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(message="This is an emergency and I have chest pain."),
         )
@@ -466,19 +470,23 @@ def test_dr_emily_carter_on_date_returns_availability_results(
     appointments = scheduling.appointments
     assert isinstance(appointments, FakeAppointmentRepository)
 
-    with patch.object(
-        SchedulingService,
-        "check_availability",
-        wraps=scheduling.check_availability,
-    ) as check_availability_mock, patch.object(
-        SchedulingService,
-        "get_available_slot_for_hold",
-        wraps=scheduling.get_available_slot_for_hold,
-    ) as hold_mock, patch.object(
-        appointments,
-        "add",
-        wraps=appointments.add,
-    ) as booking_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+        patch.object(
+            SchedulingService,
+            "get_available_slot_for_hold",
+            wraps=scheduling.get_available_slot_for_hold,
+        ) as hold_mock,
+        patch.object(
+            appointments,
+            "add",
+            wraps=appointments.add,
+        ) as booking_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
         )
@@ -643,15 +651,18 @@ def test_dr_emily_carter_next_week_asks_for_specific_date(
     service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
-    with patch.object(
-        SchedulingService,
-        "check_availability",
-        wraps=scheduling.check_availability,
-    ) as check_availability_mock, patch.object(
-        service.appointment_holds,
-        "create_hold",
-        wraps=service.appointment_holds.create_hold,
-    ) as create_hold_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+        patch.object(
+            service.appointment_holds,
+            "create_hold",
+            wraps=service.appointment_holds.create_hold,
+        ) as create_hold_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(message="Dr. Emily Carter next week"),
         )
@@ -680,19 +691,23 @@ def test_emergency_with_tomorrow_does_not_set_requested_date(
     service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
-    with patch.object(
-        SchedulingService,
-        "check_availability",
-        wraps=scheduling.check_availability,
-    ) as check_availability_mock, patch.object(
-        service.appointment_holds,
-        "create_hold",
-        wraps=service.appointment_holds.create_hold,
-    ) as create_hold_mock, patch.object(
-        service.appointment_booking,
-        "book_appointment",
-        wraps=service.appointment_booking.book_appointment,
-    ) as book_appointment_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+        patch.object(
+            service.appointment_holds,
+            "create_hold",
+            wraps=service.appointment_holds.create_hold,
+        ) as create_hold_mock,
+        patch.object(
+            service.appointment_booking,
+            "book_appointment",
+            wraps=service.appointment_booking.book_appointment,
+        ) as book_appointment_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(message="This is an emergency tomorrow"),
         )
@@ -740,19 +755,23 @@ def test_emergency_takes_priority_and_does_not_query_scheduling(
     service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
-    with patch.object(
-        SchedulingService,
-        "check_availability",
-        wraps=scheduling.check_availability,
-    ) as check_availability_mock, patch.object(
-        SchedulingService,
-        "list_doctors",
-        wraps=scheduling.list_doctors,
-    ) as list_doctors_mock, patch.object(
-        SchedulingService,
-        "list_specialties",
-        wraps=scheduling.list_specialties,
-    ) as list_specialties_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+        patch.object(
+            SchedulingService,
+            "list_doctors",
+            wraps=scheduling.list_doctors,
+        ) as list_doctors_mock,
+        patch.object(
+            SchedulingService,
+            "list_specialties",
+            wraps=scheduling.list_specialties,
+        ) as list_specialties_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(
                 message="This is an emergency, is Dr. Emily free on 2026-07-02?",
@@ -1044,10 +1063,9 @@ def test_hold_time_match_creates_hold_for_second_slot(
 
     assert result.intent == ChatReceptionistIntent.HOLD_CREATED
     assert "10:30" in result.reply
-    assert (
-        result.conversation.conversation_metadata["chat_context"]["selected_availability_slot_id"]
-        == str(EMILY_JULY_SLOT_2_ID)
-    )
+    assert result.conversation.conversation_metadata["chat_context"][
+        "selected_availability_slot_id"
+    ] == str(EMILY_JULY_SLOT_2_ID)
 
 
 def test_hold_unknown_time_returns_hold_slot_not_found(
@@ -1304,15 +1322,18 @@ def test_emergency_tomorrow_morning_does_not_apply_time_preference_or_query_sche
     service, _repository, _hold_service = availability_guidance_service
     scheduling = service.scheduling
 
-    with patch.object(
-        SchedulingService,
-        "check_availability",
-        wraps=scheduling.check_availability,
-    ) as check_availability_mock, patch.object(
-        service.appointment_holds,
-        "create_hold",
-        wraps=service.appointment_holds.create_hold,
-    ) as create_hold_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+        patch.object(
+            service.appointment_holds,
+            "create_hold",
+            wraps=service.appointment_holds.create_hold,
+        ) as create_hold_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(message="This is an emergency tomorrow morning"),
         )
@@ -1454,9 +1475,7 @@ def test_dr_emily_carter_tomorrow_afternoon_offers_only_afternoon_slots() -> Non
     assert hold_service.create_hold_calls == []
 
 
-def test_dr_emily_carter_tomorrow_morning_with_only_afternoon_slots_returns_no_openings() -> (
-    None
-):
+def test_dr_emily_carter_tomorrow_morning_with_only_afternoon_slots_returns_no_openings() -> None:
     service, _repository, hold_service = _create_availability_guidance_service(
         create_demo_scheduling_service_with_emily_afternoon_july_availability(),
     )
@@ -1500,19 +1519,23 @@ def test_emergency_tomorrow_morning_wins_without_scheduling_side_effects() -> No
     )
     scheduling = service.scheduling
 
-    with patch.object(
-        SchedulingService,
-        "check_availability",
-        wraps=scheduling.check_availability,
-    ) as check_availability_mock, patch.object(
-        service.appointment_holds,
-        "create_hold",
-        wraps=service.appointment_holds.create_hold,
-    ) as create_hold_mock, patch.object(
-        service.appointment_booking,
-        "book_appointment",
-        wraps=service.appointment_booking.book_appointment,
-    ) as book_appointment_mock:
+    with (
+        patch.object(
+            SchedulingService,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+        patch.object(
+            service.appointment_holds,
+            "create_hold",
+            wraps=service.appointment_holds.create_hold,
+        ) as create_hold_mock,
+        patch.object(
+            service.appointment_booking,
+            "book_appointment",
+            wraps=service.appointment_booking.book_appointment,
+        ) as book_appointment_mock,
+    ):
         result = service.handle_message(
             ChatMessageInput(message="This is an emergency tomorrow morning"),
         )

@@ -17,11 +17,7 @@ class SQLAlchemySpecialtyRepository:
         self.session = session
 
     def list_active(self) -> Sequence[Specialty]:
-        statement = (
-            select(Specialty)
-            .where(Specialty.is_active.is_(True))
-            .order_by(Specialty.name)
-        )
+        statement = select(Specialty).where(Specialty.is_active.is_(True)).order_by(Specialty.name)
 
         return list(self.session.scalars(statement).all())
 

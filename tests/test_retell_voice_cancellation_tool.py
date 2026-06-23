@@ -280,9 +280,7 @@ def test_verified_route_cancellation_returns_provider_safe_response() -> None:
     configure_retell_for_tests(app, settings=settings)
     install_fake_retell_verifier(app, accept_all=True)
 
-    app.dependency_overrides[get_retell_tool_calling_adapter] = (
-        lambda: context["adapter"]
-    )
+    app.dependency_overrides[get_retell_tool_calling_adapter] = lambda: context["adapter"]
 
     with TestClient(app) as client:
         response = post_retell_tool(
@@ -350,6 +348,9 @@ def test_cancellation_tool_does_not_trigger_llm() -> None:
 def test_adapter_dispatch_does_not_mutate_appointment_in_cancel_path() -> None:
     module_source = inspect.getsource(retell_tool_adapter_module)
 
-    assert "appointment.status =" not in module_source.split(
-        "def _execute_cancel_appointment",
-    )[1].split("def _build_cancel_appointment_idempotency_key")[0]
+    assert (
+        "appointment.status ="
+        not in module_source.split(
+            "def _execute_cancel_appointment",
+        )[1].split("def _build_cancel_appointment_idempotency_key")[0]
+    )

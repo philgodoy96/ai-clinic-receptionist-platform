@@ -163,16 +163,22 @@ def test_conversation_appointment_id_fallback_when_args_omit_id() -> None:
         },
     )
 
-    assert resolve_cancel_appointment_id(
-        arguments,
-        {},
-        conversation_appointment_id=appointment_id,
-    ) == appointment_id
-    assert is_cancel_appointment_executable(
-        arguments,
-        voice_context={},
-        conversation_appointment_id=appointment_id,
-    ) is True
+    assert (
+        resolve_cancel_appointment_id(
+            arguments,
+            {},
+            conversation_appointment_id=appointment_id,
+        )
+        == appointment_id
+    )
+    assert (
+        is_cancel_appointment_executable(
+            arguments,
+            voice_context={},
+            conversation_appointment_id=appointment_id,
+        )
+        is True
+    )
 
 
 def test_ambiguous_appointment_reference_is_not_executable() -> None:
@@ -185,16 +191,22 @@ def test_ambiguous_appointment_reference_is_not_executable() -> None:
         },
     )
 
-    assert is_cancel_appointment_reference_ambiguous(
-        arguments,
-        {"appointment_id": str(voice_appointment_id)},
-        conversation_appointment_id=conversation_appointment_id,
-    ) is True
-    assert is_cancel_appointment_executable(
-        arguments,
-        voice_context={"appointment_id": str(voice_appointment_id)},
-        conversation_appointment_id=conversation_appointment_id,
-    ) is False
+    assert (
+        is_cancel_appointment_reference_ambiguous(
+            arguments,
+            {"appointment_id": str(voice_appointment_id)},
+            conversation_appointment_id=conversation_appointment_id,
+        )
+        is True
+    )
+    assert (
+        is_cancel_appointment_executable(
+            arguments,
+            voice_context={"appointment_id": str(voice_appointment_id)},
+            conversation_appointment_id=conversation_appointment_id,
+        )
+        is False
+    )
 
 
 def test_appointment_context_mismatch_is_rejected() -> None:
@@ -208,9 +220,12 @@ def test_appointment_context_mismatch_is_rejected() -> None:
         },
     )
 
-    assert validate_cancel_appointment_conversation_context(
-        argument_appointment_id,
-        arguments=arguments,
-        voice_context={"appointment_id": str(context_appointment_id)},
-        conversation_appointment_id=None,
-    ) is False
+    assert (
+        validate_cancel_appointment_conversation_context(
+            argument_appointment_id,
+            arguments=arguments,
+            voice_context={"appointment_id": str(context_appointment_id)},
+            conversation_appointment_id=None,
+        )
+        is False
+    )

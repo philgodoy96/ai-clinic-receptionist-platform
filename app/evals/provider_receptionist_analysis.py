@@ -147,8 +147,7 @@ def build_evaluation_report(
 ) -> dict[str, object]:
     cases_by_id = {case.id: case for case in cases}
     provider_outputs_by_id = {
-        case_output.case_id: case_output
-        for case_output in provider_case_outputs or ()
+        case_output.case_id: case_output for case_output in provider_case_outputs or ()
     }
 
     case_reports: list[dict[str, object]] = []
@@ -161,8 +160,7 @@ def build_evaluation_report(
             "passed": case_result.passed,
             "failure_reason": case_result.failure_reason,
             "field_results": [
-                _field_result_to_dict(field_result)
-                for field_result in case_result.field_results
+                _field_result_to_dict(field_result) for field_result in case_result.field_results
             ],
         }
         provider_output = provider_outputs_by_id.get(case_result.case_id)

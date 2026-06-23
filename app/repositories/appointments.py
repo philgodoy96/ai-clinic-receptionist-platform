@@ -65,8 +65,6 @@ class AppointmentRescheduleAttemptRepository(Protocol):
         attempt: AppointmentRescheduleAttempt,
         *,
         error_code: str,
-        status: AppointmentRescheduleAttemptStatus = (
-            AppointmentRescheduleAttemptStatus.REJECTED
-        ),
+        status: AppointmentRescheduleAttemptStatus = (AppointmentRescheduleAttemptStatus.REJECTED),
     ) -> AppointmentRescheduleAttempt:
         raise NotImplementedError
