@@ -19,6 +19,7 @@ from app.domain.human_escalations import (
     HumanEscalationReason,
     HumanEscalationSource,
 )
+from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.appointment_booking import (
@@ -57,6 +58,14 @@ from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     ReceptionistAnalysisRequest,
     ReceptionistAnalysisResult,
+)
+from app.services.receptionist_response_generator import (
+    DeterministicReceptionistResponseGenerator,
+    ReceptionistResponseGenerator,
+)
+from app.services.receptionist_response_planning import (
+    chat_reply_snapshot_from_reply,
+    render_chat_reply,
 )
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
@@ -456,6 +465,10 @@ class ChatReceptionistService:
         human_handoff_notifications: HumanHandoffNotificationService | None = None,
         date_parser: NaturalLanguageDateParser | None = None,
         time_preference_parser: TimePreferenceParser | None = None,
+        response_generator: ReceptionistResponseGenerator | None = None,
+        response_generation_mode: ReceptionistResponseMode = (
+            ReceptionistResponseMode.DETERMINISTIC
+        ),
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -469,6 +482,10 @@ class ChatReceptionistService:
         self.human_handoff_notifications = human_handoff_notifications
         self.date_parser = date_parser
         self.time_preference_parser = time_preference_parser
+        self.response_generator = (
+            response_generator or DeterministicReceptionistResponseGenerator()
+        )
+        self.response_generation_mode = response_generation_mode
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -549,6 +566,14 @@ class ChatReceptionistService:
                     escalation_recording.notification_email_job_id
                 )
 
+        generated_response = render_chat_reply(
+            chat_reply_snapshot_from_reply(reply),
+            conversation=conversation,
+            response_generator=self.response_generator,
+            response_mode=self.response_generation_mode,
+        )
+        reply = replace(reply, content=generated_response.text)
+
         assistant_metadata: dict[str, Any] = {
             "source": "chat_api",
             "intent": reply.intent.value,
@@ -621,6 +646,11 @@ class ChatReceptionistService:
             assistant_metadata["date_parsing"] = reply.date_parsing
         if reply.time_preference_parsing is not None:
             assistant_metadata["time_preference"] = reply.time_preference_parsing
+        assistant_metadata["response_generation"] = {
+            "mode": generated_response.mode.value,
+            "used_fallback": generated_response.used_fallback,
+            **generated_response.metadata,
+        }
 
         assistant_message = self.conversations.append_message(
             ConversationMessageCreate(

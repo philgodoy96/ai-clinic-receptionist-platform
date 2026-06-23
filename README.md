@@ -25,6 +25,7 @@ This project focuses on:
 - Retell voice tool-calling adapter (availability, hold, release, booking with explicit confirmation, cancellation with explicit confirmation, rescheduling with explicit confirmation)
 - Voice conversation bridge linking Retell calls to shared `Conversation` state
 - Chat receptionist flow
+- Controlled natural-language response generation with deterministic default and optional LLM phrasing
 - Tool calling
 - Appointment scheduling
 - Appointment rescheduling foundation (`AppointmentReschedulingService`)
@@ -146,7 +147,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, shared appointment rescheduling foundation via `AppointmentReschedulingService`, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
+Implemented foundations include deterministic chat booking, scheduling tools, Redis holds, shared appointment rescheduling foundation via `AppointmentReschedulingService`, background email jobs with durable retry policy and optional Resend provider, human escalation, an LLM provider boundary with fake as the default provider and optional Groq (public demo) and Bedrock adapters, LLM reliability orchestration with bounded retries and optional fallback provider, a receptionist response generator with deterministic default and optional LLM phrasing, an offline LLM evaluation dataset for structured receptionist analysis quality, optional provider-run evaluation mode for manual local checks, and Redis-backed public demo guardrails for bounded unauthenticated access.
 
 Configuration reference:
 
@@ -159,6 +160,7 @@ Architecture docs:
 - `docs/architecture/real-llm-provider-adapter.md`
 - `docs/architecture/llm-provider-foundation.md`
 - `docs/architecture/llm-reliability-orchestration.md`
+- `docs/architecture/receptionist-response-generator.md`
 - `docs/architecture/llm-evaluation-dataset.md`
 - `docs/architecture/provider-run-evaluation-mode.md`
 - `docs/architecture/public-demo-guardrails.md`
@@ -181,6 +183,7 @@ Architecture docs:
 - `LLM_PROVIDER=fake` or `LLM_PRIMARY_PROVIDER=fake`
 - `LLM_MAX_PRIMARY_ATTEMPTS=2`
 - `LLM_FALLBACK_ENABLED=false`
+- `RECEPTIONIST_RESPONSE_MODE=deterministic`
 - `EMAIL_PROVIDER=fake`
 - `RETELL_ENABLED=false`
 - no Groq, Bedrock, Resend, or Retell API keys required
@@ -195,9 +198,12 @@ Architecture docs:
 - `GROQ_RESPONSE_FORMAT=json_schema`
 - `LLM_MAX_PRIMARY_ATTEMPTS=2`
 - `LLM_FALLBACK_ENABLED=false`
+- optional `RECEPTIONIST_RESPONSE_MODE=llm` for natural-language phrasing with the same backend safety boundary
 - optional `EMAIL_PROVIDER=resend` for real confirmation emails
 
-Groq output still flows through the same parse, repair, validation, and safety checks as fake and Bedrock providers. LLM suggestions never create holds, appointments, emails, or escalations directly.
+Groq output still flows through the same parse, repair, validation, and safety checks as fake and Bedrock providers. LLM suggestions never create holds, appointments, emails, or escalations directly. Optional response phrasing uses a separate generator boundary and still falls back to deterministic wording on failure.
+
+**Receptionist response mode:** `RECEPTIONIST_RESPONSE_MODE=deterministic` is the default for local development and CI. Set `RECEPTIONIST_RESPONSE_MODE=llm` only when you want the backend to request LLM phrasing for safe replies. Critical flows such as emergency guidance, human escalation, and booking confirmation remain controlled regardless of mode.
 
 **Email mode:** `EMAIL_PROVIDER=fake` records outbound messages in memory for workers and tests. No Resend API key is required. Set `EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` only for a hosted public demo that sends real mail.
 

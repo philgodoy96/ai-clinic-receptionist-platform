@@ -35,6 +35,7 @@ from app.domain.appointments import (
     AppointmentNotFoundError,
 )
 from app.domain.audit.enums import AuditActorType
+from app.domain.receptionist.enums import ReceptionistResponseType, ReceptionistTemplateType
 from app.domain.retell_tools import (
     MissingProviderCallIdError,
     ParsedRetellToolCall,
@@ -107,6 +108,7 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldOwnerError,
     InvalidAppointmentHoldWindowError,
 )
+from app.services.receptionist_response_planning import build_suggested_retell_response_text
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
 from app.services.retell_tool_registry import is_side_effecting_retell_tool
 from app.services.scheduling import (
@@ -506,14 +508,22 @@ class RetellToolCallingAdapter:
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
             tool_call_id=parsed.tool_call_id,
-            result={
-                "hold_id": str(hold.hold_id),
-                "availability_slot_id": str(hold.availability_slot_id),
-                "doctor_id": str(hold.doctor_id),
-                "start_time": hold.start_time.isoformat(),
-                "end_time": hold.end_time.isoformat(),
-                "expires_in_seconds": self._resolve_hold_ttl_seconds(arguments.ttl_seconds),
-            },
+            result=self._with_suggested_response_text(
+                {
+                    "hold_id": str(hold.hold_id),
+                    "availability_slot_id": str(hold.availability_slot_id),
+                    "doctor_id": str(hold.doctor_id),
+                    "start_time": hold.start_time.isoformat(),
+                    "end_time": hold.end_time.isoformat(),
+                    "expires_in_seconds": self._resolve_hold_ttl_seconds(arguments.ttl_seconds),
+                },
+                template_type=ReceptionistTemplateType.SLOT_HOLD_CREATED,
+                facts={"hold_id": str(hold.hold_id)},
+                fallback_text=(
+                    "I temporarily held a slot for you. Please provide patient details to confirm."
+                ),
+                response_type=ReceptionistResponseType.SCHEDULING,
+            ),
         )
 
     def _execute_release_appointment_hold(
@@ -1048,14 +1058,23 @@ class RetellToolCallingAdapter:
                     appointment,
                 ).model_dump(mode="json")
 
-        return {
-            "original_appointment_id": str(reschedule_result.original_appointment_id),
-            "new_appointment_id": str(reschedule_result.new_appointment_id),
-            "status": AppointmentStatus.SCHEDULED.value,
-            "already_rescheduled": reschedule_result.already_rescheduled,
-            "appointment": appointment_summary,
-            "email_confirmation_queued": reschedule_result.confirmation_email_created,
-        }
+        return self._with_suggested_response_text(
+            {
+                "original_appointment_id": str(reschedule_result.original_appointment_id),
+                "new_appointment_id": str(reschedule_result.new_appointment_id),
+                "status": AppointmentStatus.SCHEDULED.value,
+                "already_rescheduled": reschedule_result.already_rescheduled,
+                "appointment": appointment_summary,
+                "email_confirmation_queued": reschedule_result.confirmation_email_created,
+            },
+            template_type=ReceptionistTemplateType.RESCHEDULE_SUCCEEDED,
+            facts={"appointment_id": str(reschedule_result.new_appointment_id)},
+            fallback_text=(
+                "Your appointment has been rescheduled. "
+                f"New reference: {reschedule_result.new_appointment_id}."
+            ),
+            response_type=ReceptionistResponseType.CONFIRMATION,
+        )
 
     def _build_cancel_appointment_result(
         self,
@@ -1074,12 +1093,20 @@ class RetellToolCallingAdapter:
                     appointment,
                 ).model_dump(mode="json")
 
-        return {
-            "appointment_id": str(cancellation_result.appointment_id),
-            "status": AppointmentStatus.CANCELLED.value,
-            "already_cancelled": cancellation_result.already_cancelled,
-            "appointment": appointment_summary,
-        }
+        return self._with_suggested_response_text(
+            {
+                "appointment_id": str(cancellation_result.appointment_id),
+                "status": AppointmentStatus.CANCELLED.value,
+                "already_cancelled": cancellation_result.already_cancelled,
+                "appointment": appointment_summary,
+            },
+            template_type=ReceptionistTemplateType.CANCELLATION_SUCCEEDED,
+            facts={"appointment_id": str(cancellation_result.appointment_id)},
+            fallback_text=(
+                f"The appointment {cancellation_result.appointment_id} has been cancelled."
+            ),
+            response_type=ReceptionistResponseType.CONFIRMATION,
+        )
 
     def _update_voice_context_after_cancellation(
         self,
@@ -1127,11 +1154,38 @@ class RetellToolCallingAdapter:
                     appointment,
                 ).model_dump(mode="json")
 
+        return self._with_suggested_response_text(
+            {
+                "appointment_id": str(booking_result.appointment_id),
+                "status": "scheduled",
+                "appointment": appointment_summary,
+                "email_confirmation_queued": booking_result.confirmation_email_created,
+            },
+            template_type=ReceptionistTemplateType.BOOKING_SUCCEEDED,
+            facts={"appointment_id": str(booking_result.appointment_id)},
+            fallback_text=(
+                f"Your appointment is confirmed. Reference: {booking_result.appointment_id}."
+            ),
+            response_type=ReceptionistResponseType.CONFIRMATION,
+        )
+
+    def _with_suggested_response_text(
+        self,
+        result: dict[str, Any],
+        *,
+        template_type: ReceptionistTemplateType,
+        facts: dict[str, Any],
+        fallback_text: str,
+        response_type: ReceptionistResponseType,
+    ) -> dict[str, Any]:
         return {
-            "appointment_id": str(booking_result.appointment_id),
-            "status": "scheduled",
-            "appointment": appointment_summary,
-            "email_confirmation_queued": booking_result.confirmation_email_created,
+            **result,
+            "suggested_response_text": build_suggested_retell_response_text(
+                template_type=template_type,
+                facts=facts,
+                fallback_text=fallback_text,
+                response_type=response_type,
+            ),
         }
 
     def _ensure_voice_conversation(

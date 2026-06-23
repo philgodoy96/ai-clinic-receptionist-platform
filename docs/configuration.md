@@ -110,6 +110,41 @@ Groq API keys are not stored in the repository. Provide credentials through envi
 
 See also: [Groq LLM Provider](architecture/groq-llm-provider.md), [Real LLM Provider Adapter Boundary](architecture/real-llm-provider-adapter.md), [LLM Reliability Orchestration](architecture/llm-reliability-orchestration.md).
 
+## Receptionist Response Generator
+
+Response phrasing is **deterministic by default** for local development and CI.
+
+This boundary is separate from LLM shadow analysis and slot filling. It controls how backend-planned replies are rendered for chat and optional voice `suggested_response_text`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECEPTIONIST_RESPONSE_MODE` | `deterministic` | Response rendering mode: `deterministic` or `llm` |
+| `RECEPTIONIST_RESPONSE_LLM_PROVIDER` | empty | Optional dedicated provider for response phrasing. When unset, uses the primary LLM provider |
+| `RECEPTIONIST_RESPONSE_MAX_TOKENS` | `400` | Max output tokens for LLM phrasing (`>= 1`) |
+| `RECEPTIONIST_RESPONSE_TEMPERATURE` | `0` | LLM temperature for response phrasing (`0`–`2`) |
+| `RECEPTIONIST_RESPONSE_VALIDATE_OUTPUT` | `true` | Enable post-generation output validation |
+
+For local development and CI, keep:
+
+```env
+RECEPTIONIST_RESPONSE_MODE=deterministic
+RECEPTIONIST_RESPONSE_VALIDATE_OUTPUT=true
+```
+
+Optional hosted public demo phrasing example:
+
+```env
+RECEPTIONIST_RESPONSE_MODE=llm
+RECEPTIONIST_RESPONSE_LLM_PROVIDER=groq
+RECEPTIONIST_RESPONSE_MAX_TOKENS=400
+RECEPTIONIST_RESPONSE_TEMPERATURE=0
+RECEPTIONIST_RESPONSE_VALIDATE_OUTPUT=true
+```
+
+Critical flows such as emergency guidance, human escalation, and booking confirmation remain controlled even when `RECEPTIONIST_RESPONSE_MODE=llm`.
+
+See also: [Receptionist Response Generator](architecture/receptionist-response-generator.md).
+
 ## Retell
 
 Retell is **disabled by default** for local development and CI.

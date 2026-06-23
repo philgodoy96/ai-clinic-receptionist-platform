@@ -4,6 +4,7 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.ai.llm_provider import GroqResponseFormat, LLMProviderName
+from app.domain.receptionist.enums import ReceptionistResponseMode
 
 
 class Settings(BaseSettings):
@@ -137,6 +138,30 @@ class Settings(BaseSettings):
         alias="GROQ_RESPONSE_FORMAT",
     )
 
+    receptionist_response_mode: ReceptionistResponseMode = Field(
+        default=ReceptionistResponseMode.DETERMINISTIC,
+        alias="RECEPTIONIST_RESPONSE_MODE",
+    )
+    receptionist_response_llm_provider: LLMProviderName | None = Field(
+        default=None,
+        alias="RECEPTIONIST_RESPONSE_LLM_PROVIDER",
+    )
+    receptionist_response_max_tokens: int = Field(
+        default=400,
+        ge=1,
+        alias="RECEPTIONIST_RESPONSE_MAX_TOKENS",
+    )
+    receptionist_response_temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=2.0,
+        alias="RECEPTIONIST_RESPONSE_TEMPERATURE",
+    )
+    receptionist_response_validate_output: bool = Field(
+        default=True,
+        alias="RECEPTIONIST_RESPONSE_VALIDATE_OUTPUT",
+    )
+
     public_demo_mode: bool = Field(default=False, alias="PUBLIC_DEMO_MODE")
     # When public_demo_mode is true without guardrails, the demo is exposed without
     # rate limits — unsafe for production; enable PUBLIC_DEMO_GUARDRAILS_ENABLED instead.
@@ -202,9 +227,16 @@ class Settings(BaseSettings):
     def resolved_llm_primary_provider(self) -> LLMProviderName:
         return self.llm_primary_provider or self.llm_provider
 
+    @property
+    def resolved_receptionist_response_llm_provider(self) -> LLMProviderName:
+        return self.receptionist_response_llm_provider or self.resolved_llm_primary_provider
+
     @model_validator(mode="after")
     def validate_llm_provider_settings(self) -> "Settings":
         self._validate_llm_provider_config(self.resolved_llm_primary_provider)
+
+        if self.receptionist_response_mode == ReceptionistResponseMode.LLM:
+            self._validate_llm_provider_config(self.resolved_receptionist_response_llm_provider)
 
         if self.llm_fallback_enabled:
             if self.llm_fallback_provider is None:
