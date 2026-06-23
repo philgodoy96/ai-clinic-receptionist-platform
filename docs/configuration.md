@@ -15,7 +15,7 @@ See `.env.example` for a safe local template.
 
 ## Clinic Time and Business Hours
 
-Clinic timezone and business hours are used for scheduling-aware receptionist behavior such as relative date resolution and hours-of-operation responses.
+Clinic timezone and business hours are used for scheduling-aware receptionist behavior: relative date resolution, business-day validation, hours-of-operation enforcement on scheduling tools, and the read-only `get_clinic_context` Retell tool.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -34,6 +34,10 @@ CLINIC_BUSINESS_DAYS=monday,tuesday,wednesday,thursday,friday
 CLINIC_BUSINESS_HOURS_START=09:00
 CLINIC_BUSINESS_HOURS_END=17:00
 ```
+
+Voice agents should call `get_clinic_context` before discussing relative dates. Scheduling tools prefer structured `date_expression` arguments; the backend resolves and enforces clinic time regardless of provider prompt behavior.
+
+See also: [Clinic Time Context and Tool Contracts](architecture/clinic-time-context-and-tool-contracts.md).
 
 ## Database and Infrastructure
 
