@@ -1,4 +1,7 @@
 import { publicConfig } from "@/lib/config";
+import { ApiClientError } from "@/lib/api-errors";
+
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export type ChatMessageRequest = {
   message: string;
@@ -22,23 +25,10 @@ type ApiErrorBody = {
   error?: {
     code?: string;
     message?: string;
-    details?: unknown;
-    request_id?: string;
-    correlation_id?: string;
   };
 };
 
-export class ApiClientError extends Error {
-  readonly status: number;
-  readonly code: string;
-
-  constructor(status: number, code: string, message: string) {
-    super(message);
-    this.name = "ApiClientError";
-    this.status = status;
-    this.code = code;
-  }
-}
+export { ApiClientError, toSafeApiErrorMessage as toSafeChatErrorMessage } from "@/lib/api-errors";
 
 function getApiBasePath(): string {
   if (typeof window !== "undefined") {
@@ -48,34 +38,41 @@ function getApiBasePath(): string {
   return `${publicConfig.apiBaseUrl.replace(/\/$/, "")}/api/v1`;
 }
 
-export function toSafeChatErrorMessage(error: unknown): string {
-  if (error instanceof ApiClientError) {
-    switch (error.code) {
-      case "demo_guardrail_limit_exceeded":
-        return "Demo rate limit reached. Please wait a moment and try again.";
-      case "demo_guardrail_store_unavailable":
-        return "The demo is temporarily unavailable. Please try again later.";
-      case "conversation_not_found":
-        return "This chat session expired. Send a new message to start again.";
-      case "invalid_conversation_message":
-        return "That message could not be sent. Please try again.";
-      case "validation_error":
-        return "That message could not be sent. Please check your input.";
-      default:
-        if (error.status === 0 || error.status >= 500) {
-          return "Unable to reach the receptionist service. Please try again.";
-        }
-        return error.message;
+function createRequestSignal(
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
     }
   }
 
-  return "Unable to reach the receptionist service. Please try again.";
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timeoutId);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    },
+  };
 }
 
 export async function sendChatMessage(
   payload: ChatMessageRequest,
-  signal?: AbortSignal,
+  options?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
 ): Promise<ChatMessageResponse> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const { signal, clear } = createRequestSignal(timeoutMs, options?.signal);
+
   let response: Response;
 
   try {
@@ -93,12 +90,14 @@ export async function sendChatMessage(
       }),
       signal,
     });
-  } catch {
-    throw new ApiClientError(
-      0,
-      "network_error",
-      "Unable to reach the receptionist service. Please try again.",
-    );
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiClientError(0, "timeout", "Request timed out.");
+    }
+
+    throw new ApiClientError(0, "network_error", "Network request failed.");
+  } finally {
+    clear();
   }
 
   if (!response.ok) {
@@ -113,7 +112,7 @@ export async function sendChatMessage(
     throw new ApiClientError(
       response.status,
       body?.error?.code ?? "request_failed",
-      body?.error?.message ?? "Something went wrong. Please try again.",
+      body?.error?.message ?? "Request failed.",
     );
   }
 

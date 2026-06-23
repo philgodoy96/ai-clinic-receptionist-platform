@@ -7,6 +7,7 @@ import {
   sendChatMessage,
   toSafeChatErrorMessage,
 } from "@/lib/api-client";
+import { DemoDisclaimer } from "@/components/demo-disclaimer";
 import {
   clearDemoConversationId,
   loadDemoConversationId,
@@ -45,6 +46,7 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
   );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const localMessageIdRef = useRef(0);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -52,22 +54,13 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
 
   async function submitMessage(message: string) {
     const trimmed = message.trim();
-    if (!trimmed || isLoading) {
+    if (!trimmed || isLoading || isSubmittingRef.current) {
       return;
     }
 
+    isSubmittingRef.current = true;
     setError(null);
     setIsLoading(true);
-    setInput("");
-
-    localMessageIdRef.current += 1;
-
-    const userMessage: ChatMessage = {
-      id: `user-${localMessageIdRef.current}`,
-      role: "user",
-      content: trimmed,
-    };
-    setMessages((current) => [...current, userMessage]);
 
     try {
       const response = await sendChatMessage({
@@ -78,12 +71,20 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
           : { source: "public_demo" },
       });
 
+      localMessageIdRef.current += 1;
+
       saveDemoConversationId(response.conversation_id);
       setConversationId(response.conversation_id);
       setSessionRestored(false);
+      setInput("");
 
       setMessages((current) => [
         ...current,
+        {
+          id: `user-${localMessageIdRef.current}`,
+          role: "user",
+          content: trimmed,
+        },
         {
           id: response.assistant_message_id,
           role: "assistant",
@@ -99,8 +100,10 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
         setConversationId(null);
       }
 
+      setInput(trimmed);
       setError(toSafeChatErrorMessage(submitError));
     } finally {
+      isSubmittingRef.current = false;
       setIsLoading(false);
     }
   }
@@ -136,6 +139,10 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
           {error}
         </div>
       ) : null}
+
+      <div className="mb-4">
+        <DemoDisclaimer />
+      </div>
 
       <div className="flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
         <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
