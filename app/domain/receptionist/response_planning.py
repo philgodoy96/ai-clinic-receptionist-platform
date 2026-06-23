@@ -4,7 +4,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.conversations.enums import ConversationChannel
-from app.domain.receptionist.enums import ReceptionistResponseSafetyLevel, ReceptionistResponseType
+from app.domain.receptionist.enums import (
+    ReceptionistResponseMode,
+    ReceptionistResponseSafetyLevel,
+    ReceptionistResponseType,
+)
 
 _BLOCKED_RESPONSE_PLAN_KEYS = frozenset(
     {
@@ -35,11 +39,14 @@ _SAFE_FACT_KEYS = frozenset(
     {
         "appointment_id",
         "doctor_name",
+        "failure_reason",
         "hold_id",
         "intent",
         "offered_slot_count",
+        "offered_slots_summary",
         "requested_date",
         "specialty_name",
+        "template_type",
         "time_window_label",
     },
 )
@@ -48,8 +55,10 @@ _SAFE_METADATA_KEYS = frozenset(
     {
         "deterministic_behavior",
         "generation_source",
+        "mode",
         "plan_version",
         "prompt_version",
+        "template_type",
         "used_fallback",
     },
 )
@@ -106,6 +115,7 @@ class GeneratedResponse:
     response_type: ReceptionistResponseType
     channel: ConversationChannel
     used_fallback: bool
+    mode: ReceptionistResponseMode
     safety_level: ReceptionistResponseSafetyLevel | None = None
     facts: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -192,6 +202,7 @@ def build_generated_response(
     response_type: ReceptionistResponseType,
     channel: ConversationChannel,
     used_fallback: bool,
+    mode: ReceptionistResponseMode,
     safety_level: ReceptionistResponseSafetyLevel | None = None,
     facts: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -201,6 +212,7 @@ def build_generated_response(
         response_type=response_type,
         channel=channel,
         used_fallback=used_fallback,
+        mode=mode,
         safety_level=safety_level,
         facts=sanitize_response_plan_facts(facts or {}),
         metadata=sanitize_response_plan_metadata(metadata or {}),
