@@ -95,9 +95,7 @@ def test_complete_identity_without_confirmation_requests_confirmation(
 
     result = service.handle_message(
         ChatMessageInput(
-            message=(
-                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"
-            ),
+            message=("Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"),
             conversation_id=hold.conversation.id,
         ),
     )
@@ -130,8 +128,7 @@ def test_booking_confirmed_creates_appointment_and_updates_context(
     result = service.handle_message(
         ChatMessageInput(
             message=(
-                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. "
-                "Please confirm."
+                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. Please confirm."
             ),
             conversation_id=hold.conversation.id,
         ),
@@ -151,9 +148,10 @@ def test_booking_confirmed_creates_appointment_and_updates_context(
     assert "09:00" in result.reply
     assert chat_context["appointment_id"]
     assert chat_context["booking_confirmed_at"]
-    assert result.assistant_message.message_metadata["appointment_id"] == chat_context[
-        "appointment_id"
-    ]
+    assert (
+        result.assistant_message.message_metadata["appointment_id"]
+        == chat_context["appointment_id"]
+    )
     assert result.assistant_message.message_metadata["booking_attempted"] is True
     assert len(appointments.appointments) == 1
     assert appointments.appointments[0].availability_slot_id == EMILY_JULY_SLOT_1_ID

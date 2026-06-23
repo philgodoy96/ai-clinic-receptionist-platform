@@ -34,9 +34,7 @@ PROMPT_REGISTRY: dict[str, PromptMetadata] = {
     "receptionist-analysis-v1": PromptMetadata(
         name="receptionist-analysis",
         version="receptionist-analysis-v1",
-        description=(
-            "Extract structured receptionist analysis candidates from patient messages."
-        ),
+        description=("Extract structured receptionist analysis candidates from patient messages."),
         schema_name="ReceptionistLLMAnalysis",
         created_for="chat_receptionist_assistive_analysis",
         prompt_module="app.ai.prompts.receptionist_analysis_v1",

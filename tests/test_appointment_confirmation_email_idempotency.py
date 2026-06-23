@@ -78,8 +78,7 @@ def test_duplicate_rabbitmq_publish_does_not_create_duplicate_job() -> None:
     assert len(repository.email_jobs) == 1
     assert len(publisher.published_messages) == 2
     assert (
-        publisher.published_messages[0].email_job_id
-        == publisher.published_messages[1].email_job_id
+        publisher.published_messages[0].email_job_id == publisher.published_messages[1].email_job_id
     )
 
 

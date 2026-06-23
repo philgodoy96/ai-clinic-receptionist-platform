@@ -13,6 +13,32 @@ See `.env.example` for a safe local template.
 | `APP_DEBUG` | `true` | FastAPI debug mode |
 | `API_V1_PREFIX` | `/api/v1` | API route prefix |
 
+## Clinic Time and Business Hours
+
+Clinic timezone and business hours are used for scheduling-aware receptionist behavior: relative date resolution, business-day validation, hours-of-operation enforcement on scheduling tools, and the read-only `get_clinic_context` Retell tool.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLINIC_TIMEZONE` | `America/New_York` | IANA timezone for clinic-local scheduling context |
+| `CLINIC_BUSINESS_DAYS` | `monday,tuesday,wednesday,thursday,friday` | Comma-separated weekday list (`monday`–`sunday`, case-insensitive, no duplicates) |
+| `CLINIC_BUSINESS_HOURS_START` | `09:00` | Clinic opening time in 24-hour `HH:MM` format |
+| `CLINIC_BUSINESS_HOURS_END` | `17:00` | Clinic closing time in 24-hour `HH:MM` format. Must be after start |
+| `CLINIC_NAME` | `Demo Clinic` | Optional display name for the fictional demo clinic |
+| `CLINIC_LOCALE` | `en-US` | Optional locale for clinic-facing formatting |
+
+For local development and CI, keep:
+
+```env
+CLINIC_TIMEZONE=America/New_York
+CLINIC_BUSINESS_DAYS=monday,tuesday,wednesday,thursday,friday
+CLINIC_BUSINESS_HOURS_START=09:00
+CLINIC_BUSINESS_HOURS_END=17:00
+```
+
+Voice agents should call `get_clinic_context` before discussing relative dates. Scheduling tools prefer structured `date_expression` arguments; the backend resolves and enforces clinic time regardless of provider prompt behavior.
+
+See also: [Clinic Time Context and Tool Contracts](architecture/clinic-time-context-and-tool-contracts.md).
+
 ## Database and Infrastructure
 
 | Variable | Default | Description |

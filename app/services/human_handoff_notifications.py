@@ -92,8 +92,7 @@ class HumanHandoffNotificationService:
 
         if escalation.handoff_context:
             lines.append(
-                "Handoff context: "
-                f"{json.dumps(escalation.handoff_context, sort_keys=True)}",
+                f"Handoff context: {json.dumps(escalation.handoff_context, sort_keys=True)}",
             )
 
         return "\n".join(lines)

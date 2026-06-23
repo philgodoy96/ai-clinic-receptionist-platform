@@ -140,8 +140,7 @@ class NaturalLanguageDateParser:
             return DateParseResult(
                 status=DateParseStatus.AMBIGUOUS,
                 source_text=(
-                    f"{valid_iso_matches[0].source_text}, "
-                    f"{valid_iso_matches[1].source_text}"
+                    f"{valid_iso_matches[0].source_text}, {valid_iso_matches[1].source_text}"
                 ),
                 reason="multiple_iso_dates",
             )
@@ -160,8 +159,7 @@ class NaturalLanguageDateParser:
             return DateParseResult(
                 status=DateParseStatus.AMBIGUOUS,
                 source_text=(
-                    f"{valid_iso_matches[0].source_text}, "
-                    f"{natural_language_matches[0].source_text}"
+                    f"{valid_iso_matches[0].source_text}, {natural_language_matches[0].source_text}"
                 ),
                 reason="multiple_date_expressions",
             )

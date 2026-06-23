@@ -17,6 +17,7 @@ from app.services.appointment_holds import AppointmentHoldService
 from app.services.conversations import ConversationService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.test_conversations import FakeConversationRepository
 from tests.test_retell_call_lifecycle_service import FakeVoiceCallRepository
 from tests.test_retell_tool_adapter import (
@@ -40,7 +41,7 @@ def slot_id() -> UUID:
 
 @pytest.fixture()
 def availability_slot(doctor_id: UUID, slot_id: UUID) -> AvailabilitySlot:
-    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    start_time = datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
 
     return AvailabilitySlot(
         id=slot_id,
@@ -92,6 +93,7 @@ def context_bundle(
         voice_calls=voice_calls,
         voice_conversation_bridge=bridge,
         conversations=conversation_service,
+        clinic_time_service=make_test_clinic_time_service(),
     )
 
     return ContextBundle(
@@ -329,8 +331,8 @@ def test_check_availability_writes_safe_conversation_criteria(
                     "doctor_id": str(context_bundle.doctor_id),
                     "specialty_name": "Dermatology",
                     "doctor_name": "Dr. Emily Carter",
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         ),
@@ -366,8 +368,8 @@ def test_no_booking_email_or_llm_side_effects(context_bundle: ContextBundle) -> 
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(context_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         ),
@@ -401,8 +403,8 @@ def test_voice_tool_flow_does_not_create_appointment(context_bundle: ContextBund
                 "tool_name": "check_availability",
                 "arguments": {
                     "doctor_id": str(context_bundle.doctor_id),
-                    "start_from": "2026-07-01T09:00:00Z",
-                    "start_to": "2026-07-01T12:00:00Z",
+                    "start_from": "2026-07-01T13:00:00Z",
+                    "start_to": "2026-07-01T17:00:00Z",
                 },
             },
         ),

@@ -114,10 +114,7 @@ def should_apply_status_update(
     if current_status in _TERMINAL_STATUSES:
         return False
 
-    if (
-        previous_last_event_at is not None
-        and event_occurred_at < previous_last_event_at
-    ):
+    if previous_last_event_at is not None and event_occurred_at < previous_last_event_at:
         return False
 
     return True

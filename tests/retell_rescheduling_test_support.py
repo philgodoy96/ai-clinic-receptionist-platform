@@ -17,6 +17,7 @@ from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.test_appointment_booking_service import FakePatientRepository
 from tests.test_appointment_rescheduling_service import create_rescheduling_context
 from tests.test_conversations import FakeConversationRepository
@@ -198,6 +199,7 @@ def create_retell_rescheduling_tool_context() -> dict[str, Any]:
         conversations=rescheduling_context.conversation_service,
         appointment_rescheduling=tracking_rescheduling,
         appointments=rescheduling_context.appointment_repository,
+        clinic_time_service=make_test_clinic_time_service(),
     )
 
     return {

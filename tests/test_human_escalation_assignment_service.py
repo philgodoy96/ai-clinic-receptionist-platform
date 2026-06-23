@@ -323,7 +323,8 @@ def test_list_unassigned_returns_open_and_acknowledged_without_assignment() -> N
     }
     assert all(item.assigned_to is None for item in result.items)
     assert all(
-        item.status in {
+        item.status
+        in {
             HumanEscalationStatus.OPEN,
             HumanEscalationStatus.ACKNOWLEDGED,
         }

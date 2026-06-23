@@ -81,9 +81,7 @@ class ConversationHealthResult:
                 "low_confidence_count": self.signals.low_confidence_count,
                 "provider_fallback_count": self.signals.provider_fallback_count,
                 "emergency_signal_count": self.signals.emergency_signal_count,
-                "repeated_booking_conflict_count": (
-                    self.signals.repeated_booking_conflict_count
-                ),
+                "repeated_booking_conflict_count": (self.signals.repeated_booking_conflict_count),
                 "explicit_human_request": self.signals.explicit_human_request,
                 "active_hold_present": self.signals.active_hold_present,
                 "booking_confirmed": self.signals.booking_confirmed,
@@ -264,14 +262,12 @@ class ConversationHealthService:
             emergency_signal_count += 1
 
         explicit_human_request = _detect_explicit_human_request(user_message)
-        active_hold_present = (
-            _context_has_value(safe_context, "hold_id")
-            and not _context_has_value(safe_context, "appointment_id")
-        )
-        booking_confirmed = (
-            _context_has_value(safe_context, "appointment_id")
-            or _context_has_value(safe_context, "booking_confirmed_at")
-        )
+        active_hold_present = _context_has_value(
+            safe_context, "hold_id"
+        ) and not _context_has_value(safe_context, "appointment_id")
+        booking_confirmed = _context_has_value(
+            safe_context, "appointment_id"
+        ) or _context_has_value(safe_context, "booking_confirmed_at")
 
         last_intent, repeated_intent_count = _repeated_assistant_intent(recent_messages)
 
@@ -321,11 +317,7 @@ class ConversationHealthService:
             elif repeated_booking_conflict_count >= 2:
                 should_suggest_escalation = True
                 escalation_reason = EscalationReason.REPEATED_BOOKING_CONFLICT
-            elif (
-                message_count >= 12
-                and fallback_count >= 2
-                and not booking_confirmed
-            ):
+            elif message_count >= 12 and fallback_count >= 2 and not booking_confirmed:
                 should_suggest_escalation = True
                 escalation_reason = EscalationReason.NO_PROGRESS
                 notes.append("message_count_signal_requires_no_progress_context")

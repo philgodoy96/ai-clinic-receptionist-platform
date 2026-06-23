@@ -99,9 +99,7 @@ def send_chat_message(
                 )
             )
 
-        handoff_notification_email_job_id = (
-            result.human_handoff_notification_email_job_id
-        )
+        handoff_notification_email_job_id = result.human_handoff_notification_email_job_id
 
         db.commit()
 

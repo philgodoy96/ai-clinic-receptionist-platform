@@ -130,9 +130,7 @@ def test_partial_identity_stored_in_chat_context(chat_service: ChatReceptionistS
         ChatMessageInput(message="Jane Doe, 1990-05-15, jane.doe@example.com"),
     )
 
-    patient_identity = result.conversation.conversation_metadata["chat_context"][
-        "patient_identity"
-    ]
+    patient_identity = result.conversation.conversation_metadata["chat_context"]["patient_identity"]
 
     assert patient_identity["full_name"] == "Jane Doe"
     assert patient_identity["date_of_birth"] == "1990-05-15"
@@ -160,15 +158,14 @@ def test_partial_identity_with_active_hold(chat_service: ChatReceptionistService
         ),
     )
 
-    patient_identity = result.conversation.conversation_metadata["chat_context"][
-        "patient_identity"
-    ]
+    patient_identity = result.conversation.conversation_metadata["chat_context"]["patient_identity"]
 
     assert patient_identity["full_name"] == "Jane Doe"
     assert patient_identity["date_of_birth"] == "1990-05-15"
     assert patient_identity["email"] == "jane.doe@example.com"
     assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
     assert "hold is still active" in result.reply.lower()
-    assert hold.conversation.conversation_metadata["chat_context"]["hold_id"] == (
-        result.conversation.conversation_metadata["chat_context"]["hold_id"]
+    assert (
+        hold.conversation.conversation_metadata["chat_context"]["hold_id"]
+        == (result.conversation.conversation_metadata["chat_context"]["hold_id"])
     )

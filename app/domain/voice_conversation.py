@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
 from typing import Any
 from uuid import UUID
 
@@ -305,35 +304,7 @@ def read_last_reschedule_summary(
     )
 
 
-def _day_bounds_from_requested_date(requested_date: str) -> tuple[datetime, datetime]:
-    day = date.fromisoformat(requested_date)
-    start = datetime.combine(day, time.min, tzinfo=UTC)
-    end = datetime.combine(day, time(23, 59, 59), tzinfo=UTC)
-
-    return start, end
-
-
-def _apply_requested_time_window(
-    *,
-    start_from: datetime,
-    end_to: datetime,
-    requested_time_window: dict[str, str],
-) -> tuple[datetime, datetime]:
-    start_label = requested_time_window.get("start")
-    end_label = requested_time_window.get("end")
-
-    if start_label:
-        hour, minute = map(int, start_label.split(":", maxsplit=1))
-        start_from = start_from.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-    if end_label:
-        hour, minute = map(int, end_label.split(":", maxsplit=1))
-        end_to = start_from.replace(hour=hour, minute=minute, second=59, microsecond=0)
-
-    return start_from, end_to
-
-
-def resolve_check_availability_arguments(
+def merge_check_availability_identity_fields(
     arguments: CheckAvailabilityToolArguments,
     voice_context: dict[str, Any],
 ) -> CheckAvailabilityToolArguments | None:
@@ -343,17 +314,8 @@ def resolve_check_availability_arguments(
     doctor_name = arguments.doctor_name
     doctor_id = arguments.doctor_id
 
-    requested_date = _safe_string(voice_context.get("requested_date"))
-    if start_from is None and requested_date is not None:
-        start_from, start_to = _day_bounds_from_requested_date(requested_date)
-
-    requested_time_window = _safe_time_window(voice_context.get("requested_time_window"))
-    if requested_time_window is not None and start_from is not None and start_to is not None:
-        start_from, start_to = _apply_requested_time_window(
-            start_from=start_from,
-            end_to=start_to,
-            requested_time_window=requested_time_window,
-        )
+    if start_from is None or start_to is None or start_to <= start_from:
+        return None
 
     if specialty_name is None:
         specialty_name = _safe_string(voice_context.get("specialty_name"))
@@ -369,9 +331,6 @@ def resolve_check_availability_arguments(
             except ValueError:
                 doctor_id = None
 
-    if start_from is None or start_to is None or start_to <= start_from:
-        return None
-
     return arguments.model_copy(
         update={
             "start_from": start_from,
@@ -381,3 +340,11 @@ def resolve_check_availability_arguments(
             "doctor_id": doctor_id,
         },
     )
+
+
+def resolve_check_availability_arguments(
+    arguments: CheckAvailabilityToolArguments,
+    voice_context: dict[str, Any],
+) -> CheckAvailabilityToolArguments | None:
+    """Deprecated: date resolution moved to SchedulingAvailabilityResolver."""
+    return merge_check_availability_identity_fields(arguments, voice_context)

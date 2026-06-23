@@ -159,11 +159,7 @@ def resolve_reschedule_target_reference(
     arguments: RescheduleAppointmentToolArguments,
 ) -> tuple[UUID | None, UUID | None, str | None]:
     hold_text = arguments.hold_id.strip() if arguments.hold_id else ""
-    slot_text = (
-        str(arguments.new_slot_id).strip()
-        if arguments.new_slot_id is not None
-        else ""
-    )
+    slot_text = str(arguments.new_slot_id).strip() if arguments.new_slot_id is not None else ""
 
     has_hold = bool(hold_text)
     has_slot = bool(slot_text)

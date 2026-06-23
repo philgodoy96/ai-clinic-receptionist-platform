@@ -19,8 +19,7 @@ from app.ai.receptionist_prompt import (
 
 def test_current_prompt_version_is_receptionist_analysis_v1() -> None:
     assert (
-        get_receptionist_analysis_prompt_version()
-        == CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION
+        get_receptionist_analysis_prompt_version() == CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION
     )
     assert CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION == "receptionist-analysis-v1"
 

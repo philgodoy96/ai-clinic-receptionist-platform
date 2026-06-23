@@ -109,10 +109,13 @@ class AppointmentReschedulingService:
                 appointment_id=original.id,
             )
             if successor is not None:
-                tracked_attempt = existing_attempt or self.reschedule_attempts.create_attempt(
-                    idempotency_key=request.idempotency_key,
-                    appointment_id=original.id,
-                ).attempt
+                tracked_attempt = (
+                    existing_attempt
+                    or self.reschedule_attempts.create_attempt(
+                        idempotency_key=request.idempotency_key,
+                        appointment_id=original.id,
+                    ).attempt
+                )
                 if tracked_attempt.new_appointment_id is None:
                     self.reschedule_attempts.mark_succeeded(
                         tracked_attempt,
@@ -471,9 +474,7 @@ class AppointmentReschedulingService:
         failure_code: str,
         original: Appointment | None = None,
     ) -> None:
-        original_appointment_id = (
-            original.id if original is not None else request.appointment_id
-        )
+        original_appointment_id = original.id if original is not None else request.appointment_id
         self.audit_logs.record_best_effort(
             self._build_audit_payload(
                 request=request,

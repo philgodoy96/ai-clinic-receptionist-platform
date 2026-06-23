@@ -84,9 +84,9 @@ def client(
     app.dependency_overrides[get_appointment_hold_service] = override_hold_service
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_audit_log_service] = override_audit_log_service
-    app.dependency_overrides[
-        get_retell_appointment_hold_tool_adapter
-    ] = override_retell_hold_adapter
+    app.dependency_overrides[get_retell_appointment_hold_tool_adapter] = (
+        override_retell_hold_adapter
+    )
 
     with TestClient(app) as test_client:
         yield test_client
