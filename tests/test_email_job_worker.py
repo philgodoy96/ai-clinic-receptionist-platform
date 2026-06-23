@@ -158,14 +158,8 @@ class FakeEmailJobWorkerRepository:
             for email_job in self.email_jobs
             if (
                 email_job.status == EmailJobStatus.PENDING
-                and (
-                    email_job.next_attempt_at is None
-                    or email_job.next_attempt_at <= now
-                )
-                and (
-                    email_job.locked_until is None
-                    or email_job.locked_until < now
-                )
+                and (email_job.next_attempt_at is None or email_job.next_attempt_at <= now)
+                and (email_job.locked_until is None or email_job.locked_until < now)
             )
             or (
                 email_job.status == EmailJobStatus.PROCESSING
@@ -213,14 +207,8 @@ class FakeEmailJobWorkerRepository:
 
         eligible = (
             email_job.status == EmailJobStatus.PENDING
-            and (
-                email_job.next_attempt_at is None
-                or email_job.next_attempt_at <= now
-            )
-            and (
-                email_job.locked_until is None
-                or email_job.locked_until < now
-            )
+            and (email_job.next_attempt_at is None or email_job.next_attempt_at <= now)
+            and (email_job.locked_until is None or email_job.locked_until < now)
         ) or (
             email_job.status == EmailJobStatus.PROCESSING
             and email_job.locked_until is not None

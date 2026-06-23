@@ -6,6 +6,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.scheduling.expressions import DateExpressionKind, TimeWindowExpressionKind
+from app.schemas.scheduling_expressions import (
+    DateExpressionSchema,
+    TimeWindowExpressionSchema,
+)
+
 MIN_CHECK_AVAILABILITY_LIMIT = 1
 MAX_CHECK_AVAILABILITY_LIMIT = 50
 MIN_HOLD_TTL_SECONDS = 60
@@ -94,12 +100,19 @@ class RetellToolCallResponse(BaseModel):
     duplicate: bool = False
 
 
+class GetClinicContextToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class CheckAvailabilityToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     doctor_id: UUID | None = None
     doctor_name: str | None = Field(default=None, max_length=160)
     specialty_name: str | None = Field(default=None, max_length=120)
+    date_expression: DateExpressionSchema | None = None
+    time_window_expression: TimeWindowExpressionSchema | None = None
+    requested_date_text: str | None = Field(default=None, max_length=120)
     start_from: datetime | None = None
     start_to: datetime | None = None
     limit: int | None = Field(
@@ -107,6 +120,54 @@ class CheckAvailabilityToolArguments(BaseModel):
         ge=MIN_CHECK_AVAILABILITY_LIMIT,
         le=MAX_CHECK_AVAILABILITY_LIMIT,
     )
+
+    @field_validator("date_expression")
+    @classmethod
+    def validate_date_expression_fields(
+        cls,
+        value: DateExpressionSchema | None,
+    ) -> DateExpressionSchema | None:
+        if value is None:
+            return None
+
+        if (
+            value.kind
+            in {
+                DateExpressionKind.THIS_WEEKDAY,
+                DateExpressionKind.NEXT_WEEKDAY,
+            }
+            and value.weekday is None
+        ):
+            msg = "weekday is required for weekday date expressions"
+            raise ValueError(msg)
+
+        if value.kind is DateExpressionKind.IN_N_DAYS and value.days_offset is None:
+            msg = "days_offset is required for in_n_days date expressions"
+            raise ValueError(msg)
+
+        if value.kind is DateExpressionKind.EXACT_DATE and value.exact_date is None:
+            msg = "exact_date is required for exact_date expressions"
+            raise ValueError(msg)
+
+        return value
+
+    @field_validator("time_window_expression")
+    @classmethod
+    def validate_time_window_expression_fields(
+        cls,
+        value: TimeWindowExpressionSchema | None,
+    ) -> TimeWindowExpressionSchema | None:
+        if value is None:
+            return None
+
+        if (
+            value.kind is TimeWindowExpressionKind.EXACT_TIME
+            and not (value.exact_time or "").strip()
+        ):
+            msg = "exact_time is required for exact_time window expressions"
+            raise ValueError(msg)
+
+        return value
 
     @model_validator(mode="after")
     def validate_availability_window(self) -> CheckAvailabilityToolArguments:

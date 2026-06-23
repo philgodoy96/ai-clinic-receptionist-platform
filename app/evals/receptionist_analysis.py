@@ -73,9 +73,7 @@ def load_receptionist_analysis_eval_cases(path: Path) -> list[ReceptionistAnalys
         try:
             payload = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise EvaluationError(
-                f"Invalid JSONL at {path}:{line_number}: {exc.msg}"
-            ) from exc
+            raise EvaluationError(f"Invalid JSONL at {path}:{line_number}: {exc.msg}") from exc
 
         cases.append(_parse_case(payload=payload, line_number=line_number))
 
@@ -111,9 +109,7 @@ def _parse_case(*, payload: dict[str, Any], line_number: int) -> ReceptionistAna
 
     recorded_output = payload.get("recorded_output")
     if recorded_output is not None and not isinstance(recorded_output, dict):
-        raise EvaluationError(
-            f"Field 'recorded_output' must be an object at line {line_number}"
-        )
+        raise EvaluationError(f"Field 'recorded_output' must be an object at line {line_number}")
 
     return ReceptionistAnalysisEvalCase(
         id=case_id,
@@ -168,8 +164,7 @@ def _validate_enum_value(
     if value not in allowed:
         allowed_values = ", ".join(sorted(allowed))
         raise EvaluationError(
-            f"Invalid {field} '{value}' at line {line_number}. "
-            f"Allowed values: {allowed_values}"
+            f"Invalid {field} '{value}' at line {line_number}. Allowed values: {allowed_values}"
         )
 
 
@@ -413,9 +408,7 @@ def _build_prompt_version_metrics(
     prompt_version: str,
     case_results: list[EvaluationCaseResult],
 ) -> PromptVersionEvaluationMetrics:
-    version_results = [
-        result for result in case_results if result.prompt_version == prompt_version
-    ]
+    version_results = [result for result in case_results if result.prompt_version == prompt_version]
     total_cases = len(version_results)
     passed_cases = sum(1 for result in version_results if result.passed)
     failed_cases = total_cases - passed_cases

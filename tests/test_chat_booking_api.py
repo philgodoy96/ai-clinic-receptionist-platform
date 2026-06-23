@@ -181,8 +181,7 @@ def test_chat_booking_enqueues_email_and_publishes_dispatch_after_commit(
         "/api/v1/chat/messages",
         json={
             "message": (
-                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. "
-                "Please confirm."
+                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. Please confirm."
             ),
             "conversation_id": conversation_id,
         },
@@ -200,10 +199,7 @@ def test_chat_booking_enqueues_email_and_publishes_dispatch_after_commit(
     email_job = chat_booking_client.email_jobs.jobs[0]
     assert email_job.payload["source"] == "chat_booking"
     assert len(chat_booking_client.dispatch_publisher.published_messages) == 1
-    assert (
-        chat_booking_client.dispatch_publisher.published_messages[0].email_job_id
-        is not None
-    )
+    assert chat_booking_client.dispatch_publisher.published_messages[0].email_job_id is not None
 
     slot = chat_booking_client.chat_service.scheduling.availability_slots.get_by_id(
         UUID("11111111-1111-4111-8111-111111111101"),

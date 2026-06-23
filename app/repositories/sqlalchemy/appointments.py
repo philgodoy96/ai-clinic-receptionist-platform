@@ -99,9 +99,7 @@ class SQLAlchemyAppointmentRescheduleAttemptRepository:
         attempt: AppointmentRescheduleAttempt,
         *,
         error_code: str,
-        status: AppointmentRescheduleAttemptStatus = (
-            AppointmentRescheduleAttemptStatus.REJECTED
-        ),
+        status: AppointmentRescheduleAttemptStatus = (AppointmentRescheduleAttemptStatus.REJECTED),
     ) -> AppointmentRescheduleAttempt:
         attempt.status = status
         attempt.error_code = error_code

@@ -170,8 +170,8 @@ def test_invalid_signature_does_not_consume_retell_rate_limit() -> None:
         )
 
     app.dependency_overrides[get_demo_guardrail_service] = override_guardrails
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(EmptySchedulingService())
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(EmptySchedulingService())
     )
 
     with TestClient(app) as client:

@@ -455,17 +455,13 @@ class FakeHumanEscalationRepository:
             items = [item for item in items if item.priority == priority]
 
         if conversation_id is not None:
-            items = [
-                item for item in items if item.conversation_id == conversation_id
-            ]
+            items = [item for item in items if item.conversation_id == conversation_id]
 
         if patient_id is not None:
             items = [item for item in items if item.patient_id == patient_id]
 
         if appointment_id is not None:
-            items = [
-                item for item in items if item.appointment_id == appointment_id
-            ]
+            items = [item for item in items if item.appointment_id == appointment_id]
 
         if assigned_to is not None:
             items = [item for item in items if item.assigned_to == assigned_to]

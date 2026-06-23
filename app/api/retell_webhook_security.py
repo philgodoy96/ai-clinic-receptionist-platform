@@ -134,8 +134,7 @@ def retell_tool_payload[T: BaseModel](
 
 def _verification_required(settings: Settings) -> bool:
     return (
-        settings.retell_webhook_verification_enabled
-        and not settings.retell_allow_insecure_webhooks
+        settings.retell_webhook_verification_enabled and not settings.retell_allow_insecure_webhooks
     )
 
 

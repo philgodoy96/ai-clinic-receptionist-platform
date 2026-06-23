@@ -216,9 +216,7 @@ def test_unknown_event_type_is_persisted_safely() -> None:
 
     assert result.created_event is True
     assert result.voice_call_event.event_type == "provider_specific_signal"
-    assert result.voice_call_event.normalized_event_type == (
-        NormalizedVoiceCallEventType.UNKNOWN
-    )
+    assert result.voice_call_event.normalized_event_type == (NormalizedVoiceCallEventType.UNKNOWN)
     assert result.voice_call.status == VoiceCallStatus.CREATED
 
 
@@ -401,9 +399,7 @@ class FakeVoiceCallRepository:
         )
 
         if status is not None:
-            voice_calls = [
-                voice_call for voice_call in voice_calls if voice_call.status == status
-            ]
+            voice_calls = [voice_call for voice_call in voice_calls if voice_call.status == status]
         if provider is not None:
             voice_calls = [
                 voice_call for voice_call in voice_calls if voice_call.provider == provider
@@ -416,9 +412,7 @@ class FakeVoiceCallRepository:
             ]
         if created_after is not None:
             voice_calls = [
-                voice_call
-                for voice_call in voice_calls
-                if voice_call.created_at >= created_after
+                voice_call for voice_call in voice_calls if voice_call.created_at >= created_after
             ]
         if cursor is not None:
             voice_calls = [
@@ -426,10 +420,7 @@ class FakeVoiceCallRepository:
                 for voice_call in voice_calls
                 if (
                     voice_call.created_at < cursor.created_at
-                    or (
-                        voice_call.created_at == cursor.created_at
-                        and voice_call.id < cursor.id
-                    )
+                    or (voice_call.created_at == cursor.created_at and voice_call.id < cursor.id)
                 )
             ]
 

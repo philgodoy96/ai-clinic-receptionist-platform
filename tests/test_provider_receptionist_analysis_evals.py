@@ -168,9 +168,7 @@ def test_provider_error_on_one_case_does_not_crash_whole_run() -> None:
     class SelectiveFailProvider:
         def complete(self, request: LLMRequest) -> LLMResponse:
             user_message = next(
-                message.content
-                for message in reversed(request.messages)
-                if message.role == "user"
+                message.content for message in reversed(request.messages) if message.role == "user"
             )
             if user_message == "trigger provider failure":
                 raise LLMProviderError("simulated provider failure")

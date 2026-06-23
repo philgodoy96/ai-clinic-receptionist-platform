@@ -491,9 +491,7 @@ class VoiceBookingConfirmationService:
                 msg = "appointment was not found for duplicate voice booking attempt"
                 raise VoiceBookingConfirmationError(msg)
 
-            availability_slot_id = (
-                appointment.availability_slot_id or attempt.availability_slot_id
-            )
+            availability_slot_id = appointment.availability_slot_id or attempt.availability_slot_id
             if availability_slot_id is None:
                 msg = "availability slot was not found for duplicate voice booking attempt"
                 raise VoiceBookingConfirmationError(msg)

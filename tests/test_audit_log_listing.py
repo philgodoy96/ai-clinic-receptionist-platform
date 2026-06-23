@@ -122,9 +122,7 @@ class FakeAuditLogRepository:
 
         if cursor is not None:
             logs = [
-                item
-                for item in logs
-                if (item.created_at, item.id) < (cursor.created_at, cursor.id)
+                item for item in logs if (item.created_at, item.id) < (cursor.created_at, cursor.id)
             ]
 
         if event_type is not None:

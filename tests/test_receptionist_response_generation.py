@@ -297,9 +297,7 @@ def test_booking_success_does_not_allow_invented_facts() -> None:
             StaticContentLLMProvider(
                 json.dumps(
                     {
-                        "text": (
-                            "Booked appointment apt-INVENTED-999 with bonus free surgery."
-                        ),
+                        "text": ("Booked appointment apt-INVENTED-999 with bonus free surgery."),
                     },
                 ),
             ),

@@ -469,9 +469,7 @@ def test_script_provider_mode_survives_single_case_provider_error(
     class SelectiveFailProvider:
         def complete(self, request: LLMRequest) -> LLMResponse:
             user_message = next(
-                message.content
-                for message in reversed(request.messages)
-                if message.role == "user"
+                message.content for message in reversed(request.messages) if message.role == "user"
             )
             if user_message == "trigger provider failure":
                 raise LLMProviderError("simulated provider failure")

@@ -258,14 +258,8 @@ class RetryPolicyEmailJobWorkerRepository:
             for email_job in self.email_jobs
             if (
                 email_job.status == EmailJobStatus.PENDING
-                and (
-                    email_job.next_attempt_at is None
-                    or email_job.next_attempt_at <= now
-                )
-                and (
-                    email_job.locked_until is None
-                    or email_job.locked_until < now
-                )
+                and (email_job.next_attempt_at is None or email_job.next_attempt_at <= now)
+                and (email_job.locked_until is None or email_job.locked_until < now)
             )
             or (
                 email_job.status == EmailJobStatus.PROCESSING
@@ -313,14 +307,8 @@ class RetryPolicyEmailJobWorkerRepository:
 
         eligible = (
             email_job.status == EmailJobStatus.PENDING
-            and (
-                email_job.next_attempt_at is None
-                or email_job.next_attempt_at <= now
-            )
-            and (
-                email_job.locked_until is None
-                or email_job.locked_until < now
-            )
+            and (email_job.next_attempt_at is None or email_job.next_attempt_at <= now)
+            and (email_job.locked_until is None or email_job.locked_until < now)
         ) or (
             email_job.status == EmailJobStatus.PROCESSING
             and email_job.locked_until is not None
@@ -411,8 +399,7 @@ class RetryPolicyEmailJobRepository:
             (
                 email_job
                 for email_job in self.email_jobs
-                if email_job.job_type == job_type
-                and email_job.idempotency_key == idempotency_key
+                if email_job.job_type == job_type and email_job.idempotency_key == idempotency_key
             ),
             None,
         )

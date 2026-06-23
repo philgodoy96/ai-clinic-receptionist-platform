@@ -17,8 +17,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.execute(
-        "ALTER TYPE email_job_type ADD VALUE IF NOT EXISTS "
-        "'human_escalation_notification'",
+        "ALTER TYPE email_job_type ADD VALUE IF NOT EXISTS 'human_escalation_notification'",
     )
 
 

@@ -46,8 +46,8 @@ def lifecycle_regression_client() -> Generator[
     install_fake_retell_verifier(app, accept_all=True)
 
     app.dependency_overrides[get_retell_call_lifecycle_service] = lambda: service
-    app.dependency_overrides[get_retell_scheduling_tool_adapter] = (
-        lambda: RetellSchedulingToolAdapter(trackers.scheduling)
+    app.dependency_overrides[get_retell_scheduling_tool_adapter] = lambda: (
+        RetellSchedulingToolAdapter(trackers.scheduling)
     )
     app.dependency_overrides[get_email_job_service] = lambda: trackers.email_jobs
     app.dependency_overrides[get_llm_provider] = lambda: trackers.llm
