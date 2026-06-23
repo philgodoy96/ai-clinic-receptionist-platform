@@ -1,3 +1,4 @@
+import os
 import re
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -12,6 +13,8 @@ _CLINIC_TIME_HH_MM_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _CLINIC_BUSINESS_WEEKDAYS = frozenset(
     {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
 )
+_NON_PRODUCTION_ENVS = frozenset({"local", "test", "development", "dev", "ci"})
+_LOCALHOST_URL_MARKERS = ("localhost", "127.0.0.1")
 
 
 class Settings(BaseSettings):
@@ -66,12 +69,16 @@ class Settings(BaseSettings):
     )
 
     retell_enabled: bool = Field(default=False, alias="RETELL_ENABLED")
-    retell_api_key: str = Field(default="", alias="RETELL_API_KEY")
+    retell_api_key: str = Field(default="", alias="RETELL_API_KEY", repr=False)
     retell_webhook_verification_enabled: bool = Field(
         default=True,
         alias="RETELL_WEBHOOK_VERIFICATION_ENABLED",
     )
-    retell_webhook_secret: str | None = Field(default=None, alias="RETELL_WEBHOOK_SECRET")
+    retell_webhook_secret: str | None = Field(
+        default=None,
+        alias="RETELL_WEBHOOK_SECRET",
+        repr=False,
+    )
     retell_allow_insecure_webhooks: bool = Field(
         default=False,
         alias="RETELL_ALLOW_INSECURE_WEBHOOKS",
@@ -87,7 +94,7 @@ class Settings(BaseSettings):
     )
 
     email_provider: str = Field(default="fake", alias="EMAIL_PROVIDER")
-    resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
+    resend_api_key: str = Field(default="", alias="RESEND_API_KEY", repr=False)
     email_from_address: str = Field(
         default="clinic-demo@example.test",
         alias="EMAIL_FROM_ADDRESS",
@@ -135,8 +142,8 @@ class Settings(BaseSettings):
     bedrock_max_retries: int = Field(default=0, alias="BEDROCK_MAX_RETRIES")
     bedrock_temperature: float = Field(default=0.0, alias="BEDROCK_TEMPERATURE")
     bedrock_max_tokens: int = Field(default=800, alias="BEDROCK_MAX_TOKENS")
-    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY", repr=False)
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY", repr=False)
     groq_model: str = Field(default="", alias="GROQ_MODEL")
     groq_base_url: str = Field(
         default="https://api.groq.com/openai/v1",
@@ -251,6 +258,10 @@ class Settings(BaseSettings):
     def resolved_receptionist_response_llm_provider(self) -> LLMProviderName:
         return self.receptionist_response_llm_provider or self.resolved_llm_primary_provider
 
+    @property
+    def is_production_like(self) -> bool:
+        return self.app_env.strip().lower() not in _NON_PRODUCTION_ENVS
+
     @field_validator("clinic_timezone")
     @classmethod
     def validate_clinic_timezone(cls, value: str) -> str:
@@ -300,6 +311,12 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def apply_public_demo_defaults(self) -> "Settings":
+        if self.public_demo_mode and "PUBLIC_DEMO_GUARDRAILS_ENABLED" not in os.environ:
+            self.public_demo_guardrails_enabled = True
+        return self
+
+    @model_validator(mode="after")
     def validate_llm_provider_settings(self) -> "Settings":
         self._validate_llm_provider_config(self.resolved_llm_primary_provider)
 
@@ -315,10 +332,9 @@ class Settings(BaseSettings):
 
         self._validate_email_provider_settings()
         self._validate_retell_settings()
+        self._validate_production_public_demo_settings()
 
         return self
-
-    _INSECURE_WEBHOOK_ALLOWED_ENVS = frozenset({"local", "test", "development"})
 
     def _validate_retell_settings(self) -> None:
         if (
@@ -331,13 +347,43 @@ class Settings(BaseSettings):
                 "RETELL_WEBHOOK_VERIFICATION_ENABLED are true",
             )
 
-        if self.retell_allow_insecure_webhooks:
-            normalized_env = self.app_env.strip().lower()
-            if normalized_env not in self._INSECURE_WEBHOOK_ALLOWED_ENVS:
-                raise ValueError(
-                    "RETELL_ALLOW_INSECURE_WEBHOOKS is only allowed when APP_ENV is "
-                    "local, test, or development",
-                )
+        if self.retell_allow_insecure_webhooks and self.is_production_like:
+            raise ValueError(
+                "RETELL_ALLOW_INSECURE_WEBHOOKS cannot be true in production-like APP_ENV",
+            )
+
+    @staticmethod
+    def _is_localhost_url(url: str) -> bool:
+        normalized = url.strip().lower()
+        return any(marker in normalized for marker in _LOCALHOST_URL_MARKERS)
+
+    def _validate_production_public_demo_settings(self) -> None:
+        if not self.is_production_like or not self.public_demo_mode:
+            return
+
+        if not self.public_demo_guardrails_enabled:
+            raise ValueError(
+                "PUBLIC_DEMO_GUARDRAILS_ENABLED must be true when PUBLIC_DEMO_MODE is "
+                "enabled in production-like APP_ENV",
+            )
+
+        if self.app_debug:
+            raise ValueError(
+                "APP_DEBUG must be false when PUBLIC_DEMO_MODE is enabled in "
+                "production-like APP_ENV",
+            )
+
+        if not self.database_url.strip() or self._is_localhost_url(self.database_url):
+            raise ValueError(
+                "DATABASE_URL must point to a non-localhost database when PUBLIC_DEMO_MODE "
+                "is enabled in production-like APP_ENV",
+            )
+
+        if not self.redis_url.strip() or self._is_localhost_url(self.redis_url):
+            raise ValueError(
+                "REDIS_URL must point to a non-localhost Redis instance when PUBLIC_DEMO_MODE "
+                "is enabled in production-like APP_ENV",
+            )
 
     def _validate_email_provider_settings(self) -> None:
         provider_name = self.email_provider.strip().lower()
