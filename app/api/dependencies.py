@@ -58,6 +58,10 @@ from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     build_llm_receptionist_analysis_service_from_settings,
 )
+from app.services.receptionist_response_generator import (
+    ReceptionistResponseGenerator,
+    build_receptionist_response_generator_from_settings,
+)
 from app.services.retell_call_lifecycle import RetellCallLifecycleService
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
@@ -196,6 +200,12 @@ def get_llm_chat_slot_filling_service(
     )
 
 
+def get_receptionist_response_generator(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ReceptionistResponseGenerator:
+    return build_receptionist_response_generator_from_settings(settings)
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -241,6 +251,11 @@ def get_chat_receptionist_service(
         TimePreferenceParser,
         Depends(get_time_preference_parser),
     ],
+    response_generator: Annotated[
+        ReceptionistResponseGenerator,
+        Depends(get_receptionist_response_generator),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -254,6 +269,8 @@ def get_chat_receptionist_service(
         human_handoff_notifications=human_handoff_notifications,
         date_parser=date_parser,
         time_preference_parser=time_preference_parser,
+        response_generator=response_generator,
+        response_generation_mode=settings.receptionist_response_mode,
     )
 
 
