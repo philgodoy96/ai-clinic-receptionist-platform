@@ -266,6 +266,9 @@ class FakePatientRepository:
 
         return None
 
+    def list_by_date_of_birth(self, date_of_birth: date) -> list[Patient]:
+        return [patient for patient in self.patients if patient.date_of_birth == date_of_birth]
+
     def add(self, patient: Patient) -> Patient:
         self.patients.append(patient)
 
