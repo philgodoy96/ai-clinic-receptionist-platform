@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from datetime import date
 
 from app.models.scheduling import Patient
 
@@ -84,10 +83,8 @@ def classify_name_match(spoken_name: str, stored_name: str) -> str | None:
     return None
 
 
-def format_birth_month_year(date_of_birth: date) -> str:
-    return date_of_birth.strftime("%B %Y")
-
-
 def build_confirmation_question(patient: Patient) -> str:
-    birth_phrase = format_birth_month_year(patient.date_of_birth)
-    return f"I have {patient.full_name}, born in {birth_phrase} — is that you?"
+    return (
+        f"I found a possible existing profile for {patient.full_name}. "
+        "Is that you?"
+    )
