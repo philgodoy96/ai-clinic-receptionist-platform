@@ -59,6 +59,7 @@ from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     build_llm_receptionist_analysis_service_from_settings,
 )
+from app.services.patient_intake import PatientIntakeService
 from app.services.public_demo_voice_session import PublicDemoVoiceSessionService
 from app.services.receptionist_response_generator import (
     ReceptionistResponseGenerator,
@@ -339,6 +340,17 @@ def get_voice_conversation_bridge_service(
     )
 
 
+def get_patient_intake_service(
+    db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PatientIntakeService:
+    return PatientIntakeService(
+        patients=SQLAlchemyPatientRepository(db),
+        mode=settings.voice_patient_intake_mode,
+        db=db,
+    )
+
+
 def get_voice_booking_confirmation_service(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -354,6 +366,7 @@ def get_voice_booking_confirmation_service(
         Depends(get_email_job_dispatch_publisher),
     ],
     demo_guardrails: Annotated[DemoGuardrailService, Depends(get_demo_guardrail_service)],
+    patient_intake: Annotated[PatientIntakeService, Depends(get_patient_intake_service)],
 ) -> VoiceBookingConfirmationService:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return VoiceBookingConfirmationService(
@@ -369,6 +382,7 @@ def get_voice_booking_confirmation_service(
         availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
         email_job_dispatch=email_job_dispatch,
         demo_guardrails=demo_guardrails,
+        patient_intake=patient_intake,
     )
 
 

@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.ai.llm_provider import GroqResponseFormat, LLMProviderName
 from app.domain.receptionist.enums import ReceptionistResponseMode
+from app.domain.voice_patient_intake import VoicePatientIntakeMode
 
 _CLINIC_TIME_HH_MM_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _CLINIC_BUSINESS_WEEKDAYS = frozenset(
@@ -250,6 +251,10 @@ class Settings(BaseSettings):
         default=200,
         ge=1,
         alias="DEMO_GLOBAL_CONFIRMATION_EMAILS_PER_DAY",
+    )
+    voice_patient_intake_mode: VoicePatientIntakeMode = Field(
+        default=VoicePatientIntakeMode.LOOKUP_ONLY,
+        alias="VOICE_PATIENT_INTAKE_MODE",
     )
 
     model_config = SettingsConfigDict(

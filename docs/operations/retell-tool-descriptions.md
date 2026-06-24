@@ -374,7 +374,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `booking_hold_missing` | No active hold |
 | `appointment_hold_expired` | Hold timed out |
 | `appointment_hold_owner_mismatch` | Hold belongs to another call |
-| `patient_not_found` | Name, DOB, and email do not match a patient record |
+| `patient_not_found` | Name, DOB, and email do not match a patient record (or demo intake is `lookup_only` / email is not a `.test` domain) |
 | `demo_guardrail_limit_exceeded` | Daily demo booking quota reached |
 | `missing_voice_conversation_context` | Voice call / conversation not linked |
 | `voice_booking_unavailable` | Booking service not configured |
