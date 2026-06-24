@@ -383,6 +383,10 @@ def get_voice_booking_confirmation_service(
     ],
     demo_guardrails: Annotated[DemoGuardrailService, Depends(get_demo_guardrail_service)],
     patient_intake: Annotated[PatientIntakeService, Depends(get_patient_intake_service)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
 ) -> VoiceBookingConfirmationService:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return VoiceBookingConfirmationService(
@@ -399,6 +403,7 @@ def get_voice_booking_confirmation_service(
         email_job_dispatch=email_job_dispatch,
         demo_guardrails=demo_guardrails,
         patient_intake=patient_intake,
+        patient_identity_resolution=patient_identity_resolution,
     )
 
 

@@ -68,11 +68,13 @@ Duplicate callbacks must not create duplicate appointments or duplicate confirma
 
 ## Patient Identity
 
-The voice flow uses the shared patient identity rules.
+Voice booking prefers an opaque `patient_resolution_id` from `resolve_patient_identity` when the Retell tool provides one. The token must belong to the current call and be `exact_match`, confirmed `possible_match`, or `created`. Inline `patient_name` / `patient_date_of_birth` / `patient_email` remain the fallback when no token is supplied.
 
 Phone numbers are optional only if the shared booking rules allow them.
 
 The voice path does not store raw transcripts or audio for identity verification.
+
+See also: [Voice Patient Identity Resolution](voice-patient-identity-resolution.md).
 
 ## Relationship to Chat Booking
 

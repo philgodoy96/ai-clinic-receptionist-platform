@@ -419,7 +419,7 @@ Confirms or rejects a possible_match patient_resolution_id from resolve_patient_
 ### Dashboard description
 
 ```
-Side effect: books the appointment after explicit caller confirmation. Requires active hold, patient_name, patient_date_of_birth, patient_email from the caller, explicit_confirmation: true. Never call immediately after asking a question. Never invent email or phone. Only say "booked" when status=succeeded.
+Side effect: books the appointment after explicit caller confirmation. Requires active hold and explicit_confirmation: true. Prefer patient_resolution_id from resolve_patient_identity when available; otherwise use caller-confirmed patient_name, patient_date_of_birth, and patient_email. Never invent email or phone. Only say "booked" when status=succeeded.
 ```
 
 ### Exact name
@@ -451,6 +451,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
   "patient_date_of_birth": "1985-04-12",
   "patient_email": "john.miller@example.test",
   "patient_phone": "+1-555-0201",
+  "patient_resolution_id": "opaque-token-from-resolve_patient_identity",
   "explicit_confirmation": true,
   "confirmation_text": "Yes, please schedule that."
 }
@@ -464,6 +465,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `patient_date_of_birth` | Yes | ISO date `YYYY-MM-DD` in tool args only — do not require caller to speak this format |
 | `patient_email` | Yes | Must match what caller **spoke and confirmed**; never invent |
 | `patient_phone` | No | Omit unless caller provided a number; never invent |
+| `patient_resolution_id` | No | Preferred when identity was resolved earlier on this call |
 | `explicit_confirmation` | Yes | Must be `true` only after hold + identity collected/confirmed + final summary + clear yes |
 | `confirmation_text` | No | Short caller confirmation phrase |
 | `notes` | No | Visit reason if collected |
@@ -494,6 +496,8 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `appointment_hold_expired` | Hold timed out |
 | `appointment_hold_owner_mismatch` | Hold belongs to another call |
 | `patient_not_found` | Name, DOB, and email do not match a patient record (or demo intake is `lookup_only` / email is not a `.test` domain) |
+| `patient_identity_confirmation_required` | `patient_resolution_id` is `possible_match` but not confirmed |
+| `patient_identity_not_resolved` | Token missing, expired, wrong call, or unknown |
 | `demo_guardrail_limit_exceeded` | Daily demo booking quota reached |
 | `missing_voice_conversation_context` | Voice call / conversation not linked |
 | `voice_booking_unavailable` | Booking service not configured |
