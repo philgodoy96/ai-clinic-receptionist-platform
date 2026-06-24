@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.domain.patient_identity_matching import is_demo_sample_email
 from app.domain.voice_patient_intake import (
     PatientIntakeIdentity,
     PatientIntakeNotFoundError,
@@ -17,7 +18,6 @@ from app.models.scheduling import Patient
 from app.repositories.scheduling import PatientRepository
 from app.services.scheduling import InsufficientPatientIdentityError
 
-_DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN = re.compile(r"\.test$", re.IGNORECASE)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
@@ -53,7 +53,7 @@ class PatientIntakeService:
             msg = "patient was not found"
             raise PatientIntakeNotFoundError(msg)
 
-        if not _is_demo_sample_email(normalized.email):
+        if not is_demo_sample_email(normalized.email):
             msg = "patient was not found"
             raise PatientIntakeNotFoundError(msg)
 
@@ -161,8 +161,3 @@ class PatientIntakeService:
             return True
 
         return patient.phone_number == identity.phone_number
-
-
-def _is_demo_sample_email(email: str) -> bool:
-    domain = email.rsplit("@", maxsplit=1)[-1]
-    return _DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN.search(domain) is not None

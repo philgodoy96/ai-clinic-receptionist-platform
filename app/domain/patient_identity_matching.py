@@ -5,6 +5,25 @@ import re
 from app.models.scheduling import Patient
 
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+_MARKDOWN_MAILTO_EMAIL_PATTERN = re.compile(
+    r"^\[([^\]]+)\]\(mailto:[^)]+\)$",
+    re.IGNORECASE,
+)
+_DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN = re.compile(r"\.test$", re.IGNORECASE)
+
+
+def sanitize_spoken_email(email: str) -> str:
+    stripped = email.strip()
+    markdown_match = _MARKDOWN_MAILTO_EMAIL_PATTERN.match(stripped)
+    if markdown_match is not None:
+        stripped = markdown_match.group(1).strip()
+
+    return stripped.lower()
+
+
+def is_demo_sample_email(email: str) -> bool:
+    domain = email.rsplit("@", maxsplit=1)[-1]
+    return _DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN.search(domain) is not None
 
 
 def normalize_patient_name(name: str) -> str:
@@ -12,7 +31,7 @@ def normalize_patient_name(name: str) -> str:
 
 
 def normalize_email(email: str) -> str:
-    return email.strip().lower()
+    return sanitize_spoken_email(email)
 
 
 def normalize_optional_phone(phone: str | None) -> str | None:

@@ -7,6 +7,7 @@ from uuid import UUID
 from app.domain.patient_identity_matching import (
     build_confirmation_question,
     classify_name_match,
+    is_demo_sample_email,
     normalize_email,
     normalize_optional_phone,
     normalize_patient_name,
@@ -79,7 +80,7 @@ class PatientIdentityResolutionService:
 
         if matched.status is PatientResolutionMatchStatus.POSSIBLE_MATCH:
             if matched.patient is None:
-                return self._build_not_found_result(identity)
+                return self._build_retry_identity_result(identity)
             return self._build_possible_match_result(
                 identity=identity,
                 patient=matched.patient,
@@ -88,37 +89,39 @@ class PatientIdentityResolutionService:
 
         if matched.status is PatientResolutionMatchStatus.EXACT_MATCH:
             if matched.patient is None:
-                return self._build_not_found_result(identity)
+                return self._build_retry_identity_result(identity)
             return self._build_exact_match_result(
                 identity=identity,
                 patient=matched.patient,
                 request=request,
             )
 
-        if request.caller_claims_existing_patient or not request.allow_demo_patient_creation:
-            return self._build_not_found_result(identity)
+        if not request.caller_claims_existing_patient:
+            return self._resolve_new_patient_flow(identity=identity, request=request)
 
-        existing_before_create = self._match_patients(identity)
-        if existing_before_create.status is PatientResolutionMatchStatus.MULTIPLE_MATCHES:
-            return self._build_multiple_matches_result(identity)
+        return self._build_retry_identity_result(identity)
 
-        if existing_before_create.status is PatientResolutionMatchStatus.POSSIBLE_MATCH:
-            if existing_before_create.patient is None:
-                return self._build_not_found_result(identity)
-            return self._build_possible_match_result(
-                identity=identity,
-                patient=existing_before_create.patient,
-                request=request,
-            )
+    def _resolve_new_patient_flow(
+        self,
+        *,
+        identity: NormalizedResolutionIdentity,
+        request: PatientIdentityResolutionRequest,
+    ) -> PatientIdentityResolutionResult:
+        if not request.allow_demo_patient_creation:
+            return self._build_demo_patient_creation_disabled_result(identity)
 
-        if existing_before_create.status is PatientResolutionMatchStatus.EXACT_MATCH:
-            if existing_before_create.patient is None:
-                return self._build_not_found_result(identity)
-            return self._build_exact_match_result(
-                identity=identity,
-                patient=existing_before_create.patient,
-                request=request,
-            )
+        if identity.patient_email is None:
+            return self._build_ask_email_or_phone_for_new_patient(identity)
+
+        if not is_demo_sample_email(identity.patient_email):
+            return self._build_sample_email_required_result(identity)
+
+        intake = self.patient_intake or PatientIntakeService(
+            patients=self.patients,
+            mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+        )
+        if intake.mode is VoicePatientIntakeMode.LOOKUP_ONLY:
+            return self._build_demo_patient_creation_disabled_result(identity)
 
         return self._create_demo_patient(identity=identity, request=request)
 
@@ -194,7 +197,7 @@ class PatientIdentityResolutionService:
             candidate_display_name=patient.full_name,
             confirmation_question=None,
             patient_resolution_id=str(confirmed_record.resolution_id),
-            next_step=PatientResolutionNextStep.PROCEED_TO_BOOKING,
+            next_step=PatientResolutionNextStep.PROCEED_TO_FINAL_BOOKING_CONFIRMATION,
             suggested_response_text="Thanks for confirming. Let's finish booking your appointment.",
         )
 
@@ -388,31 +391,6 @@ class PatientIdentityResolutionService:
         identity: NormalizedResolutionIdentity,
         request: PatientIdentityResolutionRequest,
     ) -> PatientIdentityResolutionResult:
-        if identity.patient_email is None:
-            return self._build_not_found_result(identity)
-
-        pre_create_match = self._match_patients(identity)
-        if pre_create_match.status is PatientResolutionMatchStatus.MULTIPLE_MATCHES:
-            return self._build_multiple_matches_result(identity)
-
-        if pre_create_match.status is PatientResolutionMatchStatus.POSSIBLE_MATCH:
-            if pre_create_match.patient is None:
-                return self._build_not_found_result(identity)
-            return self._build_possible_match_result(
-                identity=identity,
-                patient=pre_create_match.patient,
-                request=request,
-            )
-
-        if pre_create_match.status is PatientResolutionMatchStatus.EXACT_MATCH:
-            if pre_create_match.patient is None:
-                return self._build_not_found_result(identity)
-            return self._build_exact_match_result(
-                identity=identity,
-                patient=pre_create_match.patient,
-                request=request,
-            )
-
         intake = self.patient_intake or PatientIntakeService(
             patients=self.patients,
             mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
@@ -423,12 +401,19 @@ class PatientIdentityResolutionService:
                 PatientIntakeIdentity(
                     full_name=identity.patient_name,
                     date_of_birth=identity.patient_date_of_birth,
-                    email=identity.patient_email,
+                    email=identity.patient_email or "",
                     phone_number=identity.patient_phone,
                 ),
             )
-        except (InsufficientPatientIdentityError, PatientIntakeNotFoundError):
-            return self._build_not_found_result(identity)
+        except InsufficientPatientIdentityError:
+            return self._build_ask_email_or_phone_for_new_patient(identity)
+        except PatientIntakeNotFoundError:
+            if (
+                identity.patient_email is not None
+                and not is_demo_sample_email(identity.patient_email)
+            ):
+                return self._build_sample_email_required_result(identity)
+            return self._build_demo_patient_creation_disabled_result(identity)
 
         record = self._persist_resolution(
             patient=patient,
@@ -444,7 +429,7 @@ class PatientIdentityResolutionService:
             candidate_display_name=patient.full_name,
             confirmation_question=None,
             patient_resolution_id=str(record.resolution_id),
-            next_step=PatientResolutionNextStep.PROCEED_TO_BOOKING,
+            next_step=PatientResolutionNextStep.PROCEED_TO_FINAL_BOOKING_CONFIRMATION,
             suggested_response_text=(
                 "I've added your details for this visit. Let's finish booking your appointment."
             ),
@@ -471,7 +456,7 @@ class PatientIdentityResolutionService:
             candidate_display_name=patient.full_name,
             confirmation_question=None,
             patient_resolution_id=str(record.resolution_id),
-            next_step=PatientResolutionNextStep.PROCEED_TO_BOOKING,
+            next_step=PatientResolutionNextStep.PROCEED_TO_FINAL_BOOKING_CONFIRMATION,
             suggested_response_text=(
                 "I found your chart. Let's finish booking your appointment."
             ),
@@ -499,7 +484,7 @@ class PatientIdentityResolutionService:
             candidate_display_name=patient.full_name,
             confirmation_question=confirmation_question,
             patient_resolution_id=str(record.resolution_id),
-            next_step=PatientResolutionNextStep.CONFIRM_IDENTITY,
+            next_step=PatientResolutionNextStep.ASK_POSSIBLE_MATCH_CONFIRMATION,
             suggested_response_text=confirmation_question,
         )
 
@@ -507,21 +492,6 @@ class PatientIdentityResolutionService:
         self,
         identity: NormalizedResolutionIdentity,
     ) -> PatientIdentityResolutionResult:
-        if identity.patient_email is None:
-            return PatientIdentityResolutionResult(
-                match_status=PatientResolutionMatchStatus.MULTIPLE_MATCHES,
-                requires_confirmation=True,
-                display_name=identity.patient_name,
-                candidate_display_name=None,
-                confirmation_question=None,
-                patient_resolution_id=None,
-                next_step=PatientResolutionNextStep.COLLECT_EMAIL,
-                suggested_response_text=(
-                    "I need a bit more information to find your chart. "
-                    "Which email address do you have on file with us?"
-                ),
-            )
-
         return PatientIdentityResolutionResult(
             match_status=PatientResolutionMatchStatus.MULTIPLE_MATCHES,
             requires_confirmation=True,
@@ -529,14 +499,14 @@ class PatientIdentityResolutionService:
             candidate_display_name=None,
             confirmation_question=None,
             patient_resolution_id=None,
-            next_step=PatientResolutionNextStep.COLLECT_PHONE,
+            next_step=PatientResolutionNextStep.ASK_EMAIL_OR_PHONE,
             suggested_response_text=(
-                "I need one more detail to find your chart. "
-                "What phone number do you have on file with us?"
+                "I need a bit more information to find your chart. "
+                "Which email address or phone number do you have on file with us?"
             ),
         )
 
-    def _build_not_found_result(
+    def _build_retry_identity_result(
         self,
         identity: NormalizedResolutionIdentity,
     ) -> PatientIdentityResolutionResult:
@@ -553,6 +523,66 @@ class PatientIdentityResolutionService:
                 "Could we try your name and date of birth once more?"
             ),
         )
+
+    def _build_sample_email_required_result(
+        self,
+        identity: NormalizedResolutionIdentity,
+    ) -> PatientIdentityResolutionResult:
+        return PatientIdentityResolutionResult(
+            match_status=PatientResolutionMatchStatus.NOT_FOUND,
+            requires_confirmation=False,
+            display_name=identity.patient_name,
+            candidate_display_name=None,
+            confirmation_question=None,
+            patient_resolution_id=None,
+            next_step=PatientResolutionNextStep.SAMPLE_EMAIL_REQUIRED,
+            suggested_response_text=(
+                "For this scheduling demo, please use a sample email address "
+                "ending in .test, such as first dot last at example dot test."
+            ),
+        )
+
+    def _build_demo_patient_creation_disabled_result(
+        self,
+        identity: NormalizedResolutionIdentity,
+    ) -> PatientIdentityResolutionResult:
+        return PatientIdentityResolutionResult(
+            match_status=PatientResolutionMatchStatus.NOT_FOUND,
+            requires_confirmation=False,
+            display_name=identity.patient_name,
+            candidate_display_name=None,
+            confirmation_question=None,
+            patient_resolution_id=None,
+            next_step=PatientResolutionNextStep.DEMO_PATIENT_CREATION_DISABLED,
+            suggested_response_text=(
+                "I couldn't create a new patient profile in this environment. "
+                "If you've been here before, we can try your existing details instead."
+            ),
+        )
+
+    def _build_ask_email_or_phone_for_new_patient(
+        self,
+        identity: NormalizedResolutionIdentity,
+    ) -> PatientIdentityResolutionResult:
+        return PatientIdentityResolutionResult(
+            match_status=PatientResolutionMatchStatus.NOT_FOUND,
+            requires_confirmation=False,
+            display_name=identity.patient_name,
+            candidate_display_name=None,
+            confirmation_question=None,
+            patient_resolution_id=None,
+            next_step=PatientResolutionNextStep.ASK_EMAIL_OR_PHONE,
+            suggested_response_text=(
+                "To finish setting up your visit, what sample email address "
+                "would you like to use for this demo?"
+            ),
+        )
+
+    def _build_not_found_result(
+        self,
+        identity: NormalizedResolutionIdentity,
+    ) -> PatientIdentityResolutionResult:
+        return self._build_retry_identity_result(identity)
 
     def _persist_resolution(
         self,
