@@ -4,6 +4,10 @@ This runbook describes how to configure the **Retell dashboard** for the portfol
 
 Use this document together with:
 
+- [Retell Master Prompt v2](retell-master-prompt-v2.md) — canonical agent system prompt (`retell-receptionist-v2`)
+- [Retell Tool Descriptions](retell-tool-descriptions.md) — dashboard tool descriptions, arguments, errors, recovery
+- [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) — realistic end-to-end voice test scripts
+- [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) — caller-facing dialogue examples
 - [Public Demo Deployment](public-demo-deployment.md)
 - [Configuration](../configuration.md)
 - [Retell Tool-Calling Adapter](../architecture/retell-tool-calling-adapter.md)
@@ -89,19 +93,32 @@ NEXT_PUBLIC_VOICE_DEMO_ENABLED=false
 
 ## Prompt Guidance
 
-Configure the agent system prompt and conversation instructions to align with backend contracts. The **backend tools are the source of truth** for scheduling, holds, booking, cancellation, and rescheduling. The LLM must not invent availability or confirm appointments without a successful tool result.
+Copy the full system prompt from **[Retell Master Prompt v2](retell-master-prompt-v2.md)** (`retell-receptionist-v2`) into the Retell agent instructions. The backend tools are the source of truth for scheduling, holds, booking, cancellation, and rescheduling. The LLM must not invent availability or confirm appointments without a successful tool result (`status: succeeded`).
 
-Include these rules in the Retell agent prompt:
+Summary rules (details and caller-facing language are in the master prompt and [UX playbook](retell-conversation-ux-playbook.md)):
 
-1. **Fictional demo only** — This is a portfolio demo for a fictional clinic. Do not collect or repeat real patient health information. Use clearly fake names and contact details in tests.
-2. **Do not calculate relative dates** — Retell and the LLM must **not** infer “today”, “tomorrow”, weekday names, or UTC timestamps from model knowledge.
-3. **Call `get_clinic_context` first** — Before discussing the current date, time, business hours, “today”, “tomorrow”, or relative scheduling language, call `get_clinic_context` and use its response.
-4. **Use structured scheduling arguments** — Prefer `date_expression` and optional `time_window_expression` in `check_availability`. Do not pass provider-calculated UTC windows as the primary contract.
-5. **Confirm only after tools succeed** — Do not tell the caller an appointment is booked, cancelled, or rescheduled until `book_appointment`, `cancel_appointment`, or `reschedule_appointment` returns success.
-6. **Hold before book** — Obtain an active hold with `hold_appointment_slot` before `book_appointment`.
-7. **Explicit confirmation** — Booking, cancellation, and rescheduling tools require explicit caller confirmation in tool arguments.
+1. **Sample contact information only** — one privacy sentence at call start; no repeated demo language.
+2. **Do not calculate relative dates** — call `get_clinic_context` before “today”, “tomorrow”, or weekday scheduling language.
+3. **Structured scheduling arguments** — prefer `date_expression` and optional `time_window_expression` in `check_availability`.
+4. **Hold before book** — `hold_appointment_slot` after the caller chooses a time; say “I can hold that time”, not “hold slot”.
+5. **Summary + explicit confirmation** — read back details; call `book_appointment` only after a clear yes with `explicit_confirmation: true`.
+6. **Never invent email** — use only the address the caller provided and confirmed.
+7. **Confirm only after tool success** — do not say booked, cancelled, or rescheduled until the side-effect tool returns `status: succeeded`.
 
-See [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context-and-tool-contracts.md) for the canonical prompt guidance and tool contracts.
+See [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context-and-tool-contracts.md) for scheduling expression reference.
+
+## end_call Rules
+
+`end_call` is a Retell agent action, not a backend tool. Configure the prompt so the agent:
+
+| Do | Do not |
+|----|--------|
+| End after the caller clearly says they are done and any active scheduling is resolved | End while waiting for the caller to answer a question |
+| End after a polite closing (“Thank you for calling”) | End during identity collection, hold, or tool execution |
+| Release a held time (`release_appointment_hold`) if the caller abandons booking, then close | End immediately after `book_appointment` without asking if anything else is needed |
+| Wait through brief silence while the caller checks a calendar | End on “um” or short pauses mid-flow |
+
+Full anti-patterns and dialogue examples: [Retell Conversation UX Playbook — Caller wants to end call](retell-conversation-ux-playbook.md#9-caller-wants-to-end-the-call) and [Smoke Scenario 8](retell-voice-smoke-scenarios.md#scenario-8--no-premature-end_call).
 
 ## Custom Function / Tool Setup Checklist
 
@@ -154,6 +171,7 @@ Do **not** register tools that bypass this allowlist. Unsupported tools return `
 - [ ] Tool name matches the backend allowlist exactly (snake_case).
 - [ ] Custom Function payload mode is **Retell default envelope** (not **Payload: args only**).
 - [ ] Retell sends `name`, `call.call_id`, and `args`; backend normalizes these automatically.
+- [ ] Dashboard **description** for each tool pasted from [Retell Tool Descriptions](retell-tool-descriptions.md).
 - [ ] Tool URL uses HTTPS and matches the deployed API host.
 - [ ] Retell project webhook secret matches `RETELL_WEBHOOK_SECRET`.
 - [ ] `get_clinic_context` is available and invoked before relative date discussion in prompt tests.
@@ -161,6 +179,16 @@ Do **not** register tools that bypass this allowlist. Unsupported tools return `
 - [ ] Side-effecting tools are tested with fictional identity data only.
 
 Legacy per-tool routes under `/api/v1/retell/tools/*` remain for compatibility; new dashboard setup should prefer the unified route.
+
+### Local tunneling (ngrok)
+
+When exposing a local API to Retell webhooks via ngrok or a similar tunnel:
+
+1. Point Retell tool and lifecycle webhook URLs at the tunnel HTTPS origin (for example `https://<subdomain>.ngrok-free.app/api/v1/retell/tools`).
+2. Set `TRUST_PROXY_HEADERS=true` on the API so per-IP demo guardrails see the caller IP from `X-Forwarded-For`, not the tunnel edge.
+3. **Preserve the `x-retell-signature` header** — Retell signs the raw body; do not strip or rewrite signature headers at the tunnel or reverse proxy. If verification fails with a valid secret, confirm the proxy forwards `x-retell-signature` unchanged.
+4. Keep **Payload: args only** **OFF** so Retell sends `call.call_id` and `tool_call_id` for idempotency (see [Smoke Scenario 10](retell-voice-smoke-scenarios.md#scenario-10--provider-tool_call_id-behavior)).
+5. For local-only testing without real signatures, use `RETELL_ALLOW_INSECURE_WEBHOOKS=true` in `local` / `development` `APP_ENV` only (see [Retell Webhook Security](../architecture/retell-webhook-security.md)).
 
 ## Webhook Setup Checklist
 
@@ -245,6 +273,8 @@ The adapter cannot bypass `AppointmentBookingService`, hold rules, clinic busine
 
 ## Smoke Test Checklist
 
+Run the scripted scenarios in **[Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)** after dashboard and deployment configuration.
+
 After dashboard and deployment configuration:
 
 ### API / Retell inbound
@@ -282,6 +312,10 @@ Prefer forward-fix for database schema; voice call rows are audit artifacts and 
 
 ## Related Documentation
 
+- [Retell Master Prompt v2](retell-master-prompt-v2.md)
+- [Retell Tool Descriptions](retell-tool-descriptions.md)
+- [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)
+- [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md)
 - [Public Demo Deployment](public-demo-deployment.md)
 - [Local Development](local-development.md)
 - [Public demo web frontend](../../web/README.md)
