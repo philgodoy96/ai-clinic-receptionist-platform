@@ -55,10 +55,10 @@ def test_master_prompt_v3_uses_preferred_post_booking_wording() -> None:
     assert 'do not end with "how can i help you?"' in prompt
 
 
-def test_master_prompt_v3_limits_scope_to_booking_flow() -> None:
+def test_master_prompt_v3_limits_scope_to_booking_and_lookup() -> None:
     prompt = _paste_ready_block().lower()
 
-    assert "book new appointments" in prompt or "new appointment scheduling" in prompt
+    assert "new appointment scheduling" in prompt or "book new appointments" in prompt
     assert "list_patient_appointments" in prompt
     assert (
         "cancellation and rescheduling execution are not enabled in this voice flow yet."
