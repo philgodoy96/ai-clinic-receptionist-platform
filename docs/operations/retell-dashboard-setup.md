@@ -29,7 +29,29 @@ Before configuring Retell:
 | **Public demo guardrails** | `PUBLIC_DEMO_MODE=true` and `PUBLIC_DEMO_GUARDRAILS_ENABLED=true` for internet-facing demos |
 | **Frontend (optional)** | Next.js `web/` app with `NEXT_PUBLIC_VOICE_DEMO_ENABLED=true` for browser web calls |
 
-Treat all demo traffic as **fictional clinic data**. Do not use real patient names, phone numbers, dates of birth, or medical information in prompts, test calls, or recordings.
+Treat all demo traffic as **fictional clinic data**. The public demo must **not** collect real PHI (protected health information). Use only sample names, dates of birth, emails, and phone numbers intended for testing — for example seeded patients (`john.miller@example.test`) or clearly fictional contact details. Do not use real patient names, real medical record numbers, real insurance IDs, or production clinic data in prompts, test calls, recordings, or logs.
+
+## UX documentation pack
+
+Configure the Retell agent using these companion documents (copy/paste sources and smoke-test scripts):
+
+| Document | Purpose |
+|----------|---------|
+| [Retell Master Prompt v2](retell-master-prompt-v2.md) | Canonical system prompt (`retell-receptionist-v2`) — paste into agent instructions |
+| [Retell Tool Descriptions](retell-tool-descriptions.md) | Dashboard tool descriptions, argument contracts, error recovery wording |
+| [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) | End-to-end voice smoke tests after dashboard setup |
+| [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) | Caller-facing dialogue examples and anti-patterns |
+
+## Who controls what
+
+| Layer | Controls | Does not control |
+|-------|----------|------------------|
+| **Retell agent prompt** | Conversation flow, tone, one question at a time, when to call tools, natural scheduling language, existing vs new patient intake dialogue, `end_call` timing, recovery phrasing after tool errors | Availability, holds, booking outcomes, business hours, patient record creation policy |
+| **Backend tools + services** | Scheduling invariants, hold TTL, booking/cancel/reschedule side effects, clinic time resolution, patient lookup vs demo auto-create (`VOICE_PATIENT_INTAKE_MODE`), idempotency, guardrails, webhook signature verification | Spoken turn-taking, filler words, or whether the agent asks a follow-up question |
+
+The **prompt controls conversation flow**. The **backend controls invariants**. A successful tool result (`status: succeeded`) is required before the agent confirms booked, cancelled, or rescheduled. Failed tools return structured `error_code` values; the agent should use natural recovery language from the master prompt and tool descriptions — never read internal codes or UUIDs aloud.
+
+Optional `suggested_response_text` on tool results is backend-generated phrasing hints (deterministic templates). Retell may use or paraphrase them; they do not change tool contracts or scheduling outcomes (see [Receptionist Response Generator](../architecture/receptionist-response-generator.md)).
 
 ## Environment Variable Checklist
 
@@ -65,6 +87,17 @@ Configure these on the **API service** (see `.env.demo.example` and [Configurati
 | `CLINIC_BUSINESS_HOURS_START` / `CLINIC_BUSINESS_HOURS_END` | `HH:MM` 24-hour |
 | `CLINIC_NAME` | Spoken/display name for demo |
 
+### Voice patient intake (booking identity)
+
+| Variable | Notes |
+|----------|--------|
+| `VOICE_PATIENT_INTAKE_MODE` | `lookup_only` (default, production-like) or `demo_auto_create` (public demo). See [Configuration — Voice patient intake](../configuration.md#voice-patient-intake). |
+
+- **`lookup_only`** — `book_appointment` requires a pre-existing patient match on name, date of birth, and email. Use seeded demo patients or create records ahead of time. On mismatch, the agent should re-collect details naturally; never say "patient not found" to the caller.
+- **`demo_auto_create`** — For public demo only: when identity is new and email uses a `.test` domain, the backend may create a minimal patient record before booking. Explicit confirmation, active hold, and booking idempotency are unchanged.
+
+Recommended: `lookup_only` for production-like environments; `demo_auto_create` in `.env.demo.example` for hosted public demo voice testing.
+
 ### Frontend (web service only)
 
 | Variable | Notes |
@@ -97,19 +130,41 @@ Copy the full system prompt from **[Retell Master Prompt v2](retell-master-promp
 
 Summary rules (details and caller-facing language are in the master prompt and [UX playbook](retell-conversation-ux-playbook.md)):
 
-1. **Sample contact information only** — one privacy sentence at call start; no repeated demo language.
+1. **Sample contact information only** — one privacy sentence at call start; no repeated demo language. **Do not collect real PHI** in the public demo.
 2. **Do not calculate relative dates** — call `get_clinic_context` before “today”, “tomorrow”, or weekday scheduling language.
 3. **Structured scheduling arguments** — prefer `date_expression` and optional `time_window_expression` in `check_availability`.
-4. **Hold before book** — `hold_appointment_slot` after the caller chooses a time; say “I can hold that time”, not “hold slot”.
-5. **Summary + explicit confirmation** — read back details; call `book_appointment` only after a clear yes with `explicit_confirmation: true`.
-6. **Never invent email** — use only the address the caller provided and confirmed.
-7. **Confirm only after tool success** — do not say booked, cancelled, or rescheduled until the side-effect tool returns `status: succeeded`.
+4. **Natural scheduling language** — say “appointment time”, “opening”, “schedule”, “that time”. **Never** say “slot”, “hold reference”, or read UUIDs aloud.
+5. **Hold before book** — `hold_appointment_slot` after the caller chooses a time; say **“I can hold that time while I get your details.”**
+6. **Summary + explicit confirmation** — read back details; call `book_appointment` only after a clear yes with `explicit_confirmation: true`.
+7. **Never invent email** — use only the address the caller provided and confirmed.
+8. **Confirm only after tool success** — do not say booked, cancelled, or rescheduled until the side-effect tool returns `status: succeeded`.
+9. **Recover from hold expiry** — say **“That time may no longer be available. Let me check the schedule again.”** then re-run availability and hold.
 
 See [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context-and-tool-contracts.md) for scheduling expression reference.
 
+## Patient identity (existing vs new)
+
+Configure the agent prompt so intake follows the master prompt’s **Patient identity** section:
+
+| Caller type | Agent behavior | Backend |
+|-------------|----------------|---------|
+| **Existing patient** | Ask full name and date of birth one at a time; confirm DOB naturally; confirm email on file or collect and confirm. Re-collect one field at a time on mismatch. | `book_appointment` looks up patient by name + DOB + email (`lookup_only`) or matches then books |
+| **New patient** | Briefly explain you need a few details; collect name, DOB, and email one question at a time; confirm DOB and email before booking. Phone optional unless required. | With `demo_auto_create` + `.test` email, backend may create a minimal demo patient; otherwise booking fails until a record exists |
+
+Seeded demo patients for smoke tests (see [Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)):
+
+| Name | DOB | Email |
+|------|-----|-------|
+| John Miller | 1985-04-12 | `john.miller@example.test` |
+| Ava Thompson | 1992-09-03 | `ava.thompson@example.test` |
+
+For new-patient demo flows, use fictional `.test` emails only (for example `jane.demo@example.test`), not real addresses.
+
 ## end_call Rules
 
-`end_call` is a Retell agent action, not a backend tool. Configure the prompt so the agent:
+`end_call` is a **Retell agent action**, not a backend tool. The prompt controls when the agent ends the call; the backend does not trigger `end_call`.
+
+Configure the prompt so the agent:
 
 | Do | Do not |
 |----|--------|
@@ -117,6 +172,7 @@ See [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context
 | End after a polite closing (“Thank you for calling”) | End during identity collection, hold, or tool execution |
 | Release a held time (`release_appointment_hold`) if the caller abandons booking, then close | End immediately after `book_appointment` without asking if anything else is needed |
 | Wait through brief silence while the caller checks a calendar | End on “um” or short pauses mid-flow |
+| Ask “Is there anything else I can help with?” after a successful booking before closing | End the call while a tool request is in flight |
 
 Full anti-patterns and dialogue examples: [Retell Conversation UX Playbook — Caller wants to end call](retell-conversation-ux-playbook.md#9-caller-wants-to-end-the-call) and [Smoke Scenario 8](retell-voice-smoke-scenarios.md#scenario-8--no-premature-end_call).
 
@@ -138,7 +194,11 @@ Retell sends native tool callbacks shaped like:
 }
 ```
 
-The backend verifies the raw `x-retell-signature` on that body, then **normalizes** Retell-native fields into the internal tool contract (`tool_name`, `provider_call_id`, `arguments`, `tool_call_id`) before running the existing adapter. Your agent **prompt** controls tool behavior and `args` content; it does **not** define the HTTP envelope. The backend owns the provider integration boundary.
+The backend verifies the raw `x-retell-signature` on that body, then **normalizes** Retell-native fields into the internal tool contract (`tool_name`, `provider_call_id`, `arguments`, `tool_call_id`) before running the existing adapter.
+
+**Payload: args only must stay OFF** in the Retell dashboard. When enabled, Retell omits envelope fields the backend needs for `call_id`, signature verification context, and `tool_call_id` idempotency.
+
+Your agent **prompt** controls conversation flow and the JSON inside `args`. It does **not** define the HTTP envelope. The backend owns the provider integration boundary and scheduling invariants.
 
 Manual `curl` tests may still send the normalized internal shape; both are accepted after signature verification.
 
@@ -184,11 +244,12 @@ Legacy per-tool routes under `/api/v1/retell/tools/*` remain for compatibility; 
 
 When exposing a local API to Retell webhooks via ngrok or a similar tunnel:
 
-1. Point Retell tool and lifecycle webhook URLs at the tunnel HTTPS origin (for example `https://<subdomain>.ngrok-free.app/api/v1/retell/tools`).
+1. Point Retell **tool** and **lifecycle** webhook URLs at the tunnel HTTPS origin (for example `https://<subdomain>.ngrok-free.app/api/v1/retell/tools` and `.../api/v1/retell/webhooks/lifecycle`).
 2. Set `TRUST_PROXY_HEADERS=true` on the API so per-IP demo guardrails see the caller IP from `X-Forwarded-For`, not the tunnel edge.
-3. **Preserve the `x-retell-signature` header** — Retell signs the raw body; do not strip or rewrite signature headers at the tunnel or reverse proxy. If verification fails with a valid secret, confirm the proxy forwards `x-retell-signature` unchanged.
-4. Keep **Payload: args only** **OFF** so Retell sends `call.call_id` and `tool_call_id` for idempotency (see [Smoke Scenario 10](retell-voice-smoke-scenarios.md#scenario-10--provider-tool_call_id-behavior)).
-5. For local-only testing without real signatures, use `RETELL_ALLOW_INSECURE_WEBHOOKS=true` in `local` / `development` `APP_ENV` only (see [Retell Webhook Security](../architecture/retell-webhook-security.md)).
+3. **Preserve the `x-retell-signature` header** — Retell signs the raw request body; do not strip or rewrite signature headers at the tunnel or reverse proxy. If verification fails with a valid secret, confirm the proxy forwards `x-retell-signature` unchanged.
+4. Keep **Payload: args only** **OFF** so Retell sends `call.call_id` and provider `tool_call_id` for idempotency (see [Smoke Scenario 10](retell-voice-smoke-scenarios.md#scenario-10--provider-tool_call_id-behavior)).
+5. Use the same tunnel base URL for all seven custom functions and the lifecycle webhook unless you intentionally split hosts.
+6. For local-only testing without real signatures, use `RETELL_ALLOW_INSECURE_WEBHOOKS=true` in `local` / `development` `APP_ENV` only (see [Retell Webhook Security](../architecture/retell-webhook-security.md)).
 
 ## Webhook Setup Checklist
 
@@ -260,16 +321,18 @@ sequenceDiagram
 
 | Rule | Rationale |
 |------|-----------|
+| **Prompt controls flow; backend controls invariants** | Agent decides what to ask and when; tools enforce holds, hours, confirmation, and booking outcomes |
 | **Backend tools are source of truth** | Retell must not calculate availability, dates, or appointment outcomes locally |
 | **No relative date math in Retell** | Use `get_clinic_context` + structured `date_expression` |
 | **Webhook verification stays enabled** | Prevents unsigned tool and lifecycle callbacks |
-| **No real patient data** | Portfolio demo only; fictional names and scenarios |
+| **No real PHI in public demo** | Fictional names, `.test` emails, and sample DOBs only; no production patient data |
 | **No API keys in frontend** | `RETELL_API_KEY` only on API; browser uses short-lived `access_token` |
 | **Do not store access tokens in localStorage** | Frontend keeps tokens in memory for the active session only |
 | **Public demo guardrails** | Rate limits on chat, Retell tools, and voice web-call creation |
 | **Signature before guardrails** | Invalid Retell signatures do not consume rate-limit counters |
+| **Natural voice wording** | Avoid “slot”, hold references, and UUIDs in spoken confirmation (see master prompt and backend `suggested_response_text` templates) |
 
-The adapter cannot bypass `AppointmentBookingService`, hold rules, clinic business hours, or confirmation requirements (see [Retell Tool-Calling Adapter](../architecture/retell-tool-calling-adapter.md)).
+The adapter cannot bypass `AppointmentBookingService`, hold rules, clinic business hours, patient intake mode, or confirmation requirements (see [Retell Tool-Calling Adapter](../architecture/retell-tool-calling-adapter.md)).
 
 ## Smoke Test Checklist
 
@@ -298,6 +361,9 @@ After dashboard and deployment configuration:
 
 - [ ] Repeated voice or tool requests eventually return `429` when guardrails are enabled.
 - [ ] Demo disclaimer visible in UI (fictional clinic).
+- [ ] Callers use sample contact information only — no real PHI collected or spoken.
+- [ ] `VOICE_PATIENT_INTAKE_MODE` matches environment (`demo_auto_create` for public demo; `lookup_only` otherwise).
+- [ ] Transcript review: no “slot”, “hold reference”, “patient not found”, or UUID strings in agent speech (see [Smoke Scenarios — transcript review](retell-voice-smoke-scenarios.md)).
 
 ## Rollback Steps
 
