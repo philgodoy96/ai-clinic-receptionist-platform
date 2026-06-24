@@ -1,6 +1,8 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block).
+Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block, `retell-receptionist-v3.2`).
+
+**Voice slice scope:** This runbook prioritizes **new appointment booking** with identity resolution. Cancellation and rescheduling tools remain registered for future slices; the active master prompt does not advertise full cancel/reschedule lookup yet.
 
 Related docs:
 
@@ -482,7 +484,18 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `patient_date_of_birth` | Yes | ISO date `YYYY-MM-DD` in tool args only — do not require caller to speak this format |
 | `patient_email` | Yes | Must match what caller **spoke and confirmed**; never invent |
 | `patient_phone` | No | Omit unless caller provided a number; never invent |
-| `patient_resolution_id` | No | Preferred when identity was resolved earlier on this call |
+| `patient_resolution_id` | No | Preferred when identity was resolved earlier on this call; may be `null` in Retell schema |
+
+Retell dashboard JSON schema (optional field):
+
+```json
+{
+  "patient_resolution_id": {
+    "type": ["string", "null"]
+  }
+}
+```
+
 | `explicit_confirmation` | Yes | Must be `true` only after hold + identity collected/confirmed + final summary + clear yes |
 | `confirmation_text` | No | Short caller confirmation phrase |
 | `notes` | No | Visit reason if collected |
@@ -515,6 +528,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `patient_not_found` | Name, DOB, and email do not match a patient record (or demo intake is `lookup_only`) |
 | `patient_identity_confirmation_required` | `patient_resolution_id` is `possible_match` but not confirmed |
 | `patient_identity_not_resolved` | Token missing, expired, wrong call, or unknown |
+| `patient_resolution_id_required` | Identity was resolved on this call but `book_appointment` omitted a valid `patient_resolution_id` |
 | `demo_guardrail_limit_exceeded` | Daily demo booking quota reached |
 | `missing_voice_conversation_context` | Voice call / conversation not linked |
 | `voice_booking_unavailable` | Booking service not configured |
@@ -524,6 +538,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | Error | Say |
 |-------|-----|
 | `patient_not_found` | "I'm not matching those details yet — could we try your name and date of birth once more?" Then re-collect one field at a time. **Never say "patient not found."** |
+| `patient_resolution_id_required` | Re-call `book_appointment` with the `patient_resolution_id` from `resolve_patient_identity` on this call. Do not ask the caller to repeat name and date of birth after `exact_match` or `created`. |
 | `appointment_hold_expired` | "That time may no longer be available. Let me check the schedule again." Re-run `check_availability` → `hold_appointment_slot` → summary → confirm → book. |
 | `booking_confirmation_required` | Ask again: "Would you like me to go ahead and schedule that appointment?" |
 | `demo_guardrail_limit_exceeded` | "I'm unable to complete another booking right now. Please try again later." |
