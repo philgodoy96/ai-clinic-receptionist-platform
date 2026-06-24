@@ -38,7 +38,9 @@ _BLOCKED_RESPONSE_PLAN_KEYS = frozenset(
 _SAFE_FACT_KEYS = frozenset(
     {
         "appointment_id",
+        "appointment_time",
         "doctor_name",
+        "failure_code",
         "failure_reason",
         "hold_id",
         "intent",
