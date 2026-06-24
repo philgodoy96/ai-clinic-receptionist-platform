@@ -191,6 +191,7 @@ Upcoming:
 
 - written chat reschedule flow
 - Tool call recording
+- Voice patient identity resolution (`resolve_patient_identity` tool) — see [voice-patient-identity-resolution.md](operations/voice-patient-identity-resolution.md)
 
 ## Stage 8 — Background Email Jobs
 

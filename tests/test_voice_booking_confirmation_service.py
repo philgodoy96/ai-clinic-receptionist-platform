@@ -480,8 +480,50 @@ def test_new_patient_succeeds_in_demo_auto_create_mode() -> None:
 
     patient_repo = _patient_repository(context)
     assert len(patient_repo.patients) == 1
+    assert patient_repo.patients[0].phone_number is None
     assert result.patient_id == patient_repo.patients[0].id
     assert len(context.tracking_booking.book_calls) == 1
+
+
+def test_new_demo_patient_booking_uses_caller_provided_email_only() -> None:
+    context = create_voice_booking_confirmation_context(
+        patients=[],
+        voice_patient_intake_mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+    hold_id = _active_hold_id(context)
+    caller_email = "felipe.logan@example.test"
+
+    result = context.service.confirm_and_book(
+        _build_request(
+            context,
+            hold_id=hold_id,
+            patient_name="Felipe Logan",
+            patient_email=caller_email,
+            patient_date_of_birth=date(1990, 3, 15),
+            patient_phone=None,
+        ),
+    )
+
+    patient = _patient_repository(context).patients[0]
+    assert patient.email == caller_email
+    assert patient.phone_number is None
+    assert result.patient_id == patient.id
+
+
+def test_missing_email_rejected() -> None:
+    context = create_voice_booking_confirmation_context()
+    hold_id = _active_hold_id(context)
+
+    with pytest.raises(VoiceBookingMissingIdentityError):
+        context.service.confirm_and_book(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_email="   ",
+            ),
+        )
+
+    assert context.tracking_booking.book_calls == []
 
 
 def test_duplicate_new_patient_callback_does_not_duplicate_patient_or_appointment() -> None:

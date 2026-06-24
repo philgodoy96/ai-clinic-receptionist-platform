@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -108,21 +107,20 @@ class PatientIntakeService:
             msg = "patient was not found"
             raise PatientIntakeNotFoundError(msg)
 
-        phone_number = identity.phone_number or _synthetic_demo_phone_number(identity.email)
-        existing_by_phone = self.patients.get_by_phone_number(phone_number)
-        if existing_by_phone is not None:
-            if self._identity_matches_patient(identity, existing_by_phone):
-                return existing_by_phone
-            phone_number = _synthetic_demo_phone_number(
-                f"{identity.email}:{identity.full_name}:{identity.date_of_birth.isoformat()}",
-            )
+        if identity.phone_number is not None:
+            existing_by_phone = self.patients.get_by_phone_number(identity.phone_number)
+            if existing_by_phone is not None:
+                if self._identity_matches_patient(identity, existing_by_phone):
+                    return existing_by_phone
+                msg = "patient was not found"
+                raise PatientIntakeNotFoundError(msg)
 
         patient = Patient(
             id=uuid4(),
             full_name=identity.full_name,
             date_of_birth=identity.date_of_birth,
             email=identity.email,
-            phone_number=phone_number,
+            phone_number=identity.phone_number,
         )
 
         try:
@@ -168,9 +166,3 @@ class PatientIntakeService:
 def _is_demo_sample_email(email: str) -> bool:
     domain = email.rsplit("@", maxsplit=1)[-1]
     return _DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN.search(domain) is not None
-
-
-def _synthetic_demo_phone_number(seed: str) -> str:
-    digest = int(hashlib.sha256(seed.strip().lower().encode()).hexdigest()[:10], 16)
-    suffix = digest % 10_000_000
-    return f"+1-555-{suffix:07d}"
