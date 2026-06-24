@@ -19,7 +19,6 @@ class PatientResolutionNextStep(StrEnum):
     ASK_POSSIBLE_MATCH_CONFIRMATION = "ask_possible_match_confirmation"
     ASK_EMAIL_OR_PHONE = "ask_email_or_phone"
     RETRY_IDENTITY = "retry_identity"
-    SAMPLE_EMAIL_REQUIRED = "sample_email_required"
     DEMO_PATIENT_CREATION_DISABLED = "demo_patient_creation_disabled"
     PATIENT_IDENTITY_NOT_RESOLVED = "patient_identity_not_resolved"
 

@@ -48,7 +48,7 @@ The `resolve_patient_identity` tool (or equivalent internal service step) return
 | `possible_match` | One likely patient, but a field is weak or asymmetric (for example spoken name omits middle name) | Ask a natural confirmation question before treating identity as settled |
 | `multiple_matches` | More than one patient matches the current field set | Narrow with email or phone; ask one clarifying question at a time |
 | `not_found` | No patient matches; creation not allowed or not attempted | Retry identity collection or explain demo limits; do not call `book_appointment` |
-| `created` | Demo policy created a new minimal patient (`demo_auto_create` + sample `.test` email only) | Proceed toward booking; resolution is already bound to the new record |
+| `created` | Demo policy created a new minimal patient (`demo_auto_create` + syntactically valid email) | Proceed toward booking; resolution is already bound to the new record |
 
 Each successful resolution (except `not_found`) should return:
 
@@ -127,7 +127,7 @@ This design is appropriate for a **public fictional-clinic demo**, not for clini
 What it does:
 
 - Reduces accidental wrong-patient booking in the demo dataset.
-- Bounds auto-create to sample `.test` emails in `demo_auto_create` mode.
+- Bounds auto-create to syntactically valid emails in `demo_auto_create` mode (public demo prompts may still recommend fictional sample addresses).
 - Keeps stronger identifiers (email unique, phone unique) in the matching path.
 - Avoids storing raw transcripts for verification.
 
@@ -187,7 +187,9 @@ Note: seeded demo doctors include **Dr. Michael Reed** (cardiology). Patient res
 
 **Service behavior (current `PatientIntakeService`):** normalizes name/email, does not invent phone, idempotent on retry by email.
 
-**Rejected path:** `felipe.logan@example.com` → `not_found` (non-`.test` domain blocked in demo auto-create).
+**Also accepted:** `felipe.logan@gmail.com` or any other syntactically valid email when `demo_auto_create` is enabled.
+
+**Rejected path:** malformed email strings fail schema validation before resolution runs.
 
 ### Existing Patient Lookup by Email or Phone
 
@@ -234,7 +236,7 @@ Resolution may be retried freely; it must not create appointments or send email.
 - `exact_match` requires a single patient after normalization and configured matching rules.
 - `possible_match` never satisfies booking without caller confirmation recorded server-side.
 - `multiple_matches` never returns a single patient id without an additional discriminant (email or phone).
-- `created` only occurs when `demo_auto_create` policy allows and email domain is an approved sample domain (`.test`).
+- `created` only occurs when `demo_auto_create` policy allows and the email passes schema validation.
 - `not_found` in `lookup_only` mode is final for that field set until the caller changes input.
 - Email and phone are never invented by the agent or backend.
 - Resolution records are scoped to `provider_call_id` (or equivalent voice owner); cross-call reuse is rejected.
@@ -251,7 +253,7 @@ Resolution may be retried freely; it must not create appointments or send email.
 | Unconfirmed `possible_match` | Booking attempted without confirmation | Reject booking; agent confirms identity first |
 | Expired `patient_resolution_id` | TTL elapsed or hold outlived resolution | Re-resolve; may need to re-confirm |
 | Resolution owner mismatch | Token from another call | Reject booking; re-resolve on current call |
-| Demo domain rejected | Auto-create with non-`.test` email | `not_found`; agent guides toward sample email |
+| Invalid email | Malformed email in tool arguments | Schema validation rejects before resolution; agent re-collects |
 | Integrity collision on create | Concurrent demo creates same email/phone | Idempotent recover existing row if identity matches; else `not_found` |
 | `booking_identity_missing` | `book_appointment` without valid resolution or complete inline fallback | No appointment; agent completes resolution |
 | Wrong-patient social engineering | Caller knows another demo patient's sample email + DOB | Demo accepts match — acceptable demo risk, unacceptable in production |
@@ -261,14 +263,14 @@ Resolution may be retried freely; it must not create appointments or send email.
 - Unit tests for outcome classification (exact, possible, multiple, not found, created) with fake patient repositories.
 - Tests for normalization (case, whitespace, phone digits) aligned with `PatientIntakeService`.
 - Integration tests: resolution → confirmed `possible_match` → `book_appointment` with token.
-- Regression: `lookup_only` never creates; `demo_auto_create` idempotency and `.test` domain guard.
+- Regression: `lookup_only` never creates; `demo_auto_create` idempotency and valid-email acceptance.
 - Voice booking tests: reject booking without resolution when token is required.
 
 ## Related Configuration
 
 ```env
 VOICE_PATIENT_INTAKE_MODE=lookup_only          # default; no auto-create
-VOICE_PATIENT_INTAKE_MODE=demo_auto_create     # public demo; .test emails only
+VOICE_PATIENT_INTAKE_MODE=demo_auto_create     # public demo; valid emails accepted
 ```
 
 Public demo should pair `demo_auto_create` with [Public Demo Guardrails](public-demo-guardrails.md) so resolution and booking remain rate-limited and quota-bounded.

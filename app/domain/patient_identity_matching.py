@@ -9,7 +9,6 @@ _MARKDOWN_MAILTO_EMAIL_PATTERN = re.compile(
     r"^\[([^\]]+)\]\(mailto:[^)]+\)$",
     re.IGNORECASE,
 )
-_DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN = re.compile(r"\.test$", re.IGNORECASE)
 
 
 def sanitize_spoken_email(email: str) -> str:
@@ -19,11 +18,6 @@ def sanitize_spoken_email(email: str) -> str:
         stripped = markdown_match.group(1).strip()
 
     return stripped.lower()
-
-
-def is_demo_sample_email(email: str) -> bool:
-    domain = email.rsplit("@", maxsplit=1)[-1]
-    return _DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN.search(domain) is not None
 
 
 def normalize_patient_name(name: str) -> str:

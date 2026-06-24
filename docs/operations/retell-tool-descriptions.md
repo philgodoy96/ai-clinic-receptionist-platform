@@ -343,7 +343,11 @@ Read-only identity resolution (demo create only when allowed and no existing mat
 | `patient_email` | No | Use when caller provided and confirmed email |
 | `patient_phone` | No | Omit unless caller provided a number |
 | `caller_claims_existing_patient` | No | Default `true`; blocks demo create when no match |
-| `allow_demo_patient_creation` | No | Default `false`; set `true` only in public demo for new patients with `.test` email |
+| `allow_demo_patient_creation` | No | Default `false`; set `true` for new-patient demo create when no match exists |
+
+### Confirmation timing
+
+After asking any confirmation question (DOB, email, possible match, final booking, cancel, reschedule), **wait for the caller's answer**. Never call `resolve_patient_identity` or `book_appointment` in the same turn after "is that correct?"
 
 ### Success result fields
 
@@ -353,16 +357,18 @@ Read-only identity resolution (demo create only when allowed and no existing mat
 | `requires_confirmation` | `true` when caller must confirm identity |
 | `patient_resolution_id` | Opaque token for confirm/booking (absent on `not_found` / `multiple_matches`) |
 | `confirmation_question` | Safe natural-language question for `possible_match` |
+| `suggested_response_text` | Provider-safe phrase for the receptionist |
+
+### `next_step` values
+
 | `next_step` | Agent guidance |
 |-------------|----------------|
 | `proceed_to_final_booking_confirmation` | Identity resolved (`exact_match` or `created`); continue to final summary and `book_appointment` |
 | `ask_possible_match_confirmation` | Ask `confirmation_question`; then `confirm_patient_identity` |
 | `ask_email_or_phone` | Ask for one discriminant (email or phone); re-call `resolve_patient_identity` |
-| `sample_email_required` | Ask caller for a sample `.test` email — do not repeat name/DOB |
 | `demo_patient_creation_disabled` | Explain creation unavailable; offer existing-patient path |
 | `retry_identity` | Re-collect identity (existing-patient lookup failures only) |
 | `patient_identity_not_resolved` | Re-run identity resolution before booking |
-| `suggested_response_text` | Provider-safe phrase for the receptionist |
 
 ### Common errors
 
@@ -378,7 +384,6 @@ Read-only identity resolution (demo create only when allowed and no existing mat
 |----------------|-----|
 | `possible_match` | Ask `confirmation_question` (safe name only — never read stored email/phone), then call `confirm_patient_identity` |
 | `created` / `exact_match` | Follow `next_step: proceed_to_final_booking_confirmation` — proceed to final summary |
-| `not_found` + `sample_email_required` | Ask for sample `.test` email — do not ask to repeat name and DOB |
 | `multiple_matches` | Ask for email (or phone) on file — one question at a time |
 | `not_found` | "I'm not matching those details yet — could we try your name and date of birth once more?" |
 
@@ -507,7 +512,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `booking_hold_missing` | No active hold |
 | `appointment_hold_expired` | Hold timed out |
 | `appointment_hold_owner_mismatch` | Hold belongs to another call |
-| `patient_not_found` | Name, DOB, and email do not match a patient record (or demo intake is `lookup_only` / email is not a `.test` domain) |
+| `patient_not_found` | Name, DOB, and email do not match a patient record (or demo intake is `lookup_only`) |
 | `patient_identity_confirmation_required` | `patient_resolution_id` is `possible_match` but not confirmed |
 | `patient_identity_not_resolved` | Token missing, expired, wrong call, or unknown |
 | `demo_guardrail_limit_exceeded` | Daily demo booking quota reached |

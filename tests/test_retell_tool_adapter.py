@@ -965,7 +965,7 @@ def test_resolve_patient_identity_created_when_demo_creation_allowed(
     assert response.result["next_step"] == "proceed_to_final_booking_confirmation"
 
 
-def test_resolve_patient_identity_sample_email_required_for_non_demo_email(
+def test_resolve_patient_identity_created_with_real_email(
     patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
 ) -> None:
     response = patient_identity_adapter_bundle.adapter.execute(
@@ -973,18 +973,41 @@ def test_resolve_patient_identity_sample_email_required_for_non_demo_email(
             arguments={
                 "patient_name": "Felipe Logan",
                 "patient_date_of_birth": "1996-09-19",
-                "patient_email": "visitor@gmail.com",
+                "patient_email": "mike@gmail.com",
                 "caller_claims_existing_patient": False,
                 "allow_demo_patient_creation": True,
             },
-            tool_call_id="resolve-tool-sample-email",
+            tool_call_id="resolve-tool-real-email",
         ),
     )
 
     assert response.status == "succeeded"
-    assert response.result["match_status"] == "not_found"
-    assert response.result["next_step"] == "sample_email_required"
-    assert response.result["patient_resolution_id"] is None
+    assert response.result["match_status"] == "created"
+    assert response.result["next_step"] == "proceed_to_final_booking_confirmation"
+    assert response.result["patient_resolution_id"] is not None
+
+
+def test_resolve_patient_identity_rejects_invalid_email(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-identity",
+                "tool_name": "resolve_patient_identity",
+                "arguments": {
+                    "patient_name": "Felipe Logan",
+                    "patient_date_of_birth": "1996-09-19",
+                    "patient_email": "not-an-email",
+                    "caller_claims_existing_patient": False,
+                    "allow_demo_patient_creation": True,
+                },
+            },
+        ),
+    )
+
+    assert response.status == "rejected"
+    assert response.error_code == "retell_tool_arguments_invalid"
 
 
 def test_resolve_patient_identity_invalid_args_rejected(
