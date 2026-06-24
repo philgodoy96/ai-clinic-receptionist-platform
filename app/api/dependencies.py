@@ -79,6 +79,7 @@ from app.services.time_preferences import TimePreferenceParser
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
 from app.services.voice_calls import VoiceCallInspectionService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
+from app.services.voice_patient_appointment_lookup import VoicePatientAppointmentLookupService
 
 
 def get_scheduling_service(
@@ -437,6 +438,23 @@ def get_appointment_rescheduling_service(
     )
 
 
+def get_voice_patient_appointment_lookup_service(
+    db: Annotated[Session, Depends(get_db)],
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
+) -> VoicePatientAppointmentLookupService:
+    return VoicePatientAppointmentLookupService(
+        patient_identity_resolution=patient_identity_resolution,
+        appointments=SQLAlchemyAppointmentRepository(db),
+        scheduling_metadata=scheduling_service,
+        clinic_time_service=clinic_time_service,
+    )
+
+
 def get_retell_tool_calling_adapter(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -462,6 +480,10 @@ def get_retell_tool_calling_adapter(
         PatientIdentityResolutionService,
         Depends(get_patient_identity_resolution_service),
     ],
+    voice_patient_appointment_lookup: Annotated[
+        VoicePatientAppointmentLookupService,
+        Depends(get_voice_patient_appointment_lookup_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -476,6 +498,7 @@ def get_retell_tool_calling_adapter(
         appointments=SQLAlchemyAppointmentRepository(db),
         clinic_time_service=clinic_time_service,
         patient_identity_resolution=patient_identity_resolution,
+        voice_patient_appointment_lookup=voice_patient_appointment_lookup,
         db=db,
     )
 

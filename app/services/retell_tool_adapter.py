@@ -60,6 +60,10 @@ from app.domain.retell_tools import (
 )
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus
+from app.domain.voice_appointment_lookup import (
+    ListPatientAppointmentsRequest,
+    PatientResolutionRequiredForAppointmentLookupError,
+)
 from app.domain.voice_booking import (
     VoiceBookingConfirmationRequest,
     VoiceBookingExpiredHoldError,
@@ -108,6 +112,7 @@ from app.schemas.retell_tools import (
     CheckAvailabilityToolArguments,
     ConfirmPatientIdentityToolArguments,
     HoldAppointmentSlotToolArguments,
+    ListPatientAppointmentsToolArguments,
     ReleaseAppointmentHoldToolArguments,
     RescheduleAppointmentToolArguments,
     ResolvePatientIdentityToolArguments,
@@ -140,6 +145,9 @@ from app.services.scheduling import (
 )
 from app.services.scheduling_availability import SchedulingAvailabilityResolver
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
+from app.services.voice_patient_appointment_lookup import (
+    build_patient_resolution_retry_response,
+)
 
 logger = logging.getLogger("app.retell_tool_adapter")
 
@@ -147,6 +155,7 @@ _RETELL_TOOL_EXECUTION_FAILED_CODE = "retell_tool_execution_failed"
 _PATIENT_RESOLUTION_NOT_FOUND_CODE = "patient_resolution_not_found"
 _PATIENT_IDENTITY_CONFIRMATION_REJECTED_CODE = "patient_identity_confirmation_rejected"
 _PATIENT_IDENTITY_RESOLUTION_UNAVAILABLE_CODE = "patient_identity_resolution_unavailable"
+_VOICE_APPOINTMENT_LOOKUP_UNAVAILABLE_CODE = "voice_appointment_lookup_unavailable"
 
 _READ_ONLY_VOICE_CONTEXT_RECOVERABLE_ERRORS = (
     VoiceCallNotFoundForBridgeError,
@@ -303,6 +312,19 @@ class AppointmentRepositoryForRetellToolCalling(Protocol):
         raise NotImplementedError
 
 
+class VoicePatientAppointmentLookupServiceForRetellToolCalling(Protocol):
+    def list_patient_appointments(
+        self,
+        request: ListPatientAppointmentsRequest,
+    ) -> Any:
+        raise NotImplementedError
+
+
+VoicePatientAppointmentLookupForRetell = (
+    VoicePatientAppointmentLookupServiceForRetellToolCalling
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _VoiceConversationSession:
     conversation: Conversation
@@ -325,6 +347,7 @@ class RetellToolCallingAdapter:
         appointments: AppointmentRepositoryForRetellToolCalling | None = None,
         clinic_time_service: ClinicTimeService | None = None,
         patient_identity_resolution: PatientIdentityResolutionService | None = None,
+        voice_patient_appointment_lookup: VoicePatientAppointmentLookupForRetell | None = None,
         db: Session | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
@@ -342,6 +365,7 @@ class RetellToolCallingAdapter:
         self.appointments = appointments
         self.clinic_time_service = clinic_time_service
         self.patient_identity_resolution = patient_identity_resolution
+        self.voice_patient_appointment_lookup = voice_patient_appointment_lookup
         self.db = db
         self.provider = provider
 
@@ -428,6 +452,9 @@ class RetellToolCallingAdapter:
 
         if parsed.tool_name is RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY:
             return self._execute_confirm_patient_identity(parsed)
+
+        if parsed.tool_name is RetellSupportedToolName.LIST_PATIENT_APPOINTMENTS:
+            return self._execute_list_patient_appointments(parsed)
 
         return build_rejected_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -1351,6 +1378,44 @@ class RetellToolCallingAdapter:
             ),
         )
 
+    def _execute_list_patient_appointments(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        if self.voice_patient_appointment_lookup is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=_VOICE_APPOINTMENT_LOOKUP_UNAVAILABLE_CODE,
+            )
+
+        arguments = _as_list_patient_appointments_arguments(parsed.arguments)
+        voice_session = self._ensure_voice_conversation_for_read_only_tool(parsed)
+        conversation_id = voice_session.conversation.id if voice_session is not None else None
+
+        try:
+            lookup_result = self.voice_patient_appointment_lookup.list_patient_appointments(
+                ListPatientAppointmentsRequest(
+                    patient_resolution_id=arguments.patient_resolution_id,
+                    provider_call_id=parsed.provider_call_id,
+                    conversation_id=conversation_id,
+                    limit=arguments.limit,
+                ),
+            )
+        except PatientResolutionRequiredForAppointmentLookupError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=_PATIENT_RESOLUTION_NOT_FOUND_CODE,
+                result=build_patient_resolution_retry_response(),
+            )
+
+        return build_succeeded_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            result=lookup_result.to_tool_result(),
+        )
+
     def _commit_identity_resolution_durable_state(self) -> None:
         if self.db is None:
             return
@@ -1942,6 +2007,16 @@ def _as_confirm_patient_identity_arguments(
 ) -> ConfirmPatientIdentityToolArguments:
     if not isinstance(arguments, ConfirmPatientIdentityToolArguments):
         msg = "expected confirm patient identity tool arguments"
+        raise TypeError(msg)
+
+    return arguments
+
+
+def _as_list_patient_appointments_arguments(
+    arguments: Any,
+) -> ListPatientAppointmentsToolArguments:
+    if not isinstance(arguments, ListPatientAppointmentsToolArguments):
+        msg = "expected list patient appointments tool arguments"
         raise TypeError(msg)
 
     return arguments
