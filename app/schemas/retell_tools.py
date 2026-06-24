@@ -273,6 +273,7 @@ class CancelAppointmentToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     appointment_id: UUID | str | None = None
+    patient_resolution_id: str | None = Field(default=None, max_length=120)
     explicit_confirmation: bool
     confirmation_text: str | None = Field(
         default=None,
@@ -307,6 +308,32 @@ class CancelAppointmentToolArguments(BaseModel):
         stripped = value.strip()
         if not stripped:
             msg = "patient_name cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+    @field_validator("patient_resolution_id")
+    @classmethod
+    def validate_patient_resolution_id_not_blank_if_present(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+    @field_validator("confirmation_text")
+    @classmethod
+    def validate_confirmation_text_not_blank_if_present(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "confirmation_text cannot be blank"
             raise ValueError(msg)
 
         return stripped

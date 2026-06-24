@@ -15,13 +15,16 @@ from app.domain.appointments import (
     AppointmentNotFoundError,
 )
 from app.domain.audit.enums import AuditEventOutcome, AuditEventType
-from app.domain.scheduling.enums import AppointmentStatus
+from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.models.appointment_cancellation_attempt import AppointmentCancellationAttempt
 from app.models.scheduling import Appointment, Doctor, Patient, Specialty
 from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.audit_logs import AuditLogService
 from tests.test_appointment_booking_api import FakeAuditLogService
-from tests.test_appointment_booking_service import FakeAppointmentRepository
+from tests.test_appointment_booking_service import (
+    FakeAppointmentRepository,
+    FakeAvailabilitySlotRepository,
+)
 
 
 @dataclass
@@ -31,6 +34,7 @@ class CancellationContext:
     attempt_repository: FakeAppointmentCancellationAttemptRepository
     audit_logs: FakeAuditLogService
     appointment: Appointment
+    availability_slot_repository: FakeAvailabilitySlotRepository | None = None
 
 
 class FakeAppointmentCancellationAttemptRepository:
@@ -77,6 +81,7 @@ def _build_request(
 def create_cancellation_context(
     *,
     status: AppointmentStatus = AppointmentStatus.SCHEDULED,
+    with_availability_slot: bool = False,
 ) -> CancellationContext:
     specialty = Specialty(
         id=uuid4(),
@@ -100,11 +105,27 @@ def create_cancellation_context(
         email="john.miller@example.test",
     )
     start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    availability_slot_repository: FakeAvailabilitySlotRepository | None = None
+    availability_slot_id = None
+    if with_availability_slot:
+        from app.models.scheduling import AvailabilitySlot
+
+        slot = AvailabilitySlot(
+            id=uuid4(),
+            doctor_id=doctor.id,
+            start_time=start_time,
+            end_time=start_time + timedelta(minutes=30),
+            status=AvailabilitySlotStatus.BOOKED,
+        )
+        availability_slot_repository = FakeAvailabilitySlotRepository([slot])
+        availability_slot_id = slot.id
+
     appointment = Appointment(
         id=uuid4(),
         patient_id=patient.id,
         doctor_id=doctor.id,
         specialty_id=specialty.id,
+        availability_slot_id=availability_slot_id,
         start_time=start_time,
         end_time=start_time + timedelta(minutes=30),
         status=status,
@@ -117,6 +138,7 @@ def create_cancellation_context(
         appointments=appointment_repository,
         cancellation_attempts=attempt_repository,
         audit_logs=cast(AuditLogService, audit_logs),
+        availability_slots=availability_slot_repository,
     )
 
     return CancellationContext(
@@ -125,6 +147,7 @@ def create_cancellation_context(
         attempt_repository=attempt_repository,
         audit_logs=audit_logs,
         appointment=appointment,
+        availability_slot_repository=availability_slot_repository,
     )
 
 
@@ -246,3 +269,14 @@ def test_duplicate_idempotency_key_does_not_duplicate_side_effects() -> None:
     assert len(context.audit_logs.records) == 1
     assert len(context.attempt_repository.attempts) == 1
     assert len(context.appointment_repository.appointments) == 1
+
+
+def test_cancellation_releases_linked_availability_slot() -> None:
+    context = create_cancellation_context(with_availability_slot=True)
+    assert context.availability_slot_repository is not None
+    slot = context.availability_slot_repository.slots[0]
+
+    context.service.cancel_appointment(_build_request(context.appointment.id))
+
+    assert context.appointment.status == AppointmentStatus.CANCELLED
+    assert slot.status == AvailabilitySlotStatus.AVAILABLE

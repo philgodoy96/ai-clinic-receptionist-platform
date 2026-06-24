@@ -708,7 +708,10 @@ def test_verified_cancel_appointment_route_succeeds() -> None:
                 "provider_call_id": PROVIDER_CALL_ID,
                 "tool_call_id": TOOL_CALL_ID,
                 "tool_name": "cancel_appointment",
-                "arguments": cancellation_arguments(appointment_id=str(appointment.id)),
+                "arguments": cancellation_arguments(
+                    appointment_id=str(appointment.id),
+                    patient_resolution_id=context["patient_resolution_id"],
+                ),
             },
         )
 
@@ -777,7 +780,10 @@ def test_cancel_appointment_route_does_not_call_email_service() -> None:
                 "provider_call_id": PROVIDER_CALL_ID,
                 "tool_call_id": "tool-call-cancel-route-email",
                 "tool_name": "cancel_appointment",
-                "arguments": cancellation_arguments(appointment_id=str(appointment.id)),
+                "arguments": cancellation_arguments(
+                    appointment_id=str(appointment.id),
+                    patient_resolution_id=context["patient_resolution_id"],
+                ),
             },
         )
 

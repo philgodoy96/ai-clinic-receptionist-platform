@@ -282,7 +282,10 @@ def test_booking_tool_callback_idempotency_still_works() -> None:
 def test_cancel_tool_callback_idempotency_still_works() -> None:
     context = create_retell_cancellation_tool_context()
     appointment = context["appointment"]
-    request = cancellation_tool_request(appointment_id=str(appointment.id))
+    request = cancellation_tool_request(
+        appointment_id=str(appointment.id),
+        patient_resolution_id=context["patient_resolution_id"],
+    )
 
     first = context["adapter"].execute(request)
     second = context["adapter"].execute(request)
