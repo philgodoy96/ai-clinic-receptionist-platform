@@ -432,7 +432,7 @@ def test_multiple_matches_prompts_for_email() -> None:
 
     assert resolve.status == "succeeded"
     assert resolve.result["match_status"] == "multiple_matches"
-    assert resolve.result["next_step"] == PatientResolutionNextStep.COLLECT_EMAIL.value
+    assert resolve.result["next_step"] == PatientResolutionNextStep.ASK_EMAIL_OR_PHONE.value
     assert resolve.result["patient_resolution_id"] is None
     assert "email" in resolve.result["suggested_response_text"].lower()
     assert "sarah.chen@example.test" not in resolve.result["suggested_response_text"]

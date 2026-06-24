@@ -127,7 +127,7 @@ Two **Sarah Chen** patients share DOB July 22, 1990 (different emails in seed da
 
 #### Expected tool sequence
 
-1. `resolve_patient_identity` (name + DOB only) → `multiple_matches`, `next_step: collect_email`, **no** `patient_resolution_id`.
+1. `resolve_patient_identity` (name + DOB only) → `multiple_matches`, `next_step: ask_email_or_phone`, **no** `patient_resolution_id`.
 2. `resolve_patient_identity` (with email) → `exact_match`, `patient_resolution_id` present.
 
 #### Pass criteria

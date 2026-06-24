@@ -164,7 +164,7 @@ class VoiceBookingConfirmationService:
             owner_id=targets.owner_id,
         )
 
-        patient = self._resolve_patient(request)
+        patient = self._resolve_patient(request, voice_context)
         self._check_demo_quotas(request.client_ip)
 
         attempt = existing_attempt or self._create_pending_attempt(
@@ -427,7 +427,23 @@ class VoiceBookingConfirmationService:
             msg = "appointment hold was not found or expired"
             raise VoiceBookingExpiredHoldError(msg) from exc
 
-    def _resolve_patient(self, request: VoiceBookingConfirmationRequest) -> Any:
+    def _resolve_patient(
+        self,
+        request: VoiceBookingConfirmationRequest,
+        voice_context: dict[str, Any] | None = None,
+    ) -> Any:
+        context_resolution_id = (
+            voice_context.get("patient_resolution_id") if voice_context else None
+        )
+        if (
+            self.patient_identity_resolution is not None
+            and context_resolution_id is not None
+            and str(context_resolution_id).strip() != ""
+            and not _has_patient_resolution_id(request)
+        ):
+            msg = "patient identity is not resolved"
+            raise VoiceBookingIdentityNotResolvedError(msg)
+
         if _has_patient_resolution_id(request):
             return self._resolve_patient_from_resolution_token(request)
 

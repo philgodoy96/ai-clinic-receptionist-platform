@@ -373,3 +373,35 @@ def test_duplicate_booking_retry_remains_idempotent_with_resolution_token() -> N
     assert second.duplicate is True
     assert len(context.tracking_booking.book_calls) == 1
     assert len(context.email_repository.email_jobs) == 1
+
+
+def test_booking_fails_when_voice_context_has_resolution_without_token() -> None:
+    context, _, patients = _booking_context_with_resolution()
+    patient = patients[0]
+    _, resolution_repository = _patient_identity_resolution_service(patients)
+    context.service.patient_identity_resolution = PatientIdentityResolutionService(
+        patients=FakePatientRepository(patients),
+        resolutions=resolution_repository,
+        patient_intake=PatientIntakeService(
+            patients=FakePatientRepository(patients),
+            mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+        ),
+    )
+    resolution_id = _store_resolution(
+        resolution_repository=resolution_repository,
+        patient=patient,
+        match_status=PatientResolutionMatchStatus.EXACT_MATCH,
+        conversation_id=context.conversation.id,
+        confirmed=True,
+    )
+    hold_id = _active_hold_id(context)
+    context.conversation.conversation_metadata = {
+        "voice_context": {
+            "hold_id": hold_id,
+            "availability_slot_id": str(context.booking_context.slot.id),
+            "patient_resolution_id": resolution_id,
+        },
+    }
+
+    with pytest.raises(VoiceBookingIdentityNotResolvedError):
+        context.service.confirm_and_book(_build_request(context, hold_id=hold_id))

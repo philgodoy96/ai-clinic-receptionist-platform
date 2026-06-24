@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.patient_identity_matching import sanitize_spoken_email
 from app.domain.scheduling.expressions import DateExpressionKind, TimeWindowExpressionKind
 from app.schemas.scheduling_expressions import (
     DateExpressionSchema,
@@ -222,6 +223,14 @@ class BookAppointmentToolArguments(BaseModel):
         max_length=MAX_BOOK_APPOINTMENT_NOTES_LENGTH,
     )
 
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
+
     @field_validator("patient_name")
     @classmethod
     def validate_patient_name_not_blank(cls, value: str) -> str:
@@ -278,6 +287,14 @@ class CancelAppointmentToolArguments(BaseModel):
         pattern=_PATIENT_EMAIL_PATTERN,
     )
 
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
+
     @field_validator("patient_name")
     @classmethod
     def validate_patient_name_not_blank_if_present(cls, value: str | None) -> str | None:
@@ -315,6 +332,14 @@ class RescheduleAppointmentToolArguments(BaseModel):
         pattern=_PATIENT_EMAIL_PATTERN,
     )
 
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
+
     @field_validator("patient_name")
     @classmethod
     def validate_patient_name_not_blank_if_present(cls, value: str | None) -> str | None:
@@ -351,6 +376,14 @@ class ResolvePatientIdentityToolArguments(BaseModel):
     patient_phone: str | None = Field(default=None, max_length=40)
     caller_claims_existing_patient: bool = True
     allow_demo_patient_creation: bool = False
+
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
 
     @field_validator("patient_name")
     @classmethod

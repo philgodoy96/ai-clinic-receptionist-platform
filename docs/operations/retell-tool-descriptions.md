@@ -353,7 +353,15 @@ Read-only identity resolution (demo create only when allowed and no existing mat
 | `requires_confirmation` | `true` when caller must confirm identity |
 | `patient_resolution_id` | Opaque token for confirm/booking (absent on `not_found` / `multiple_matches`) |
 | `confirmation_question` | Safe natural-language question for `possible_match` |
-| `next_step` | Agent guidance (`proceed_to_booking`, `confirm_identity`, `collect_email`, etc.) |
+| `next_step` | Agent guidance |
+|-------------|----------------|
+| `proceed_to_final_booking_confirmation` | Identity resolved (`exact_match` or `created`); continue to final summary and `book_appointment` |
+| `ask_possible_match_confirmation` | Ask `confirmation_question`; then `confirm_patient_identity` |
+| `ask_email_or_phone` | Ask for one discriminant (email or phone); re-call `resolve_patient_identity` |
+| `sample_email_required` | Ask caller for a sample `.test` email — do not repeat name/DOB |
+| `demo_patient_creation_disabled` | Explain creation unavailable; offer existing-patient path |
+| `retry_identity` | Re-collect identity (existing-patient lookup failures only) |
+| `patient_identity_not_resolved` | Re-run identity resolution before booking |
 | `suggested_response_text` | Provider-safe phrase for the receptionist |
 
 ### Common errors
@@ -369,6 +377,8 @@ Read-only identity resolution (demo create only when allowed and no existing mat
 | `match_status` | Say |
 |----------------|-----|
 | `possible_match` | Ask `confirmation_question` (safe name only — never read stored email/phone), then call `confirm_patient_identity` |
+| `created` / `exact_match` | Follow `next_step: proceed_to_final_booking_confirmation` — proceed to final summary |
+| `not_found` + `sample_email_required` | Ask for sample `.test` email — do not ask to repeat name and DOB |
 | `multiple_matches` | Ask for email (or phone) on file — one question at a time |
 | `not_found` | "I'm not matching those details yet — could we try your name and date of birth once more?" |
 

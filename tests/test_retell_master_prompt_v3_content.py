@@ -26,7 +26,7 @@ def test_master_prompt_v3_contains_strong_end_call_restrictions() -> None:
     assert "never call end_call while an appointment time is being held" in prompt
     assert "never call end_call before patient identity is resolved" in prompt
     assert "goodbye" in prompt
-    assert "if unsure, continue the conversation" in prompt
+    assert "if unsure whether the caller is finished, continue the conversation" in prompt
 
 
 def test_master_prompt_v3_requires_resolve_before_demo_create() -> None:
@@ -34,13 +34,22 @@ def test_master_prompt_v3_requires_resolve_before_demo_create() -> None:
 
     assert "resolve_patient_identity" in prompt
     assert "allow_demo_patient_creation" in prompt
-    assert "even if the caller says they are new" in prompt
-    assert "possible existing profile" in prompt or "possible_match" in prompt
+    assert "even if caller_claims_existing_patient is false" in prompt
+    assert "possible existing profile" in prompt
+
+
+def test_master_prompt_v3_follows_backend_next_step_for_new_patients() -> None:
+    prompt = _paste_ready_block().lower()
+
+    assert "follow backend next_step" in prompt
+    assert "proceed_to_final_booking_confirmation" in prompt
+    assert "sample_email_required" in prompt
+    assert "do not ask the caller to repeat name and date of birth" in prompt
 
 
 def test_master_prompt_v3_prohibits_invented_contact_details() -> None:
     prompt = _paste_ready_block().lower()
 
-    assert "never invent email" in prompt
-    assert "never invent" in prompt and "phone" in prompt
-    assert "do not reveal stored contact details" in prompt
+    assert "never invent an email address" in prompt
+    assert "never invent a phone number" in prompt
+    assert "never reveal stored email or phone" in prompt

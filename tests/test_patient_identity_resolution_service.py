@@ -101,7 +101,7 @@ def test_exact_match_by_full_name_and_dob() -> None:
 
     assert result.match_status is PatientResolutionMatchStatus.EXACT_MATCH
     assert result.requires_confirmation is False
-    assert result.next_step is PatientResolutionNextStep.PROCEED_TO_BOOKING
+    assert result.next_step is PatientResolutionNextStep.PROCEED_TO_FINAL_BOOKING_CONFIRMATION
     assert result.patient_resolution_id is not None
     assert result.patient_resolution_id != str(patient.id)
 
@@ -127,7 +127,7 @@ def test_possible_match_by_shortened_name_and_dob() -> None:
 
     assert result.match_status is PatientResolutionMatchStatus.POSSIBLE_MATCH
     assert result.requires_confirmation is True
-    assert result.next_step is PatientResolutionNextStep.CONFIRM_IDENTITY
+    assert result.next_step is PatientResolutionNextStep.ASK_POSSIBLE_MATCH_CONFIRMATION
     assert result.candidate_display_name == "Michael Lee Reed"
     assert result.confirmation_question is not None
     assert "possible existing profile" in result.confirmation_question.lower()
@@ -305,7 +305,7 @@ def test_multiple_matches_when_name_and_dob_collide() -> None:
 
     assert result.match_status is PatientResolutionMatchStatus.MULTIPLE_MATCHES
     assert result.requires_confirmation is True
-    assert result.next_step is PatientResolutionNextStep.COLLECT_EMAIL
+    assert result.next_step is PatientResolutionNextStep.ASK_EMAIL_OR_PHONE
     assert result.patient_resolution_id is None
     assert "email" in result.suggested_response_text.lower()
     assert "sarah.chen@example.test" not in result.suggested_response_text
@@ -354,8 +354,65 @@ def test_new_demo_patient_creation() -> None:
 
     assert result.match_status is PatientResolutionMatchStatus.CREATED
     assert result.patient_resolution_id is not None
+    assert result.next_step is PatientResolutionNextStep.PROCEED_TO_FINAL_BOOKING_CONFIRMATION
     assert len(repository.patients) == 1
     assert repository.patients[0].phone_number is None
+
+
+def test_new_caller_with_non_sample_email_returns_sample_email_required() -> None:
+    repository = FakePatientRepository([])
+    service = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=InMemoryPatientResolutionRepository(),
+        patient_intake=PatientIntakeService(
+            patients=repository,
+            mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+        ),
+    )
+
+    result = service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Felipe Logan",
+            patient_date_of_birth=date(1996, 9, 19),
+            patient_email="visitor@gmail.com",
+            caller_claims_existing_patient=False,
+            allow_demo_patient_creation=True,
+            provider_call_id="call-non-sample-email",
+        ),
+    )
+
+    assert result.match_status is PatientResolutionMatchStatus.NOT_FOUND
+    assert result.next_step is PatientResolutionNextStep.SAMPLE_EMAIL_REQUIRED
+    assert result.patient_resolution_id is None
+    assert len(repository.patients) == 0
+    assert "sample" in result.suggested_response_text.lower()
+    assert "retry_identity" not in result.next_step.value
+
+
+def test_new_caller_with_markdown_email_sanitized_for_policy_check() -> None:
+    repository = FakePatientRepository([])
+    service = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=InMemoryPatientResolutionRepository(),
+        patient_intake=PatientIntakeService(
+            patients=repository,
+            mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+        ),
+    )
+
+    result = service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Felipe Logan",
+            patient_date_of_birth=date(1996, 9, 19),
+            patient_email="[visitor@gmail.com](mailto:visitor@gmail.com)",
+            caller_claims_existing_patient=False,
+            allow_demo_patient_creation=True,
+            provider_call_id="call-markdown-email",
+        ),
+    )
+
+    assert result.next_step is PatientResolutionNextStep.SAMPLE_EMAIL_REQUIRED
+    assert len(repository.patients) == 0
 
 
 def test_no_demo_creation_in_lookup_only_mode() -> None:
@@ -374,6 +431,7 @@ def test_no_demo_creation_in_lookup_only_mode() -> None:
 
     assert result.match_status is PatientResolutionMatchStatus.NOT_FOUND
     assert result.patient_resolution_id is None
+    assert result.next_step is PatientResolutionNextStep.DEMO_PATIENT_CREATION_DISABLED
 
 
 def test_no_phone_generated_when_absent() -> None:

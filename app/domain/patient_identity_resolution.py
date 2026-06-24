@@ -15,11 +15,13 @@ class PatientResolutionMatchStatus(StrEnum):
 
 
 class PatientResolutionNextStep(StrEnum):
-    PROCEED_TO_BOOKING = "proceed_to_booking"
-    CONFIRM_IDENTITY = "confirm_identity"
-    COLLECT_EMAIL = "collect_email"
-    COLLECT_PHONE = "collect_phone"
+    PROCEED_TO_FINAL_BOOKING_CONFIRMATION = "proceed_to_final_booking_confirmation"
+    ASK_POSSIBLE_MATCH_CONFIRMATION = "ask_possible_match_confirmation"
+    ASK_EMAIL_OR_PHONE = "ask_email_or_phone"
     RETRY_IDENTITY = "retry_identity"
+    SAMPLE_EMAIL_REQUIRED = "sample_email_required"
+    DEMO_PATIENT_CREATION_DISABLED = "demo_patient_creation_disabled"
+    PATIENT_IDENTITY_NOT_RESOLVED = "patient_identity_not_resolved"
 
 
 @dataclass(frozen=True, slots=True)
