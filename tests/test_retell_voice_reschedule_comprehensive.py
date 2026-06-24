@@ -682,6 +682,7 @@ def test_regression_cancel_appointment_still_works() -> None:
     response = context["adapter"].execute(
         cancellation_tool_request(
             appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
             tool_call_id="tool-call-cancel-reschedule-regression",
         ),
     )

@@ -1,13 +1,14 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the ten Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block, `retell-receptionist-v3`).
+Canonical descriptions for the ten Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v4](retell-master-prompt-v4.md) (paste-ready block, `retell-receptionist-v4`).
 
-**Voice slice scope:** This runbook covers **new appointment booking** and **upcoming appointment lookup** (`list_patient_appointments`) after identity resolution. Cancellation and rescheduling **execution** remain deferred; the active master prompt must not call `cancel_appointment` or `reschedule_appointment`.
+**Voice slice scope:** This runbook covers **new appointment booking**, **upcoming appointment lookup** (`list_patient_appointments`) after identity resolution, and **appointment cancellation** (`cancel_appointment`) after explicit confirmation. Rescheduling **execution** remains deferred; the active master prompt must not call `reschedule_appointment`.
 
 Related docs:
 
 - [Retell Dashboard Setup](retell-dashboard-setup.md)
-- [Retell Master Prompt v3](retell-master-prompt-v3.md)
+- [Retell Master Prompt v4](retell-master-prompt-v4.md) — active agent prompt
+- [Retell Master Prompt v3](retell-master-prompt-v3.md) — historical booking and lookup foundation
 - [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md)
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)
 - [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context-and-tool-contracts.md)
@@ -645,7 +646,7 @@ Retell dashboard JSON schema (optional field):
 ### Dashboard description
 
 ```
-Side effect: cancels an existing appointment after explicit caller confirmation. Requires explicit_confirmation: true and appointment reference from context or appointment_id. Only say cancelled when status=succeeded.
+Side effect: cancels an existing appointment after explicit caller confirmation. Requires patient_resolution_id from identity resolution, appointment_id from list_patient_appointments, explicit_confirmation: true, and confirmation_text from the caller's latest confirmation message. Only say cancelled when status=succeeded.
 ```
 
 ### Exact name
@@ -655,59 +656,81 @@ Side effect: cancels an existing appointment after explicit caller confirmation.
 ### When to call
 
 - Caller asks to cancel a known upcoming appointment.
-- After confirming which appointment and receiving explicit yes to cancel.
+- After `resolve_patient_identity` or `confirm_patient_identity` returns `patient_resolution_id`.
+- After `list_patient_appointments` returns the `appointment_id` to cancel.
+- After repeating the selected appointment summary and receiving explicit yes to cancel on a **separate turn**.
 
 ### When not to call
 
 - During a new booking flow before an appointment exists.
-- Without `explicit_confirmation: true`.
-- When the appointment reference is ambiguous (multiple appointments, unclear identity).
+- In the same assistant turn as the cancellation confirmation question.
+- Without `explicit_confirmation: true` and non-empty `confirmation_text`.
+- Without a valid `patient_resolution_id` from this call's identity resolution.
+- Without `appointment_id` from `list_patient_appointments`.
+- For rescheduling (use lookup only; do not substitute `cancel_appointment`).
 
 ### Expected arguments
 
 ```json
 {
-  "appointment_id": "4c71ec24-892b-4ab1-b4f4-cf5e42e88e91",
+  "patient_resolution_id": "89efbcc2-5e88-4387-bfc0-dd901cafa472",
+  "appointment_id": "6d48f352-1b4d-4652-ad2b-05a4b2e468a6",
   "explicit_confirmation": true,
-  "confirmation_text": "Yes, cancel it.",
-  "cancellation_reason": "Schedule conflict",
-  "patient_name": "John Miller",
-  "patient_date_of_birth": "1985-04-12",
-  "patient_email": "john.miller@example.test"
+  "confirmation_text": "Yes, cancel it."
 }
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `appointment_id` | Context* | UUID; may resolve from voice context if unambiguous |
-| `explicit_confirmation` | Yes | Must be `true` |
-| `confirmation_text` | No | Caller confirmation phrase |
-| `cancellation_reason` | No | Brief reason |
-| `patient_name` / `patient_date_of_birth` / `patient_email` | No | Identity cross-check when required by context |
+| `patient_resolution_id` | Yes | From `resolve_patient_identity` or `confirm_patient_identity` on this call. Never pass a raw patient ID. |
+| `appointment_id` | Yes | UUID from `list_patient_appointments`. Backend validates ownership against `patient_resolution_id`. |
+| `explicit_confirmation` | Yes | Must be `true` only after the caller clearly confirms cancellation on a separate turn. |
+| `confirmation_text` | Yes | Caller's actual latest confirmation message (for example "Yes" or "Yes, cancel it"). |
+| `cancellation_reason` | No | Brief reason if the caller provided one |
+
+The backend does **not** trust `appointment_id` alone. It validates that the appointment belongs to the patient represented by `patient_resolution_id`.
 
 ### Side effects
 
-- Cancels appointment via `AppointmentCancellationService`.
+- Cancels the appointment via `AppointmentCancellationService`.
+- Releases the linked availability slot back to `available`.
+- Records a cancellation audit event.
 - Updates voice conversation context.
 
 ### Common errors
 
 | `error_code` | Cause |
 |--------------|--------|
-| `cancellation_confirmation_required` | Missing explicit confirmation |
-| `appointment_reference_required` | No unambiguous appointment to cancel |
-| `appointment_context_mismatch` | Identity does not match appointment context |
+| `missing_explicit_confirmation` | `explicit_confirmation` is false or `confirmation_text` is missing/blank |
+| `patient_resolution_id_required` | `patient_resolution_id` missing from tool arguments |
+| `patient_resolution_not_found` | Resolution token missing, expired, wrong call, or unknown |
+| `appointment_reference_required` | `appointment_id` missing or invalid |
+| `appointment_not_owned_by_patient` | `appointment_id` does not belong to the resolved patient |
 | `appointment_not_found` | Appointment does not exist |
-| `appointment_not_cancelable` | Appointment status prevents cancellation |
+| `appointment_not_cancelable` | Appointment status or timing prevents cancellation (for example past appointment) |
 | `voice_cancellation_unavailable` | Cancellation service not configured |
+| `missing_voice_conversation_context` | Voice call / conversation not linked |
+
+### Success behavior
+
+| Result field | Meaning |
+|--------------|---------|
+| `status: succeeded` | Cancellation completed or was already idempotent |
+| `already_cancelled: true` | Appointment was already cancelled; safe to explain that to the caller |
+| `already_cancelled: false` | Appointment was cancelled during this call |
+
+After success, a subsequent `list_patient_appointments` call should no longer return the cancelled appointment.
 
 ### Receptionist recovery
 
 | Error | Say |
 |-------|-----|
+| `missing_explicit_confirmation` | "Just to confirm — would you like me to cancel that appointment?" Wait for the caller's answer before retrying. |
+| `patient_resolution_id_required` / `patient_resolution_not_found` | Re-verify identity with name and date of birth, then call `resolve_patient_identity` again. |
 | `appointment_reference_required` | "Which appointment would you like to cancel? I can look up your upcoming visits once I have your name and date of birth." |
-| `cancellation_confirmation_required` | "Just to confirm — would you like me to cancel that appointment?" |
-| `appointment_not_cancelable` | "That appointment can't be cancelled on the phone. I can note your request or help you reschedule." |
+| `appointment_not_owned_by_patient` | "I could not verify that appointment for your profile. Let's look at your upcoming appointments again." |
+| `appointment_not_cancelable` | "That appointment can't be cancelled on the phone right now. I can help you with something else." |
+| Any failure before success | Do **not** say the appointment is cancelled. Apologize briefly and continue or offer alternatives. |
 
 ---
 
@@ -824,5 +847,5 @@ Side-effecting tools without `tool_call_id` do not get cross-retry deduplication
 - [ ] Tool names match exactly (snake_case)
 - [ ] Dashboard descriptions pasted from this document
 - [ ] **Payload: args only** is **OFF** (Retell default envelope)
-- [ ] Agent prompt uses [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block)
+- [ ] Agent prompt uses [Retell Master Prompt v4](retell-master-prompt-v4.md) (paste-ready block)
 - [ ] Smoke tests follow [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)

@@ -4,7 +4,7 @@ This runbook describes how to configure the **Retell dashboard** for the portfol
 
 Use this document together with:
 
-- [Retell Master Prompt v3](retell-master-prompt-v3.md) — canonical agent system prompt (`retell-receptionist-v3`)
+- [Retell Master Prompt v4](retell-master-prompt-v4.md) — canonical agent system prompt (`retell-receptionist-v4`)
 - [Retell Tool Descriptions](retell-tool-descriptions.md) — dashboard tool descriptions, arguments, errors, recovery
 - [Retell Manual Smoke Tests](retell-manual-smoke-tests.md) — validated booking flow checklist and results
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) — extended end-to-end voice test scripts
@@ -39,7 +39,8 @@ Configure the Retell agent using these companion documents (copy/paste sources a
 
 | Document | Purpose |
 |----------|---------|
-| [Retell Master Prompt v3](retell-master-prompt-v3.md) | Canonical system prompt (`retell-receptionist-v3`) — paste [paste-ready block](retell-master-prompt-v3.md#paste-ready-retell-master-prompt) into agent instructions |
+| [Retell Master Prompt v4](retell-master-prompt-v4.md) | Canonical system prompt (`retell-receptionist-v4`) — paste [paste-ready block](retell-master-prompt-v4.md#paste-ready-retell-master-prompt) into agent instructions |
+| [Retell Master Prompt v3](retell-master-prompt-v3.md) | Historical booking and lookup foundation prompt |
 | [Retell Tool Descriptions](retell-tool-descriptions.md) | Dashboard tool descriptions, argument contracts, error recovery wording |
 | [Retell Manual Smoke Tests](retell-manual-smoke-tests.md) | Validated booking-only smoke tests and known limitations |
 | [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) | Extended end-to-end voice smoke tests after dashboard setup |
@@ -129,7 +130,7 @@ NEXT_PUBLIC_VOICE_DEMO_ENABLED=false
 
 ## Prompt Guidance
 
-Copy the **paste-ready** system prompt from **[Retell Master Prompt v3](retell-master-prompt-v3.md#paste-ready-retell-master-prompt)** (`retell-receptionist-v3`) into the Retell agent instructions. The backend tools are the source of truth for scheduling, holds, identity resolution, booking, cancellation, and rescheduling. The LLM must not invent availability, patient contact details, or confirm appointments without a successful tool result (`status: succeeded`).
+Copy the **paste-ready** system prompt from **[Retell Master Prompt v4](retell-master-prompt-v4.md#paste-ready-retell-master-prompt)** (`retell-receptionist-v4`) into the Retell agent instructions. The backend tools are the source of truth for scheduling, holds, identity resolution, booking, cancellation, and rescheduling. The LLM must not invent availability, patient contact details, or confirm appointments without a successful tool result (`status: succeeded`).
 
 Summary rules (details and caller-facing language are in the master prompt and [UX playbook](retell-conversation-ux-playbook.md)):
 
@@ -171,7 +172,7 @@ For the public demo, prefer fictional sample contact details (for example seeded
 
 `end_call` is a **Retell agent action**, not a backend tool. The prompt controls when the agent ends the call; the backend does not trigger `end_call`.
 
-**Critical:** Manual testing showed the agent must not call `end_call` immediately after asking “Have you been seen at this clinic before?” while a hold is active. Configure the prompt with the [v3 end_call rules](retell-master-prompt-v3.md#paste-ready-retell-master-prompt).
+**Critical:** Manual testing showed the agent must not call `end_call` immediately after asking “Have you been seen at this clinic before?” while a hold is active. Configure the prompt with the [v4 end_call rules](retell-master-prompt-v4.md#paste-ready-retell-master-prompt).
 
 Configure the prompt so the agent:
 
@@ -393,7 +394,8 @@ Prefer forward-fix for database schema; voice call rows are audit artifacts and 
 
 ## Related Documentation
 
-- [Retell Master Prompt v3](retell-master-prompt-v3.md)
+- [Retell Master Prompt v4](retell-master-prompt-v4.md)
+- [Retell Master Prompt v3](retell-master-prompt-v3.md) (historical)
 - [Retell Tool Descriptions](retell-tool-descriptions.md)
 - [Retell Manual Smoke Tests](retell-manual-smoke-tests.md)
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from app.domain.audit.enums import AuditActorType
@@ -51,6 +52,7 @@ class AppointmentCancellationResult:
     patient_id: UUID
     duplicate: bool = False
     already_cancelled: bool = False
+    cancelled_at: datetime | None = None
 
 
 def is_appointment_cancelable(status: AppointmentStatus) -> bool:

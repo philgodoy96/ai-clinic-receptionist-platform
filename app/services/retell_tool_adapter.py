@@ -31,7 +31,6 @@ from app.domain.appointment_rescheduling import (
     normalize_rescheduling_reason,
 )
 from app.domain.appointments import (
-    AppointmentCancellationMissingConfirmationError,
     AppointmentCancellationRequest,
     AppointmentCancellationResult,
     AppointmentNotCancelableError,
@@ -81,12 +80,12 @@ from app.domain.voice_booking import (
     is_book_appointment_executable,
 )
 from app.domain.voice_cancellation import (
-    VOICE_CANCELLATION_SOURCE,
+    AppointmentNotOwnedByPatientError,
+    PatientResolutionRequiredForCancellationError,
+    VoiceAppointmentCancellationRequest,
+    VoiceCancellationMissingConfirmationError,
     build_cancel_appointment_success_context_updates,
-    is_cancel_appointment_executable,
-    is_cancel_appointment_reference_ambiguous,
-    resolve_cancel_appointment_id,
-    validate_cancel_appointment_conversation_context,
+    build_patient_resolution_retry_response_for_cancellation,
 )
 from app.domain.voice_conversation import (
     ConversationNotFoundForBridgeError,
@@ -325,6 +324,17 @@ VoicePatientAppointmentLookupForRetell = (
 )
 
 
+class VoiceAppointmentCancellationServiceForRetellToolCalling(Protocol):
+    def cancel_appointment(
+        self,
+        request: VoiceAppointmentCancellationRequest,
+    ) -> Any:
+        raise NotImplementedError
+
+
+VoiceAppointmentCancellationForRetell = VoiceAppointmentCancellationServiceForRetellToolCalling
+
+
 @dataclass(frozen=True, slots=True)
 class _VoiceConversationSession:
     conversation: Conversation
@@ -348,6 +358,7 @@ class RetellToolCallingAdapter:
         clinic_time_service: ClinicTimeService | None = None,
         patient_identity_resolution: PatientIdentityResolutionService | None = None,
         voice_patient_appointment_lookup: VoicePatientAppointmentLookupForRetell | None = None,
+        voice_appointment_cancellation: VoiceAppointmentCancellationForRetell | None = None,
         db: Session | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
@@ -366,6 +377,7 @@ class RetellToolCallingAdapter:
         self.clinic_time_service = clinic_time_service
         self.patient_identity_resolution = patient_identity_resolution
         self.voice_patient_appointment_lookup = voice_patient_appointment_lookup
+        self.voice_appointment_cancellation = voice_appointment_cancellation
         self.db = db
         self.provider = provider
 
@@ -867,7 +879,7 @@ class RetellToolCallingAdapter:
         self,
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
-        if self.appointment_cancellation is None:
+        if self.voice_appointment_cancellation is None:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
@@ -876,36 +888,23 @@ class RetellToolCallingAdapter:
 
         arguments = _as_cancel_appointment_arguments(parsed.arguments)
 
-        if not arguments.explicit_confirmation:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="cancellation_confirmation_required",
-            )
-
-        voice_session = self._ensure_voice_conversation(parsed)
-        if voice_session is None:
-            return self._missing_voice_conversation_context_response(parsed)
-
-        conversation = voice_session.conversation
-        voice_context = voice_session.voice_context
-
-        if is_cancel_appointment_reference_ambiguous(
-            arguments,
-            voice_context,
-            conversation_appointment_id=conversation.appointment_id,
+        if not arguments.explicit_confirmation or not _has_non_empty_confirmation_text(
+            arguments.confirmation_text,
         ):
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="appointment_reference_required",
+                error_code="missing_explicit_confirmation",
             )
 
-        appointment_id = resolve_cancel_appointment_id(
-            arguments,
-            voice_context,
-            conversation_appointment_id=conversation.appointment_id,
-        )
+        if not _has_non_empty_patient_resolution_id(arguments.patient_resolution_id):
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="patient_resolution_id_required",
+            )
+
+        appointment_id = _parse_cancel_appointment_uuid(arguments.appointment_id)
         if appointment_id is None:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
@@ -913,50 +912,53 @@ class RetellToolCallingAdapter:
                 error_code="appointment_reference_required",
             )
 
-        if not validate_cancel_appointment_conversation_context(
-            appointment_id,
-            arguments=arguments,
-            voice_context=voice_context,
-            conversation_appointment_id=conversation.appointment_id,
-        ):
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="appointment_context_mismatch",
-            )
+        voice_session = self._ensure_voice_conversation(parsed)
+        if voice_session is None:
+            return self._missing_voice_conversation_context_response(parsed)
 
-        if not is_cancel_appointment_executable(
-            arguments,
-            voice_context=voice_context,
-            conversation_appointment_id=conversation.appointment_id,
-        ):
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="appointment_reference_required",
-            )
+        conversation = voice_session.conversation
+
+        assert arguments.patient_resolution_id is not None
 
         idempotency_key = self._build_cancel_appointment_idempotency_key(parsed)
 
         try:
-            cancellation_result = self.appointment_cancellation.cancel_appointment(
-                AppointmentCancellationRequest(
+            cancellation_result = self.voice_appointment_cancellation.cancel_appointment(
+                VoiceAppointmentCancellationRequest(
+                    patient_resolution_id=arguments.patient_resolution_id,
                     appointment_id=appointment_id,
                     explicit_confirmation=arguments.explicit_confirmation,
+                    confirmation_text=arguments.confirmation_text,
+                    provider_call_id=parsed.provider_call_id,
+                    conversation_id=conversation.id,
                     idempotency_key=idempotency_key,
                     cancellation_reason=arguments.cancellation_reason,
-                    source=VOICE_CANCELLATION_SOURCE,
-                    actor_type=AuditActorType.RETELL,
-                    actor_id=parsed.provider_call_id,
                     call_id=parsed.provider_call_id,
-                    conversation_id=str(conversation.id),
                 ),
             )
-        except AppointmentCancellationMissingConfirmationError:
+        except VoiceCancellationMissingConfirmationError:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="cancellation_confirmation_required",
+                error_code="missing_explicit_confirmation",
+            )
+        except PatientResolutionRequiredForCancellationError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="patient_resolution_not_found",
+                result=build_patient_resolution_retry_response_for_cancellation(),
+            )
+        except AppointmentNotOwnedByPatientError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_not_owned_by_patient",
+                result={
+                    "suggested_response_text": (
+                        "I could not verify that appointment for your profile."
+                    ),
+                },
             )
         except AppointmentNotFoundError:
             return build_failed_tool_call_response(
@@ -975,11 +977,12 @@ class RetellToolCallingAdapter:
             conversation_id=conversation.id,
             appointment_id=cancellation_result.appointment_id,
         )
+        self._commit_cancellation_durable_state()
 
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
             tool_call_id=parsed.tool_call_id,
-            result=self._build_cancel_appointment_result(cancellation_result),
+            result=cancellation_result.to_tool_result(),
             duplicate=cancellation_result.duplicate,
         )
 
@@ -1417,6 +1420,16 @@ class RetellToolCallingAdapter:
         )
 
     def _commit_identity_resolution_durable_state(self) -> None:
+        if self.db is None:
+            return
+
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def _commit_cancellation_durable_state(self) -> None:
         if self.db is None:
             return
 
@@ -1980,6 +1993,28 @@ def _as_cancel_appointment_arguments(
         raise TypeError(msg)
 
     return arguments
+
+
+def _parse_cancel_appointment_uuid(value: object | None) -> UUID | None:
+    if value is None:
+        return None
+
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+
+    try:
+        return UUID(normalized)
+    except ValueError:
+        return None
+
+
+def _has_non_empty_confirmation_text(value: str | None) -> bool:
+    return value is not None and value.strip() != ""
+
+
+def _has_non_empty_patient_resolution_id(value: str | None) -> bool:
+    return value is not None and value.strip() != ""
 
 
 def _as_reschedule_appointment_arguments(
