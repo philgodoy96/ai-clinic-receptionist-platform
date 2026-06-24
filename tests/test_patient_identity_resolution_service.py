@@ -359,7 +359,7 @@ def test_new_demo_patient_creation() -> None:
     assert repository.patients[0].phone_number is None
 
 
-def test_new_caller_with_non_sample_email_returns_sample_email_required() -> None:
+def test_new_caller_with_real_email_creates_patient() -> None:
     repository = FakePatientRepository([])
     service = PatientIdentityResolutionService(
         patients=repository,
@@ -374,22 +374,21 @@ def test_new_caller_with_non_sample_email_returns_sample_email_required() -> Non
         PatientIdentityResolutionRequest(
             patient_name="Felipe Logan",
             patient_date_of_birth=date(1996, 9, 19),
-            patient_email="visitor@gmail.com",
+            patient_email="mike@gmail.com",
             caller_claims_existing_patient=False,
             allow_demo_patient_creation=True,
-            provider_call_id="call-non-sample-email",
+            provider_call_id="call-real-email",
         ),
     )
 
-    assert result.match_status is PatientResolutionMatchStatus.NOT_FOUND
-    assert result.next_step is PatientResolutionNextStep.SAMPLE_EMAIL_REQUIRED
-    assert result.patient_resolution_id is None
-    assert len(repository.patients) == 0
-    assert "sample" in result.suggested_response_text.lower()
-    assert "retry_identity" not in result.next_step.value
+    assert result.match_status is PatientResolutionMatchStatus.CREATED
+    assert result.next_step is PatientResolutionNextStep.PROCEED_TO_FINAL_BOOKING_CONFIRMATION
+    assert result.patient_resolution_id is not None
+    assert len(repository.patients) == 1
+    assert repository.patients[0].email == "mike@gmail.com"
 
 
-def test_new_caller_with_markdown_email_sanitized_for_policy_check() -> None:
+def test_new_caller_with_markdown_real_email_creates_patient() -> None:
     repository = FakePatientRepository([])
     service = PatientIdentityResolutionService(
         patients=repository,
@@ -404,15 +403,16 @@ def test_new_caller_with_markdown_email_sanitized_for_policy_check() -> None:
         PatientIdentityResolutionRequest(
             patient_name="Felipe Logan",
             patient_date_of_birth=date(1996, 9, 19),
-            patient_email="[visitor@gmail.com](mailto:visitor@gmail.com)",
+            patient_email="[mike@gmail.com](mailto:mike@gmail.com)",
             caller_claims_existing_patient=False,
             allow_demo_patient_creation=True,
-            provider_call_id="call-markdown-email",
+            provider_call_id="call-markdown-real-email",
         ),
     )
 
-    assert result.next_step is PatientResolutionNextStep.SAMPLE_EMAIL_REQUIRED
-    assert len(repository.patients) == 0
+    assert result.match_status is PatientResolutionMatchStatus.CREATED
+    assert result.patient_resolution_id is not None
+    assert repository.patients[0].email == "mike@gmail.com"
 
 
 def test_no_demo_creation_in_lookup_only_mode() -> None:

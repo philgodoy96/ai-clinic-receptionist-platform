@@ -156,7 +156,7 @@ Recommended agent instructions (also enforced by backend contracts):
 4. **Backend tools are the source of truth** for availability, holds, booking, cancellation, and rescheduling. Do not confirm an appointment time until a hold or booking tool succeeds.
 5. **Do not offer unavailable times.** If `check_availability` returns no slots or a scheduling error, ask the caller for another day or time window within business hours.
 6. **Use natural scheduling language** — "appointment time", "opening", "schedule", "that time". Do not say "slot" or read internal IDs aloud.
-7. **Patient identity** — follow existing vs new patient flows in the master prompt; backend enforces lookup (`VOICE_PATIENT_INTAKE_MODE=lookup_only`) or demo auto-create for `.test` emails.
+7. **Patient identity** — follow existing vs new patient flows in the master prompt; backend enforces lookup (`VOICE_PATIENT_INTAKE_MODE=lookup_only`) or demo auto-create for syntactically valid emails.
 
 The **prompt controls conversation flow** (questions, tone, tool timing, `end_call`). The **backend controls invariants** (clinic calendar, business hours, hold/booking rules). See [Who controls what](../operations/retell-dashboard-setup.md#who-controls-what) in the dashboard runbook.
 
@@ -174,7 +174,7 @@ Prompt guidance helps; backend enforces.
 | `SchedulingAvailabilityResolver` | Build validated UTC windows for queries |
 | Retell tool adapter | Reject invalid windows; validate slot times on hold/reschedule |
 | Business services | Holds, booking, cancellation, rescheduling invariants |
-| Voice patient intake | `VOICE_PATIENT_INTAKE_MODE` — lookup-only vs demo auto-create for `.test` emails |
+| Voice patient intake | `VOICE_PATIENT_INTAKE_MODE` — lookup-only vs demo auto-create for syntactically valid emails |
 
 Even perfect prompt compliance cannot bypass backend validation. Invalid signatures block tool execution before the adapter runs (see [Retell Webhook Security](retell-webhook-security.md)).
 

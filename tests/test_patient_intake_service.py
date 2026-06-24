@@ -110,16 +110,19 @@ def test_demo_auto_create_does_not_invent_phone_when_omitted() -> None:
     assert patient.phone_number is None
 
 
-def test_demo_auto_create_rejects_non_sample_email_domain() -> None:
+def test_demo_auto_create_accepts_real_email_domain() -> None:
+    repository = FakePatientRepository([])
     service = PatientIntakeService(
-        patients=FakePatientRepository([]),
+        patients=repository,
         mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
     )
 
-    with pytest.raises(PatientIntakeNotFoundError):
-        service.resolve_for_voice_booking(
-            _identity(email="ava.thompson@example.com"),
-        )
+    patient = service.resolve_for_voice_booking(
+        _identity(email="visitor@gmail.com"),
+    )
+
+    assert patient.email == "visitor@gmail.com"
+    assert len(repository.patients) == 1
 
 
 def test_demo_auto_create_is_idempotent_for_retries() -> None:

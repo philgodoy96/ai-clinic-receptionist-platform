@@ -107,7 +107,7 @@ Database has **Michael Lee Reed** (DOB March 15, 1988).
 #### Pass criteria
 
 - [ ] Agent does **not** call `book_appointment` after rejection.
-- [ ] Agent asks for email/phone **or** offers new-patient path (demo: sample `.test` email).
+- [ ] Agent asks for email/phone **or** offers new-patient path with caller-provided email.
 - [ ] Suggested recovery follows `suggested_response_text` from tool result.
 
 ---
@@ -157,7 +157,7 @@ Two **Sarah Chen** patients share DOB July 22, 1990 (different emails in seed da
 
 - [ ] Demo patient row created without invented phone.
 - [ ] Booking succeeds with resolution token.
-- [ ] Non-`.test` email → `not_found` (no create).
+- [ ] Non-real email invented by agent → booking must not proceed.
 
 ---
 

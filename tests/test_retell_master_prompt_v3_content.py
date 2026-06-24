@@ -38,13 +38,21 @@ def test_master_prompt_v3_requires_resolve_before_demo_create() -> None:
     assert "possible existing profile" in prompt
 
 
-def test_master_prompt_v3_follows_backend_next_step_for_new_patients() -> None:
+def test_master_prompt_v3_waits_after_confirmation_questions() -> None:
     prompt = _paste_ready_block().lower()
 
-    assert "follow backend next_step" in prompt
-    assert "proceed_to_final_booking_confirmation" in prompt
-    assert "sample_email_required" in prompt
-    assert "do not ask the caller to repeat name and date of birth" in prompt
+    assert "never call a tool in the same turn after asking" in prompt
+    assert "is that correct?" in prompt
+    assert "only after the caller confirms the email" in prompt
+    assert "sample_email_required" not in prompt
+    assert "do not require" in prompt and ".test" in prompt
+
+
+def test_master_prompt_v3_uses_preferred_post_booking_wording() -> None:
+    prompt = _paste_ready_block().lower()
+
+    assert "is there anything else you need today?" in prompt
+    assert "how can i help you?" not in prompt
 
 
 def test_master_prompt_v3_prohibits_invented_contact_details() -> None:

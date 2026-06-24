@@ -8,7 +8,6 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domain.patient_identity_matching import is_demo_sample_email
 from app.domain.voice_patient_intake import (
     PatientIntakeIdentity,
     PatientIntakeNotFoundError,
@@ -50,10 +49,6 @@ class PatientIntakeService:
             return patient
 
         if self.mode is VoicePatientIntakeMode.LOOKUP_ONLY:
-            msg = "patient was not found"
-            raise PatientIntakeNotFoundError(msg)
-
-        if not is_demo_sample_email(normalized.email):
             msg = "patient was not found"
             raise PatientIntakeNotFoundError(msg)
 

@@ -95,7 +95,7 @@ Configure these on the **API service** (see `.env.demo.example` and [Configurati
 | `VOICE_PATIENT_INTAKE_MODE` | `lookup_only` (default, production-like) or `demo_auto_create` (public demo). See [Configuration — Voice patient intake](../configuration.md#voice-patient-intake). |
 
 - **`lookup_only`** — `book_appointment` requires a pre-existing patient match on name, date of birth, and email. Use seeded demo patients or create records ahead of time. On mismatch, the agent should re-collect details naturally; never say "patient not found" to the caller.
-- **`demo_auto_create`** — For public demo only: when identity is new and email uses a `.test` domain, the backend may create a minimal patient record before booking. Explicit confirmation, active hold, and booking idempotency are unchanged.
+- **`demo_auto_create`** — For public demo only: when identity is new and the caller provides a syntactically valid email, the backend may create a minimal patient record before booking. Explicit confirmation, active hold, and booking idempotency are unchanged. Public demo prompts should still discourage real PHI; the backend does not enforce `.test` domains.
 
 Recommended: `lookup_only` for production-like environments; `demo_auto_create` in `.env.demo.example` for hosted public demo voice testing.
 
@@ -151,7 +151,7 @@ Configure the agent prompt so intake follows the master prompt’s **Patient ide
 | Caller type | Agent behavior | Backend tools |
 |-------------|----------------|---------------|
 | **Existing patient** | Ask full name and DOB one at a time; confirm DOB naturally; collect/confirm email when needed. Call `resolve_patient_identity`. On `possible_match`, ask `confirmation_question` then `confirm_patient_identity`. On `multiple_matches`, ask for email or phone once and re-resolve. | `resolve_patient_identity` → `confirm_patient_identity` (if needed) → `book_appointment` with `patient_resolution_id` |
-| **New patient** | Collect name, DOB, and email one question at a time; confirm before resolving. **Always** call `resolve_patient_identity` with `caller_claims_existing_patient: false` and `allow_demo_patient_creation: true` after a confirmed `.test` email — even if they said they are new. Backend may return `possible_match` before creating a demo record. | `resolve_patient_identity` → (`confirm_patient_identity` if needed) → `book_appointment` with `patient_resolution_id` |
+| **New patient** | Collect name, DOB, and email one question at a time; confirm before resolving. **Always** call `resolve_patient_identity` with `caller_claims_existing_patient: false` and `allow_demo_patient_creation: true` only after the caller confirms a valid email — even if they said they are new. Backend may return `possible_match` before creating a demo record. Never call a tool in the same turn after asking "is that correct?" | `resolve_patient_identity` → (`confirm_patient_identity` if needed) → `book_appointment` with `patient_resolution_id` |
 
 Inline `patient_name` / `patient_date_of_birth` / `patient_email` on `book_appointment` remain a fallback when no resolution token is used; prefer `patient_resolution_id` for all new dashboard setups.
 
@@ -163,7 +163,7 @@ Seeded demo patients for smoke tests (see [Voice Smoke Scenarios](retell-voice-s
 | Ava Thompson | 1992-09-03 | `ava.thompson@example.test` |
 | Michael Lee Reed | 1988-03-15 | `michael.lee.reed@example.test` |
 
-For new-patient demo flows, use fictional `.test` emails only (for example `felipe.logan@example.test`), not real addresses. Never invent email — the caller must speak and confirm it before `resolve_patient_identity` or `book_appointment`.
+For the public demo, prefer fictional sample contact details (for example seeded patients or `felipe.logan@example.test`). The backend accepts any syntactically valid email when `demo_auto_create` is enabled. Never invent email — the caller must speak and confirm it before `resolve_patient_identity` or `book_appointment`.
 
 ## end_call Rules
 
@@ -180,7 +180,7 @@ Configure the prompt so the agent:
 | End after a polite closing (“Thank you for calling”) once the caller confirms nothing else is needed | **Never** call `end_call` before patient identity is resolved or the hold is released |
 | Release a held time (`release_appointment_hold`) if the caller abandons booking, then close | **Never** call `end_call` while waiting for: existing/new patient answer, name, DOB, email, possible-match confirmation, or final booking confirmation |
 | Wait through brief silence while the caller checks a calendar | End during identity collection, hold, or tool execution |
-| Ask “Is there anything else I can help with?” after a successful booking and **wait for the answer** | End on “um” or short pauses mid-flow |
+| Ask “Is there anything else you need today?” after a successful booking and **wait for the answer** | End on “um” or short pauses mid-flow |
 | Continue the conversation when unsure whether the caller is finished | End the call while a tool request is in flight |
 
 Full anti-patterns and dialogue examples: [Retell Conversation UX Playbook — Caller wants to end call](retell-conversation-ux-playbook.md#9-caller-wants-to-end-the-call) and [Smoke Scenario 8](retell-voice-smoke-scenarios.md#scenario-8--no-premature-end_call).

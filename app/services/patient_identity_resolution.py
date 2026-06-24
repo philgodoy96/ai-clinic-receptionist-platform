@@ -7,7 +7,6 @@ from uuid import UUID
 from app.domain.patient_identity_matching import (
     build_confirmation_question,
     classify_name_match,
-    is_demo_sample_email,
     normalize_email,
     normalize_optional_phone,
     normalize_patient_name,
@@ -112,9 +111,6 @@ class PatientIdentityResolutionService:
 
         if identity.patient_email is None:
             return self._build_ask_email_or_phone_for_new_patient(identity)
-
-        if not is_demo_sample_email(identity.patient_email):
-            return self._build_sample_email_required_result(identity)
 
         intake = self.patient_intake or PatientIntakeService(
             patients=self.patients,
@@ -232,7 +228,7 @@ class PatientIdentityResolutionService:
             suggested_response_text=(
                 "No problem. Could you share the email or phone number on your chart? "
                 "If you're visiting for the first time, we can continue with your "
-                "sample contact details."
+                "contact details."
             ),
         )
 
@@ -408,11 +404,6 @@ class PatientIdentityResolutionService:
         except InsufficientPatientIdentityError:
             return self._build_ask_email_or_phone_for_new_patient(identity)
         except PatientIntakeNotFoundError:
-            if (
-                identity.patient_email is not None
-                and not is_demo_sample_email(identity.patient_email)
-            ):
-                return self._build_sample_email_required_result(identity)
             return self._build_demo_patient_creation_disabled_result(identity)
 
         record = self._persist_resolution(
@@ -524,24 +515,6 @@ class PatientIdentityResolutionService:
             ),
         )
 
-    def _build_sample_email_required_result(
-        self,
-        identity: NormalizedResolutionIdentity,
-    ) -> PatientIdentityResolutionResult:
-        return PatientIdentityResolutionResult(
-            match_status=PatientResolutionMatchStatus.NOT_FOUND,
-            requires_confirmation=False,
-            display_name=identity.patient_name,
-            candidate_display_name=None,
-            confirmation_question=None,
-            patient_resolution_id=None,
-            next_step=PatientResolutionNextStep.SAMPLE_EMAIL_REQUIRED,
-            suggested_response_text=(
-                "For this scheduling demo, please use a sample email address "
-                "ending in .test, such as first dot last at example dot test."
-            ),
-        )
-
     def _build_demo_patient_creation_disabled_result(
         self,
         identity: NormalizedResolutionIdentity,
@@ -573,8 +546,8 @@ class PatientIdentityResolutionService:
             patient_resolution_id=None,
             next_step=PatientResolutionNextStep.ASK_EMAIL_OR_PHONE,
             suggested_response_text=(
-                "To finish setting up your visit, what sample email address "
-                "would you like to use for this demo?"
+                "To finish setting up your visit, what email address "
+                "should we use for your confirmation?"
             ),
         )
 
