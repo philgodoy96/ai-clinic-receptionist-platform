@@ -1,6 +1,6 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block, `retell-receptionist-v3.2`).
+Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block, `retell-receptionist-v3`).
 
 **Voice slice scope:** This runbook prioritizes **new appointment booking** with identity resolution. Cancellation and rescheduling tools remain registered for future slices; the active master prompt does not advertise full cancel/reschedule lookup yet.
 
