@@ -6,7 +6,8 @@ Use this document together with:
 
 - [Retell Master Prompt v3](retell-master-prompt-v3.md) — canonical agent system prompt (`retell-receptionist-v3`)
 - [Retell Tool Descriptions](retell-tool-descriptions.md) — dashboard tool descriptions, arguments, errors, recovery
-- [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) — realistic end-to-end voice test scripts
+- [Retell Manual Smoke Tests](retell-manual-smoke-tests.md) — validated booking flow checklist and results
+- [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) — extended end-to-end voice test scripts
 - [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) — caller-facing dialogue examples
 - [Public Demo Deployment](public-demo-deployment.md)
 - [Configuration](../configuration.md)
@@ -40,7 +41,8 @@ Configure the Retell agent using these companion documents (copy/paste sources a
 |----------|---------|
 | [Retell Master Prompt v3](retell-master-prompt-v3.md) | Canonical system prompt (`retell-receptionist-v3`) — paste [paste-ready block](retell-master-prompt-v3.md#paste-ready-retell-master-prompt) into agent instructions |
 | [Retell Tool Descriptions](retell-tool-descriptions.md) | Dashboard tool descriptions, argument contracts, error recovery wording |
-| [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) | End-to-end voice smoke tests after dashboard setup |
+| [Retell Manual Smoke Tests](retell-manual-smoke-tests.md) | Validated booking-only smoke tests and known limitations |
+| [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) | Extended end-to-end voice smoke tests after dashboard setup |
 | [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) | Caller-facing dialogue examples and anti-patterns |
 
 ## Who controls what
@@ -349,7 +351,7 @@ The adapter cannot bypass `AppointmentBookingService`, hold rules, clinic busine
 
 ## Smoke Test Checklist
 
-Run the scripted scenarios in **[Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)** after dashboard and deployment configuration.
+Run the validated booking scenarios in **[Retell Manual Smoke Tests](retell-manual-smoke-tests.md)** first, then extended cases in **[Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)** after dashboard and deployment configuration.
 
 After dashboard and deployment configuration:
 
@@ -393,6 +395,7 @@ Prefer forward-fix for database schema; voice call rows are audit artifacts and 
 
 - [Retell Master Prompt v3](retell-master-prompt-v3.md)
 - [Retell Tool Descriptions](retell-tool-descriptions.md)
+- [Retell Manual Smoke Tests](retell-manual-smoke-tests.md)
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)
 - [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md)
 - [Public Demo Deployment](public-demo-deployment.md)
