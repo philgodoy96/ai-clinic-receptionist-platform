@@ -180,7 +180,10 @@ Implemented:
 - Retell voice appointment cancellation with explicit confirmation, cancelable status validation, and shared `AppointmentCancellationService` delegation (see `docs/architecture/retell-voice-cancellation.md`)
 - Retell voice appointment rescheduling with explicit confirmation, original appointment and hold/slot validation, and shared `AppointmentReschedulingService` delegation (see `docs/architecture/retell-voice-rescheduling.md`)
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService` and attempt/audit support (see `docs/architecture/appointment-rescheduling-foundation.md`)
-- Retell dashboard setup runbook (`docs/operations/retell-dashboard-setup.md`)
+- Retell dashboard setup runbook with UX rules, patient intake, `end_call`, and ngrok guidance (`docs/operations/retell-dashboard-setup.md`)
+- Retell conversation UX pack: master prompt v2, tool descriptions, voice smoke scenarios, conversation playbook (`docs/operations/retell-master-prompt-v2.md`, `retell-tool-descriptions.md`, `retell-voice-smoke-scenarios.md`, `retell-conversation-ux-playbook.md`)
+- Voice patient intake mode (`VOICE_PATIENT_INTAKE_MODE`: `lookup_only` / `demo_auto_create`) for voice booking identity
+- Softened deterministic `suggested_response_text` templates for Retell voice tool results (see `docs/architecture/receptionist-response-generator.md`)
 - Retell Web SDK integration in `web/` with server-issued access tokens (see `web/README.md`)
 - Retell web call activation safety tests and public voice demo documentation
 
@@ -188,6 +191,7 @@ Upcoming:
 
 - written chat reschedule flow
 - Tool call recording
+- Voice patient identity resolution (`resolve_patient_identity` tool) — see [voice-patient-identity-resolution.md](operations/voice-patient-identity-resolution.md)
 
 ## Stage 8 — Background Email Jobs
 
@@ -252,7 +256,8 @@ Implemented:
 - Production Docker commands for API and email worker
 - Deployment configuration safety tests
 - Public web demo shell (`web/`): Next.js landing, chat demo panel, Retell Web SDK voice demo, env safety check
-- [`docs/operations/retell-dashboard-setup.md`](operations/retell-dashboard-setup.md) Retell dashboard runbook
+- [`docs/operations/retell-dashboard-setup.md`](operations/retell-dashboard-setup.md) Retell dashboard runbook (UX rules, patient intake, Payload: args only OFF, ngrok)
+- Retell conversation UX documentation (master prompt v2, tool descriptions, smoke scenarios, playbook)
 - Retell web call activation safety tests and public voice demo deployment documentation
 
 Potential work:

@@ -146,15 +146,19 @@ This tool has no scheduling side effects. It does not query doctors, slots, or h
 
 ## Retell Prompt Guidance
 
-Recommended agent instructions for Retell dashboard / system prompt configuration:
+Use **[Retell Master Prompt v2](../operations/retell-master-prompt-v2.md)** (`retell-receptionist-v2`) as the canonical agent system prompt. Pair it with [Retell Tool Descriptions](../operations/retell-tool-descriptions.md), [Voice Smoke Scenarios](../operations/retell-voice-smoke-scenarios.md), and [Retell Dashboard Setup](../operations/retell-dashboard-setup.md) for dashboard configuration.
+
+Recommended agent instructions (also enforced by backend contracts):
 
 1. **Do not calculate relative dates yourself.** Do not infer "today", "tomorrow", or weekday names from model training data.
 2. **Call `get_clinic_context` first** when the caller asks about today, current date, business hours, or before negotiating relative scheduling language.
 3. **Use structured `date_expression`** (and optional `time_window_expression`) in `check_availability` tool calls. Prefer `next_weekday`, `tomorrow`, or `exact_date` over raw UTC timestamps.
 4. **Backend tools are the source of truth** for availability, holds, booking, cancellation, and rescheduling. Do not confirm an appointment time until a hold or booking tool succeeds.
 5. **Do not offer unavailable times.** If `check_availability` returns no slots or a scheduling error, ask the caller for another day or time window within business hours.
+6. **Use natural scheduling language** — "appointment time", "opening", "schedule", "that time". Do not say "slot" or read internal IDs aloud.
+7. **Patient identity** — follow existing vs new patient flows in the master prompt; backend enforces lookup (`VOICE_PATIENT_INTAKE_MODE=lookup_only`) or demo auto-create for `.test` emails.
 
-Copy these rules into the Retell dashboard agent prompt when configuring the public demo. Step-by-step dashboard setup is in [Retell Dashboard Setup](../operations/retell-dashboard-setup.md).
+The **prompt controls conversation flow** (questions, tone, tool timing, `end_call`). The **backend controls invariants** (clinic calendar, business hours, hold/booking rules). See [Who controls what](../operations/retell-dashboard-setup.md#who-controls-what) in the dashboard runbook.
 
 Legacy `start_from` / `start_to` remain supported for compatibility but are not the preferred contract.
 
@@ -164,14 +168,17 @@ Prompt guidance helps; backend enforces.
 
 | Layer | Role |
 |-------|------|
-| Retell / LLM prompt | Natural conversation, tool selection, structured arguments |
+| Retell / LLM prompt | Natural conversation, tool selection, structured arguments, caller-facing recovery wording |
 | Tool schemas | Validate argument shape before execution |
 | `ClinicTimeService` | Resolve dates and times in clinic timezone |
 | `SchedulingAvailabilityResolver` | Build validated UTC windows for queries |
 | Retell tool adapter | Reject invalid windows; validate slot times on hold/reschedule |
 | Business services | Holds, booking, cancellation, rescheduling invariants |
+| Voice patient intake | `VOICE_PATIENT_INTAKE_MODE` — lookup-only vs demo auto-create for `.test` emails |
 
 Even perfect prompt compliance cannot bypass backend validation. Invalid signatures block tool execution before the adapter runs (see [Retell Webhook Security](retell-webhook-security.md)).
+
+Public demo operators must not collect real PHI. Use fictional sample contact information and seeded demo patients only (see [Retell Dashboard Setup](../operations/retell-dashboard-setup.md)).
 
 ## Current Implementation
 

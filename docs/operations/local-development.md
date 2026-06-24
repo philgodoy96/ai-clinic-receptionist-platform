@@ -28,6 +28,8 @@ Default credentials:
 
     python -m scripts.seed_demo_data
 
+Seeds specialties, doctors, patients, and availability slots. Availability is generated in **clinic local time** (`CLINIC_TIMEZONE`, default `America/New_York`) at 10:00, 11:00, 14:00, and 15:00 on seven rolling business days (today when future slots remain, otherwise starting tomorrow). Timestamps are stored in UTC per the scheduling schema. Re-running the script is idempotent.
+
 ## Run API
 
 Local development with auto-reload:
