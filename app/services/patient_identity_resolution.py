@@ -43,6 +43,10 @@ class PatientResolutionNotFoundError(PatientIdentityResolutionError):
     """Raised when a patient resolution token cannot be loaded."""
 
 
+class PatientIdentityConfirmationRequiredError(PatientIdentityResolutionError):
+    """Raised when booking requires confirmation of a possible_match resolution."""
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedResolutionIdentity:
     patient_name: str
@@ -221,6 +225,36 @@ class PatientIdentityResolutionService:
             return None
 
         return record
+
+    def resolve_patient_for_booking(
+        self,
+        *,
+        patient_resolution_id: str,
+        provider_call_id: str,
+        conversation_id: UUID | None = None,
+    ) -> Patient:
+        record = self._load_scoped_record(
+            patient_resolution_id=patient_resolution_id,
+            provider_call_id=provider_call_id,
+            conversation_id=conversation_id,
+        )
+        if record is None:
+            raise PatientResolutionNotFoundError
+
+        if (
+            record.match_status is PatientResolutionMatchStatus.POSSIBLE_MATCH
+            and not record.confirmed
+        ):
+            raise PatientIdentityConfirmationRequiredError
+
+        if not record.is_bookable():
+            raise PatientResolutionNotFoundError
+
+        patient = self.patients.get_by_id(record.patient_id)
+        if patient is None:
+            raise PatientResolutionNotFoundError
+
+        return patient
 
     def _normalize_request(
         self,

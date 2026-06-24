@@ -43,6 +43,14 @@ class VoiceBookingPatientNotFoundError(VoiceBookingConfirmationError):
     """Raised when patient identity does not match a patient record."""
 
 
+class VoiceBookingIdentityConfirmationRequiredError(VoiceBookingConfirmationError):
+    """Raised when a possible_match resolution token was not confirmed."""
+
+
+class VoiceBookingIdentityNotResolvedError(VoiceBookingConfirmationError):
+    """Raised when patient_resolution_id is missing, expired, or not scoped to the call."""
+
+
 class VoiceBookingQuotaExceededError(VoiceBookingConfirmationError):
     """Raised when public demo booking quotas are exceeded."""
 
@@ -89,6 +97,7 @@ class VoiceBookingConfirmationRequest:
     patient_date_of_birth: date
     patient_email: str
     patient_phone: str | None
+    patient_resolution_id: str | None
     explicit_confirmation: bool
     confirmation_text: str | None
     idempotency_key: str
@@ -113,6 +122,9 @@ def booking_patient_phone_required() -> bool:
 def is_book_appointment_executable(arguments: BookAppointmentToolArguments) -> bool:
     if not arguments.explicit_confirmation:
         return False
+
+    if _non_empty(arguments.patient_resolution_id):
+        return True
 
     return is_voice_booking_patient_identity_complete(
         VoiceBookingPatientIdentity(

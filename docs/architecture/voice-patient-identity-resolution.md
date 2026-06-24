@@ -205,17 +205,12 @@ Note: seeded demo doctors include **Dr. Michael Reed** (cardiology). Patient res
 
 The following exists today:
 
-- `PatientIntakeService` with `lookup_only` and `demo_auto_create` modes
-- Inline resolution at `book_appointment` via `VoiceBookingConfirmationService._resolve_patient`
-- `PatientRepository.get_by_identity` — exact match on name + DOB + email, with optional phone normalization
+- `PatientIdentityResolutionService` with structured outcomes
+- `resolve_patient_identity` and `confirm_patient_identity` Retell tools
+- Opaque `patient_resolution_id` store in Redis with TTL
+- `book_appointment` prefers `patient_resolution_id` when provided, with inline identity fallback
+- `PatientIntakeService` with `lookup_only` and `demo_auto_create` modes for fallback path
 - `VOICE_PATIENT_INTAKE_MODE` configuration
-
-The following is **not** yet implemented:
-
-- `resolve_patient_identity` Retell tool on the allowlist
-- Structured `possible_match` / `multiple_matches` outcomes
-- Opaque `patient_resolution_id` store and TTL
-- `book_appointment` preferring resolution id over inline fields
 
 ## Target Flow
 

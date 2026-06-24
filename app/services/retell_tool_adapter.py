@@ -62,6 +62,8 @@ from app.domain.voice_booking import (
     VoiceBookingConfirmationRequest,
     VoiceBookingExpiredHoldError,
     VoiceBookingHoldOwnershipError,
+    VoiceBookingIdentityConfirmationRequiredError,
+    VoiceBookingIdentityNotResolvedError,
     VoiceBookingMissingConfirmationError,
     VoiceBookingMissingContextError,
     VoiceBookingMissingHoldError,
@@ -712,6 +714,7 @@ class RetellToolCallingAdapter:
                     patient_date_of_birth=arguments.patient_date_of_birth,
                     patient_email=arguments.patient_email,
                     patient_phone=arguments.patient_phone,
+                    patient_resolution_id=arguments.patient_resolution_id,
                     explicit_confirmation=arguments.explicit_confirmation,
                     confirmation_text=arguments.confirmation_text,
                     notes=arguments.notes,
@@ -763,6 +766,30 @@ class RetellToolCallingAdapter:
                 fallback_text=(
                     "I'm not matching those details yet — could we try your name "
                     "and date of birth once more?"
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
+            )
+        except VoiceBookingIdentityConfirmationRequiredError:
+            return self._build_failed_with_suggested_response(
+                parsed,
+                error_code="patient_identity_confirmation_required",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_identity_confirmation_required"},
+                fallback_text=(
+                    "Before I can book this appointment, I need to confirm your identity. "
+                    "Is the patient record I found correct?"
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
+            )
+        except VoiceBookingIdentityNotResolvedError:
+            return self._build_failed_with_suggested_response(
+                parsed,
+                error_code="patient_identity_not_resolved",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_identity_not_resolved"},
+                fallback_text=(
+                    "I need to verify your patient details again before booking. "
+                    "Let's confirm your name and date of birth."
                 ),
                 response_type=ReceptionistResponseType.CONFIRMATION,
             )

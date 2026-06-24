@@ -211,6 +211,7 @@ class BookAppointmentToolArguments(BaseModel):
     patient_date_of_birth: date
     patient_email: str = Field(min_length=1, max_length=255, pattern=_PATIENT_EMAIL_PATTERN)
     patient_phone: str | None = Field(default=None, max_length=40)
+    patient_resolution_id: str | None = Field(default=None, max_length=120)
     explicit_confirmation: bool
     confirmation_text: str | None = Field(
         default=None,
@@ -228,6 +229,22 @@ class BookAppointmentToolArguments(BaseModel):
         if not stripped:
             msg = "patient_name cannot be blank"
             raise ValueError(msg)
+        return stripped
+
+    @field_validator("patient_resolution_id")
+    @classmethod
+    def validate_patient_resolution_id_not_blank_if_present(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
         return stripped
 
     @model_validator(mode="after")

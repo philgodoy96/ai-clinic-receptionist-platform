@@ -34,6 +34,7 @@ from app.services.appointment_booking import (
 from app.services.audit_logs import AuditLogService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
+from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.patient_intake import PatientIntakeService
 from app.services.scheduling import SchedulingService
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
@@ -120,6 +121,7 @@ def _build_request(
         patient_date_of_birth=patient_date_of_birth,
         patient_email=patient_email,
         patient_phone=patient_phone,
+        patient_resolution_id=None,
         explicit_confirmation=explicit_confirmation,
         confirmation_text="Yes, please book it.",
         idempotency_key=idempotency_key,
@@ -137,6 +139,7 @@ def create_voice_booking_confirmation_context(
     book_error: Exception | None = None,
     patients: list[Patient] | None = None,
     voice_patient_intake_mode: VoicePatientIntakeMode = VoicePatientIntakeMode.LOOKUP_ONLY,
+    patient_identity_resolution: PatientIdentityResolutionService | None = None,
 ) -> VoiceBookingConfirmationContext:
     booking_context = create_booking_context()
     if patients is not None:
@@ -202,6 +205,7 @@ def create_voice_booking_confirmation_context(
             mode=voice_patient_intake_mode,
             db=cast(Session, db),
         ),
+        patient_identity_resolution=patient_identity_resolution,
     )
 
     return VoiceBookingConfirmationContext(
