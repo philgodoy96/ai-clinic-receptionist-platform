@@ -78,6 +78,7 @@ from app.domain.voice_cancellation import (
 from app.domain.voice_conversation import (
     ConversationNotFoundForBridgeError,
     VoiceCallNotFoundForBridgeError,
+    VoiceConversationLinkConflictError,
     merge_check_availability_identity_fields,
     read_voice_context,
 )
@@ -112,6 +113,7 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldWindowError,
 )
 from app.services.clinic_time import ClinicTimeService
+from app.services.conversations import ConversationNotFoundError
 from app.services.receptionist_response_planning import build_suggested_retell_response_text
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
 from app.services.retell_tool_registry import is_side_effecting_retell_tool
@@ -126,6 +128,17 @@ from app.services.voice_conversation_bridge import VoiceConversationBridgeServic
 logger = logging.getLogger("app.retell_tool_adapter")
 
 _RETELL_TOOL_EXECUTION_FAILED_CODE = "retell_tool_execution_failed"
+
+_READ_ONLY_VOICE_CONTEXT_RECOVERABLE_ERRORS = (
+    VoiceCallNotFoundForBridgeError,
+    ConversationNotFoundForBridgeError,
+    VoiceConversationLinkConflictError,
+)
+
+_CHECK_AVAILABILITY_CONTEXT_UPDATE_RECOVERABLE_ERRORS = (
+    ConversationNotFoundError,
+    ConversationNotFoundForBridgeError,
+)
 
 
 class SchedulingServiceForRetellToolCalling(Protocol):
@@ -415,7 +428,7 @@ class RetellToolCallingAdapter:
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
         arguments = _as_check_availability_arguments(parsed.arguments)
-        voice_session = self._ensure_voice_conversation(parsed)
+        voice_session = self._ensure_voice_conversation_for_read_only_tool(parsed)
         voice_context = voice_session.voice_context if voice_session is not None else {}
 
         if self.clinic_time_service is None:
@@ -475,7 +488,8 @@ class RetellToolCallingAdapter:
             result["available_slots"] = slots[: resolved_arguments.limit]
 
         if voice_session is not None:
-            self._update_voice_context_after_check_availability(
+            self._try_update_voice_context_after_check_availability(
+                parsed=parsed,
                 conversation_id=voice_session.conversation.id,
                 arguments=resolved_arguments,
                 result=result,
@@ -1353,6 +1367,73 @@ class RetellToolCallingAdapter:
         return _VoiceConversationSession(
             conversation=conversation,
             voice_context=read_voice_context(conversation.conversation_metadata),
+        )
+
+    def _ensure_voice_conversation_for_read_only_tool(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> _VoiceConversationSession | None:
+        if self.voice_conversation_bridge is None:
+            return None
+
+        try:
+            conversation = self.voice_conversation_bridge.ensure_conversation_for_tool_callback(
+                self.provider,
+                parsed.provider_call_id,
+            )
+        except _READ_ONLY_VOICE_CONTEXT_RECOVERABLE_ERRORS as exc:
+            self._log_recoverable_check_availability_voice_context_failure(
+                parsed,
+                failure_stage="ensure",
+                failure_type=type(exc).__name__,
+            )
+            return None
+
+        return _VoiceConversationSession(
+            conversation=conversation,
+            voice_context=read_voice_context(conversation.conversation_metadata),
+        )
+
+    def _try_update_voice_context_after_check_availability(
+        self,
+        *,
+        parsed: ParsedRetellToolCall,
+        conversation_id: UUID,
+        arguments: CheckAvailabilityToolArguments,
+        result: dict[str, Any],
+    ) -> None:
+        try:
+            self._update_voice_context_after_check_availability(
+                conversation_id=conversation_id,
+                arguments=arguments,
+                result=result,
+            )
+        except _CHECK_AVAILABILITY_CONTEXT_UPDATE_RECOVERABLE_ERRORS as exc:
+            self._log_recoverable_check_availability_voice_context_failure(
+                parsed,
+                failure_stage="context_update",
+                failure_type=type(exc).__name__,
+            )
+
+    def _log_recoverable_check_availability_voice_context_failure(
+        self,
+        parsed: ParsedRetellToolCall,
+        *,
+        failure_stage: str,
+        failure_type: str,
+    ) -> None:
+        logger.warning(
+            "retell_check_availability_voice_context_failure",
+            extra={
+                "event": "retell_check_availability_voice_context_failure",
+                "failure_stage": failure_stage,
+                "failure_type": failure_type,
+                "provider_call_id": parsed.provider_call_id,
+                "tool_name": parsed.tool_name.value,
+                "tool_call_id": parsed.tool_call_id,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
         )
 
     def _missing_voice_conversation_context_response(
