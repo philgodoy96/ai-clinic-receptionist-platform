@@ -145,6 +145,7 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
             RetellSupportedToolName.RESCHEDULE_APPOINTMENT,
             RetellSupportedToolName.RESOLVE_PATIENT_IDENTITY,
             RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY,
+            RetellSupportedToolName.LIST_PATIENT_APPOINTMENTS,
         },
     )
     assert RetellSupportedToolName.GET_CLINIC_CONTEXT not in SIDE_EFFECTING_RETELL_TOOLS
@@ -156,6 +157,7 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
     assert RetellSupportedToolName.RESCHEDULE_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.RESOLVE_PATIENT_IDENTITY in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.LIST_PATIENT_APPOINTMENTS not in SIDE_EFFECTING_RETELL_TOOLS
 
 
 def test_adapter_dispatch_does_not_use_reflection() -> None:

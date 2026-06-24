@@ -1,6 +1,6 @@
-# Retell Booking Smoke Tests
+# Retell Booking and Appointment Lookup Smoke Tests
 
-Manual validation record for the booking-stabilized Retell voice flow. Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded (`python -m scripts.seed_demo_data`) and [Retell Master Prompt v3](retell-master-prompt-v3.md) (`retell-receptionist-v3`) pasted into the agent.
+Manual validation record for the Retell voice flow with booking and upcoming appointment lookup. Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded (`python -m scripts.seed_demo_data`) and [Retell Master Prompt v3](retell-master-prompt-v3.md) (`retell-receptionist-v3`) pasted into the agent.
 
 Companion docs:
 
@@ -14,13 +14,18 @@ Use **fictional sample contact information** only.
 
 ## Scope
 
-Booking-only voice flow. Cancellation and rescheduling are intentionally out of scope until appointment lookup tooling ships.
+Voice flow supports:
+
+- **New appointment booking** end-to-end
+- **Upcoming appointment lookup** via `list_patient_appointments` after identity resolution
+
+**Cancellation and rescheduling execution are not enabled.** The agent may list appointments and ask which one the caller wants to change, but must not call `cancel_appointment` or `reschedule_appointment`.
 
 ---
 
 ## Validated scenarios
 
-The following behaviors were manually validated after the durable patient identity resolution backend hotfix (June 2026):
+The following behaviors were manually validated (June 2026):
 
 | Scenario | Result |
 |----------|--------|
@@ -29,7 +34,10 @@ The following behaviors were manually validated after the durable patient identi
 | Existing patient lookup uses name + DOB before email | **Validated** |
 | Final booking confirmation waits for caller response before `book_appointment` | **Validated** |
 | `book_appointment` succeeds with `patient_resolution_id` | **Validated** |
-| Cancel/reschedule requests do not enter the booking flow | **Validated** |
+| Reschedule intent lists appointments but does not reschedule | **Validated** |
+| Cancel intent lists appointments but does not cancel | **Validated** |
+| Multiple upcoming appointments presented; caller asked to choose | **Validated** |
+| Appointment lookup uses `patient_resolution_id` only | **Validated** |
 
 ---
 
@@ -85,38 +93,59 @@ For each scenario: note the starting condition, caller path, expected tool seque
 
 ---
 
-### 5 — Cancellation or rescheduling request
+### 5 — Reschedule intent (lookup only)
 
 | Field | Detail |
 |-------|--------|
-| **Starting condition** | Active Retell agent with v3 prompt; cancel/reschedule tools registered but not used by prompt |
-| **Caller path** | "I need to cancel my appointment" or "Can I reschedule for next week?" |
-| **Expected tool sequence** | No `cancel_appointment`; no `reschedule_appointment`; no `resolve_patient_identity` for a new booking unless caller accepts scheduling a new appointment |
-| **Expected result** | Agent explains booking-only scope, suggests front desk or patient portal for changes, offers: "Would you like help scheduling a new appointment instead?" |
+| **Starting condition** | Seeded patient with two upcoming scheduled appointments |
+| **Caller path** | "I need to reschedule my appointment" → provide name + DOB → agent lists appointments → caller chooses one (e.g. 2:00 PM) |
+| **Expected tool sequence** | `resolve_patient_identity` → `exact_match` + `patient_resolution_id` → `list_patient_appointments` → no `reschedule_appointment` |
+| **Expected result** | Agent lists two upcoming appointments; caller chooses one; agent acknowledges selection; agent explains this voice flow can look up appointments but cannot reschedule yet |
+| **Observed status** | Validated |
+
+---
+
+### 6 — Cancel intent (lookup only)
+
+| Field | Detail |
+|-------|--------|
+| **Starting condition** | Seeded patient with two upcoming scheduled appointments |
+| **Caller path** | "I need to cancel my appointment" → provide name + DOB → agent lists appointments → caller chooses one (e.g. 3:00 PM) |
+| **Expected tool sequence** | `resolve_patient_identity` → `exact_match` + `patient_resolution_id` → `list_patient_appointments` → no `cancel_appointment` |
+| **Expected result** | Agent lists upcoming appointments; caller chooses one; agent acknowledges selection; agent explains this voice flow can look up appointments but cannot cancel yet |
+| **Observed status** | Validated |
+
+---
+
+### 7 — Multiple appointments (choose one)
+
+| Field | Detail |
+|-------|--------|
+| **Starting condition** | Seeded patient with multiple upcoming scheduled appointments |
+| **Caller path** | Cancel or reschedule request → identity verified → agent reads concise summaries → caller picks one |
+| **Expected tool sequence** | `resolve_patient_identity` → `list_patient_appointments` with `patient_resolution_id` → `next_step: choose_appointment` |
+| **Expected result** | Appointments ordered soonest first; agent asks which appointment to change; agent does not auto-select |
 | **Observed status** | Validated |
 
 ---
 
 ## Known limitations
 
-- **Voice cancellation and rescheduling** require appointment lookup tooling (`list_patient_appointments` or equivalent) and patient–appointment ownership validation. The active prompt intentionally does not advertise these capabilities.
-- **Availability hardening** (booking horizon, minimum lead time, filtering Redis-held slots, dynamic schedule rules) is planned separately and is not part of this validation record.
-- These docs reflect the **tested booking flow**, not the full future receptionist experience (cancel, reschedule, waitlist, etc.).
+- **Appointment lookup** is supported via `list_patient_appointments` after patient identity resolution.
+- **Cancellation execution** is follow-up work — do not call `cancel_appointment` or claim an appointment was cancelled.
+- **Rescheduling execution** is follow-up work — do not call `reschedule_appointment` or claim an appointment was rescheduled.
+- **Selected appointment persistence** for cancel/reschedule may be addressed in a future slice.
+- **Slot release on cancellation** is not implemented yet.
+- **Scheduling hardening** (booking horizon, minimum lead time, Redis-held slot filtering, dynamic schedule rules) remains follow-up work.
+- These docs reflect the **tested booking and lookup flow**, not the full future receptionist experience.
 
 ---
 
 ## Follow-up roadmap
 
-1. Add voice-native `list_patient_appointments` tool.
-2. Add patient–appointment ownership validation for cancellation and rescheduling.
-3. Release availability slot on cancellation.
-4. Enable cancellation prompt only after backend support is complete.
-5. Add scheduling hardening:
-   - booking horizon
-   - minimum lead time
-   - filtering Redis-held slots from availability
-   - rolling availability generation or dynamic schedule rules
-6. Enable rescheduling after appointment lookup and availability hardening.
+1. **Voice cancellation flow** — selected appointment, explicit confirmation, patient–appointment ownership validation, slot release on cancellation.
+2. **Scheduling hardening** — booking horizon, minimum lead time, filtering Redis-held slots from availability, rolling or dynamic availability.
+3. **Voice rescheduling flow** — selected appointment, new availability lookup, hold new time, final reschedule confirmation, safe reschedule execution.
 
 ---
 
@@ -125,9 +154,11 @@ For each scenario: note the starting condition, caller path, expected tool seque
 After prompt or backend changes:
 
 - [ ] Paste latest [v3 paste-ready prompt](retell-master-prompt-v3.md#paste-ready-retell-master-prompt) into Retell dashboard.
-- [ ] Re-run scenarios 1–5 above and update **Observed status** if behavior changed.
+- [ ] Register `list_patient_appointments` in Retell (ten tools total).
+- [ ] Re-run scenarios 1–7 above and update **Observed status** if behavior changed.
 - [ ] Review transcript for banned caller-facing terms (slot, UUID, patient not found, hold reference).
 - [ ] Confirm `book_appointment` outcomes show `status: succeeded` only before spoken confirmation.
+- [ ] Confirm cancel/reschedule intents never call `cancel_appointment` or `reschedule_appointment`.
 - [ ] Log prompt version `retell-receptionist-v3` in deployment notes.
 
 See also: [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) for extended IR and recovery cases.

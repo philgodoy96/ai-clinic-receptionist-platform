@@ -24,6 +24,9 @@ MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH = 500
 MAX_RESCHEDULE_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_RESCHEDULE_APPOINTMENT_RESCHEDULE_REASON_LENGTH = 500
 MAX_PATIENT_IDENTITY_CONFIRMATION_TEXT_LENGTH = 500
+DEFAULT_LIST_PATIENT_APPOINTMENTS_LIMIT = 5
+MIN_LIST_PATIENT_APPOINTMENTS_LIMIT = 1
+MAX_LIST_PATIENT_APPOINTMENTS_LIMIT = 10
 _PATIENT_EMAIL_PATTERN = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
@@ -404,6 +407,27 @@ class ConfirmPatientIdentityToolArguments(BaseModel):
     confirmation_text: str | None = Field(
         default=None,
         max_length=MAX_PATIENT_IDENTITY_CONFIRMATION_TEXT_LENGTH,
+    )
+
+    @field_validator("patient_resolution_id")
+    @classmethod
+    def validate_patient_resolution_id_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+
+class ListPatientAppointmentsToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patient_resolution_id: str = Field(min_length=1, max_length=120)
+    limit: int = Field(
+        default=DEFAULT_LIST_PATIENT_APPOINTMENTS_LIMIT,
+        ge=MIN_LIST_PATIENT_APPOINTMENTS_LIMIT,
+        le=MAX_LIST_PATIENT_APPOINTMENTS_LIMIT,
     )
 
     @field_validator("patient_resolution_id")
