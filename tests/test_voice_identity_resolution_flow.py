@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -62,6 +62,7 @@ def create_voice_identity_flow_context(
     extra_patients: list[Patient] | None = None,
     patients_override: list[Patient] | None = None,
     intake_mode: VoicePatientIntakeMode = VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    db: FakeDatabaseSession | None = None,
 ) -> VoiceIdentityFlowContext:
     booking_context = create_booking_context()
     if patients_override is not None:
@@ -143,11 +144,11 @@ def create_voice_identity_flow_context(
     email_repository = FakeEmailJobRepository()
     email_jobs = EmailJobService(repository=email_repository)
     audit_logs = FakeAuditLogService()
-    db = FakeDatabaseSession()
+    session_db = db or FakeDatabaseSession()
     voice_booking_attempts = FakeVoiceBookingAttemptRepository()
 
     voice_booking_confirmation = VoiceBookingConfirmationService(
-        db=cast(Session, db),
+        db=cast(Session, session_db),
         booking_service=cast(AppointmentBookingService, tracking_booking),
         hold_service=booking_context.hold_service,
         scheduling_service=scheduling_service,
@@ -174,6 +175,7 @@ def create_voice_identity_flow_context(
         patient_identity_resolution=patient_identity_resolution,
         appointments=booking_context.appointment_repository,
         clinic_time_service=make_test_clinic_time_service(),
+        db=cast(Session, session_db),
     )
 
     return VoiceIdentityFlowContext(
@@ -499,6 +501,207 @@ def test_new_patient_resolve_created_then_book_succeeds() -> None:
     ]
     assert len(created) == 1
     assert created[0].phone_number is None
+
+
+def test_resolve_created_commits_durable_identity_state() -> None:
+    db = FakeDatabaseSession()
+    flow = create_voice_identity_flow_context(db=db)
+
+    resolve = flow.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Felipe Logan",
+                "patient_date_of_birth": "1995-11-02",
+                "patient_email": "felipe.logan@example.test",
+                "caller_claims_existing_patient": False,
+                "allow_demo_patient_creation": True,
+            },
+            tool_call_id="resolve-commit-1",
+        ),
+    )
+
+    assert resolve.status == "succeeded"
+    assert resolve.result["match_status"] == "created"
+    assert db.committed is True
+
+
+def test_created_resolution_survives_request_boundary_before_booking() -> None:
+    repository = RequestScopedPatientRepository()
+    booking_context = create_booking_context()
+    booking_context.booking_service.patients = repository
+
+    hold = booking_context.hold_service.create_hold(
+        availability_slot_id=booking_context.slot.id,
+        doctor_id=booking_context.doctor.id,
+        start_time=booking_context.slot.start_time,
+        end_time=booking_context.slot.end_time,
+        owner_id=PROVIDER_CALL_ID,
+    )
+
+    conversation_repository = FakeConversationRepository()
+    conversation = Conversation(
+        id=uuid4(),
+        channel=ConversationChannel.VOICE,
+        status=ConversationStatus.ACTIVE,
+        external_conversation_id=PROVIDER_CALL_ID,
+        call_id=PROVIDER_CALL_ID,
+        conversation_metadata={
+            "voice_context": {
+                "hold_id": str(hold.hold_id),
+                "availability_slot_id": str(booking_context.slot.id),
+            },
+        },
+    )
+    conversation_repository.conversations.append(conversation)
+
+    voice_calls = FakeVoiceCallRepository()
+    voice_call = VoiceCall(
+        id=uuid4(),
+        provider="retell",
+        provider_call_id=PROVIDER_CALL_ID,
+        status=VoiceCallStatus.IN_PROGRESS,
+        conversation_id=conversation.id,
+        created_at=datetime(2026, 6, 25, 10, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 25, 10, 0, tzinfo=UTC),
+    )
+    voice_calls.voice_calls.append(voice_call)
+
+    conversations = ConversationService(repository=conversation_repository)
+    bridge = VoiceConversationBridgeService(
+        voice_calls=voice_calls,
+        conversations=conversation_repository,
+        conversation_service=conversations,
+    )
+    resolution_repository = InMemoryPatientResolutionRepository()
+    patient_intake = PatientIntakeService(
+        patients=repository,
+        mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+    patient_identity_resolution = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=resolution_repository,
+        patient_intake=patient_intake,
+    )
+    scheduling_service = SchedulingService(
+        specialties=FakeSpecialtyRepository([]),
+        doctors=booking_context.booking_service.doctors,
+        patients=repository,
+        availability_slots=booking_context.booking_service.availability_slots,
+        appointments=booking_context.booking_service.appointments,
+    )
+    tracking_booking = TrackingAppointmentBookingService(booking_context.booking_service)
+    email_repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=email_repository)
+    audit_logs = FakeAuditLogService()
+    db = RequestBoundaryDatabaseSession(repository)
+    voice_booking_attempts = FakeVoiceBookingAttemptRepository()
+    voice_booking_confirmation = VoiceBookingConfirmationService(
+        db=cast(Session, db),
+        booking_service=cast(AppointmentBookingService, tracking_booking),
+        hold_service=booking_context.hold_service,
+        scheduling_service=scheduling_service,
+        conversations=conversations,
+        audit_logs=cast(AuditLogService, audit_logs),
+        email_jobs=email_jobs,
+        voice_booking_attempts=voice_booking_attempts,
+        appointments=booking_context.appointment_repository,
+        availability_slots=booking_context.booking_service.availability_slots,
+        patient_intake=patient_intake,
+        patient_identity_resolution=patient_identity_resolution,
+    )
+    tracking_voice_calls = TrackingVoiceCallRepository()
+    tracking_voice_calls.voice_calls[PROVIDER_CALL_ID] = voice_call
+    adapter = RetellToolCallingAdapter(
+        scheduling_service=scheduling_service,
+        hold_service=booking_context.hold_service,
+        voice_calls=tracking_voice_calls,
+        voice_conversation_bridge=bridge,
+        conversations=conversations,
+        voice_booking_confirmation=voice_booking_confirmation,
+        patient_identity_resolution=patient_identity_resolution,
+        appointments=booking_context.appointment_repository,
+        clinic_time_service=make_test_clinic_time_service(),
+        db=cast(Session, db),
+    )
+
+    resolve = adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Felipe Logan",
+                "patient_date_of_birth": "1995-11-02",
+                "patient_email": "felipe.logan@example.test",
+                "caller_claims_existing_patient": False,
+                "allow_demo_patient_creation": True,
+            },
+            tool_call_id="resolve-boundary-1",
+        ),
+    )
+    resolution_id = resolve.result["patient_resolution_id"]
+    db.end_request()
+
+    book = adapter.execute(
+        _book_request(
+            patient_resolution_id=resolution_id,
+            hold_id=str(hold.hold_id),
+            slot_id=str(booking_context.slot.id),
+            patient_name="Felipe Logan",
+            patient_email="felipe.logan@example.test",
+            tool_call_id="book-boundary-1",
+        ),
+    )
+
+    assert book.status == "succeeded"
+    assert book.result["status"] == "scheduled"
+    assert len(tracking_booking.book_calls) == 1
+
+
+class RequestScopedPatientRepository(FakePatientRepository):
+    def __init__(self, patients: list[Patient] | None = None) -> None:
+        super().__init__(patients or [])
+        self._pending: list[Patient] = []
+
+    def add(self, patient: Patient) -> Patient:
+        self._pending.append(patient)
+        self.patients.append(patient)
+        return patient
+
+    def get_by_id(self, patient_id: UUID) -> Patient | None:
+        for patient in self.patients:
+            if patient in self._pending:
+                continue
+            if patient.id == patient_id:
+                return patient
+        return None
+
+    def commit_pending(self) -> None:
+        self._pending.clear()
+
+    def discard_pending(self) -> None:
+        for patient in self._pending:
+            self.patients.remove(patient)
+        self._pending.clear()
+
+
+class RequestBoundaryDatabaseSession:
+    def __init__(self, patients: RequestScopedPatientRepository) -> None:
+        self.patients = patients
+        self.committed = False
+        self.rolled_back = False
+
+    def commit(self) -> None:
+        self.patients.commit_pending()
+        self.committed = True
+
+    def rollback(self) -> None:
+        self.patients.discard_pending()
+        self.rolled_back = True
+
+    def refresh(self, instance: object) -> None:
+        return None
+
+    def end_request(self) -> None:
+        if not self.committed:
+            self.rollback()
 
 
 def test_invented_email_guard_rejects_booking_before_caller_confirms_email() -> None:
