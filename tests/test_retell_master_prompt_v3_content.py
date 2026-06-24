@@ -58,12 +58,16 @@ def test_master_prompt_v3_uses_preferred_post_booking_wording() -> None:
 def test_master_prompt_v3_limits_scope_to_booking_flow() -> None:
     prompt = _paste_ready_block().lower()
 
-    assert "booking new appointments" in prompt or "book new appointments" in prompt
+    assert "book new appointments" in prompt or "new appointment scheduling" in prompt
+    assert "list_patient_appointments" in prompt
     assert (
-        "cancellation and rescheduling are not enabled in this voice flow yet."
+        "cancellation and rescheduling execution are not enabled in this voice flow yet."
         in prompt
     )
-    assert "do not use cancel_appointment or reschedule_appointment" in prompt
+    assert "do not call cancel_appointment" in prompt
+    assert "do not call reschedule_appointment" in prompt
+    assert "do not say the appointment has been cancelled" in prompt
+    assert "do not say the appointment has been rescheduled" in prompt
 
 
 def test_master_prompt_v3_prohibits_invented_contact_details() -> None:
