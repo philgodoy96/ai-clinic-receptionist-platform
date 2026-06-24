@@ -49,6 +49,9 @@ class RedisPatientResolutionRepository:
     def update(self, record: PatientResolutionRecord, *, ttl_seconds: int) -> None:
         self.save(record, ttl_seconds=ttl_seconds)
 
+    def delete(self, resolution_id: UUID) -> None:
+        self.redis_client.delete(self._resolution_id_key(resolution_id))
+
     def _resolution_id_key(self, resolution_id: UUID) -> str:
         return f"{self.key_prefix}:id:{resolution_id}"
 

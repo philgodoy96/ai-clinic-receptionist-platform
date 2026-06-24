@@ -1,6 +1,6 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the seven Retell custom functions in the public scheduling demo. Paste the **Dashboard description** into each tool's description field in the Retell console. Use the full sections below for agent prompt authoring, debugging, and recovery behavior.
+Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste the **Dashboard description** into each tool's description field in the Retell console. Use the full sections below for agent prompt authoring, debugging, and recovery behavior.
 
 Related docs:
 
@@ -298,7 +298,123 @@ If release fails because the hold already expired, continue naturally: "No probl
 
 ---
 
-## 5. book_appointment
+## 5. resolve_patient_identity
+
+### Dashboard description
+
+```
+Read-only identity resolution (demo create only when allowed). Returns match_status, patient_resolution_id, and suggested_response_text. Use before book_appointment. Collect patient_name and patient_date_of_birth from the caller. Never invent email or phone. Do not expose raw patient_id.
+```
+
+### Exact name
+
+`resolve_patient_identity`
+
+### When to call
+
+- After the caller provides name and date of birth (and email or phone when available).
+- Before `book_appointment` when patient identity is not yet resolved.
+- When narrowing ambiguous matches (add email or phone on retry).
+
+### When not to call
+
+- Before asking the caller for identity fields.
+- With invented email or phone values.
+
+### Expected arguments
+
+```json
+{
+  "patient_name": "Michael Reed",
+  "patient_date_of_birth": "1985-04-12",
+  "patient_email": null,
+  "patient_phone": null,
+  "caller_claims_existing_patient": true,
+  "allow_demo_patient_creation": false
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `patient_name` | Yes | Full name as spoken by caller |
+| `patient_date_of_birth` | Yes | ISO date `YYYY-MM-DD` in tool args only |
+| `patient_email` | No | Use when caller provided and confirmed email |
+| `patient_phone` | No | Omit unless caller provided a number |
+| `caller_claims_existing_patient` | No | Default `true`; blocks demo create when no match |
+| `allow_demo_patient_creation` | No | Default `false`; set `true` only in public demo for new patients with `.test` email |
+
+### Success result fields
+
+| Field | Meaning |
+|-------|---------|
+| `match_status` | `exact_match`, `possible_match`, `multiple_matches`, `not_found`, or `created` |
+| `requires_confirmation` | `true` when caller must confirm identity |
+| `patient_resolution_id` | Opaque token for confirm/booking (absent on `not_found` / `multiple_matches`) |
+| `confirmation_question` | Safe natural-language question for `possible_match` |
+| `next_step` | Agent guidance (`proceed_to_booking`, `confirm_identity`, `collect_email`, etc.) |
+| `suggested_response_text` | Provider-safe phrase for the receptionist |
+
+### Common errors
+
+| `error_code` | Cause |
+|--------------|--------|
+| `retell_tool_arguments_invalid` | Missing or invalid arguments |
+| `booking_identity_missing` | Blank patient name |
+| `patient_identity_resolution_unavailable` | Resolution service not configured |
+
+### Receptionist recovery
+
+| `match_status` | Say |
+|----------------|-----|
+| `possible_match` | Ask `confirmation_question`, then call `confirm_patient_identity` |
+| `multiple_matches` | Ask for email (or phone) on file — one question at a time |
+| `not_found` | "I'm not matching those details yet — could we try your name and date of birth once more?" |
+
+---
+
+## 6. confirm_patient_identity
+
+### Dashboard description
+
+```
+Confirms or rejects a possible_match patient_resolution_id from resolve_patient_identity. Call only after the caller answers the confirmation question. confirmed: true proceeds toward booking; confirmed: false rejects the candidate.
+```
+
+### Exact name
+
+`confirm_patient_identity`
+
+### When to call
+
+- After `resolve_patient_identity` returns `possible_match` and the caller answers yes or no.
+
+### Expected arguments
+
+```json
+{
+  "patient_resolution_id": "opaque-token",
+  "confirmed": true,
+  "confirmation_text": "Yes, that's me."
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `patient_resolution_id` | Yes | From `resolve_patient_identity` |
+| `confirmed` | Yes | `true` if caller affirmed identity |
+| `confirmation_text` | No | Short caller phrase |
+
+### Common errors
+
+| `error_code` | Cause |
+|--------------|--------|
+| `patient_resolution_not_found` | Unknown, expired, or wrong-call token |
+| `patient_identity_confirmation_rejected` | Caller said no (`confirmed: false`) — status `rejected` |
+| `retell_tool_arguments_invalid` | Missing `patient_resolution_id` |
+
+---
+
+## 7. book_appointment
 
 ### Dashboard description
 
@@ -394,7 +510,7 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 
 ---
 
-## 6. cancel_appointment
+## 8. cancel_appointment
 
 ### Dashboard description
 
@@ -465,7 +581,7 @@ Side effect: cancels an existing appointment after explicit caller confirmation.
 
 ---
 
-## 7. reschedule_appointment
+## 9. reschedule_appointment
 
 ### Dashboard description
 
@@ -565,7 +681,7 @@ Side effect: moves an existing appointment to a new time after explicit confirma
 Retell may retry side-effecting tools. When Retell sends the same `tool_call_id` for the same call and tool:
 
 - The backend returns the stored outcome with `duplicate: true`.
-- `book_appointment`, `cancel_appointment`, and `reschedule_appointment` do not double-book or double-cancel.
+- `book_appointment`, `cancel_appointment`, `reschedule_appointment`, `resolve_patient_identity`, and `confirm_patient_identity` do not double-apply side effects on retry.
 - The receptionist should treat `duplicate: true` with `status: succeeded` as success — confirm once, do not apologize for a duplicate.
 
 Side-effecting tools without `tool_call_id` do not get cross-retry deduplication at the adapter layer.

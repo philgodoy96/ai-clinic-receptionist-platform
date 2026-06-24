@@ -11,10 +11,12 @@ from app.schemas.retell_tools import (
     BookAppointmentToolArguments,
     CancelAppointmentToolArguments,
     CheckAvailabilityToolArguments,
+    ConfirmPatientIdentityToolArguments,
     GetClinicContextToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
     RescheduleAppointmentToolArguments,
+    ResolvePatientIdentityToolArguments,
     RetellProviderToolCallRequest,
     RetellToolCallResponse,
 )
@@ -30,6 +32,8 @@ _ARGUMENT_MODEL_BY_TOOL: dict[
         | BookAppointmentToolArguments
         | CancelAppointmentToolArguments
         | RescheduleAppointmentToolArguments
+        | ResolvePatientIdentityToolArguments
+        | ConfirmPatientIdentityToolArguments
     ],
 ] = {}
 
@@ -42,6 +46,8 @@ class RetellSupportedToolName(StrEnum):
     BOOK_APPOINTMENT = "book_appointment"
     CANCEL_APPOINTMENT = "cancel_appointment"
     RESCHEDULE_APPOINTMENT = "reschedule_appointment"
+    RESOLVE_PATIENT_IDENTITY = "resolve_patient_identity"
+    CONFIRM_PATIENT_IDENTITY = "confirm_patient_identity"
 
 
 class RetellToolCallStatus(StrEnum):
@@ -70,6 +76,8 @@ RetellToolArguments = (
     | BookAppointmentToolArguments
     | CancelAppointmentToolArguments
     | RescheduleAppointmentToolArguments
+    | ResolvePatientIdentityToolArguments
+    | ConfirmPatientIdentityToolArguments
 )
 
 
@@ -211,5 +219,7 @@ _ARGUMENT_MODEL_BY_TOOL.update(
         RetellSupportedToolName.BOOK_APPOINTMENT: BookAppointmentToolArguments,
         RetellSupportedToolName.CANCEL_APPOINTMENT: CancelAppointmentToolArguments,
         RetellSupportedToolName.RESCHEDULE_APPOINTMENT: RescheduleAppointmentToolArguments,
+        RetellSupportedToolName.RESOLVE_PATIENT_IDENTITY: ResolvePatientIdentityToolArguments,
+        RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY: ConfirmPatientIdentityToolArguments,
     },
 )

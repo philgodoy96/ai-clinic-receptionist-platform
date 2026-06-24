@@ -22,6 +22,7 @@ MAX_CANCEL_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH = 500
 MAX_RESCHEDULE_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_RESCHEDULE_APPOINTMENT_RESCHEDULE_REASON_LENGTH = 500
+MAX_PATIENT_IDENTITY_CONFIRMATION_TEXT_LENGTH = 500
 _PATIENT_EMAIL_PATTERN = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
@@ -318,3 +319,49 @@ class RescheduleAppointmentToolArguments(BaseModel):
             msg = "either hold_id or new_slot_id is required"
             raise ValueError(msg)
         return self
+
+
+class ResolvePatientIdentityToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patient_name: str = Field(min_length=1, max_length=160)
+    patient_date_of_birth: date
+    patient_email: str | None = Field(
+        default=None,
+        max_length=255,
+        pattern=_PATIENT_EMAIL_PATTERN,
+    )
+    patient_phone: str | None = Field(default=None, max_length=40)
+    caller_claims_existing_patient: bool = True
+    allow_demo_patient_creation: bool = False
+
+    @field_validator("patient_name")
+    @classmethod
+    def validate_patient_name_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_name cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+
+class ConfirmPatientIdentityToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patient_resolution_id: str = Field(min_length=1, max_length=120)
+    confirmed: bool
+    confirmation_text: str | None = Field(
+        default=None,
+        max_length=MAX_PATIENT_IDENTITY_CONFIRMATION_TEXT_LENGTH,
+    )
+
+    @field_validator("patient_resolution_id")
+    @classmethod
+    def validate_patient_resolution_id_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
