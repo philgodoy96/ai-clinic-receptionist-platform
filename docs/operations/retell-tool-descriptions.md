@@ -1,8 +1,8 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block, `retell-receptionist-v3`).
+Canonical descriptions for the ten Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block, `retell-receptionist-v3`).
 
-**Voice slice scope:** This runbook prioritizes **new appointment booking** with identity resolution. Cancellation and rescheduling tools remain registered for future slices; the active master prompt does not advertise full cancel/reschedule lookup yet.
+**Voice slice scope:** This runbook covers **new appointment booking** and **upcoming appointment lookup** (`list_patient_appointments`) after identity resolution. Cancellation and rescheduling **execution** remain deferred; the active master prompt must not call `cancel_appointment` or `reschedule_appointment`.
 
 Related docs:
 
@@ -433,7 +433,101 @@ Confirms or rejects a possible_match patient_resolution_id from resolve_patient_
 
 ---
 
-## 7. book_appointment
+## 7. list_patient_appointments
+
+### Dashboard description
+
+```
+Read-only. Lists upcoming scheduled appointments for a patient already resolved on this call. Requires patient_resolution_id from resolve_patient_identity or confirm_patient_identity. Returns voice-safe appointment summaries. Use for cancel/reschedule requests to identify which appointment the caller wants to change. Does not cancel or reschedule. Never pass raw patient IDs.
+```
+
+### Exact name
+
+`list_patient_appointments`
+
+### Endpoint
+
+`POST /api/v1/retell/tools`
+
+### When to call
+
+- After `resolve_patient_identity` or `confirm_patient_identity` returns a usable `patient_resolution_id`.
+- When the caller asks to cancel or reschedule and you need to see their upcoming appointments.
+- After identity is confirmed for an existing patient on this call.
+
+### When not to call
+
+- Before patient identity is resolved on this call.
+- With raw `patient_id`, email, phone, or name/DOB alone.
+- To cancel or reschedule (use future execution tools when enabled — not in the active prompt).
+- During a new booking flow before identity resolution completes.
+
+### Expected arguments
+
+```json
+{
+  "patient_resolution_id": "opaque-token-from-resolve_patient_identity",
+  "limit": 5
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `patient_resolution_id` | Yes | Opaque token from identity resolution on this call |
+| `limit` | No | Default `5`; max `10` |
+
+### Side effects
+
+None. Read-only.
+
+### Example success result
+
+```json
+{
+  "appointment_count": 1,
+  "appointments": [
+    {
+      "appointment_id": "7fcf0ca1-7f14-4f45-a8a4-cc77d1a67f4d",
+      "start_time": "2026-06-25T14:00:00-04:00",
+      "end_time": "2026-06-25T14:30:00-04:00",
+      "doctor_name": "Dr. Emily Carter",
+      "specialty_name": "Dermatology",
+      "status": "scheduled",
+      "human_readable_summary": "Dermatology with Dr. Emily Carter on Thursday, June 25 at 2:00 PM Eastern"
+    }
+  ],
+  "next_step": "confirm_appointment_selection",
+  "suggested_response_text": "I found your Dermatology appointment with Dr. Emily Carter on Thursday, June 25 at 2:00 PM Eastern. Is that the appointment you want to change?"
+}
+```
+
+### `next_step` values
+
+| Value | Meaning |
+|-------|---------|
+| `no_upcoming_appointments` | No upcoming scheduled appointments; offer new booking |
+| `confirm_appointment_selection` | One appointment; confirm it is the one to change |
+| `choose_appointment` | Multiple appointments; ask caller to choose |
+
+### Common errors
+
+| `error_code` | Cause |
+|--------------|--------|
+| `patient_resolution_not_found` | Invalid, expired, or wrong-call `patient_resolution_id` |
+| `retell_tool_arguments_invalid` | Missing or blank `patient_resolution_id` |
+| `voice_appointment_lookup_unavailable` | Lookup service not configured |
+
+### Receptionist recovery
+
+If `patient_resolution_not_found`, re-verify name and date of birth and call `resolve_patient_identity` again. Do not invent appointments. Do not expose patient email, phone, or internal patient IDs.
+
+### Privacy
+
+Responses include appointment summaries only. They do not include patient email, phone, or raw patient ID.
+
+---
+
+## 8. book_appointment
 
 ### Dashboard description
 
@@ -546,7 +640,7 @@ Retell dashboard JSON schema (optional field):
 
 ---
 
-## 8. cancel_appointment
+## 9. cancel_appointment
 
 ### Dashboard description
 
@@ -617,7 +711,7 @@ Side effect: cancels an existing appointment after explicit caller confirmation.
 
 ---
 
-## 9. reschedule_appointment
+## 10. reschedule_appointment
 
 ### Dashboard description
 
