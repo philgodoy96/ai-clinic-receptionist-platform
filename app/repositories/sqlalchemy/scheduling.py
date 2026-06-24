@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.patient_identity_matching import is_exact_name_match
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
@@ -77,14 +78,18 @@ class SQLAlchemyPatientRepository:
             return None
 
         statement = select(Patient).where(
-            Patient.full_name == full_name,
             Patient.date_of_birth == date_of_birth,
         )
 
         if email is not None:
-            statement = statement.where(Patient.email == email)
+            statement = statement.where(Patient.email.ilike(email))
 
         candidates = list(self.session.scalars(statement).all())
+        candidates = [
+            patient
+            for patient in candidates
+            if is_exact_name_match(full_name, patient.full_name)
+        ]
 
         if not candidates:
             return None

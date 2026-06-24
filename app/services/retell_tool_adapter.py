@@ -70,6 +70,7 @@ from app.domain.voice_booking import (
     VoiceBookingMissingIdentityError,
     VoiceBookingPatientNotFoundError,
     VoiceBookingQuotaExceededError,
+    VoiceBookingResolutionIdRequiredError,
     VoiceBookingTemporaryFailureError,
     is_book_appointment_executable,
 )
@@ -781,6 +782,18 @@ class RetellToolCallingAdapter:
                 ),
                 response_type=ReceptionistResponseType.CONFIRMATION,
             )
+        except VoiceBookingResolutionIdRequiredError:
+            return self._build_failed_with_suggested_response(
+                parsed,
+                error_code="patient_resolution_id_required",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_resolution_id_required"},
+                fallback_text=(
+                    "I need the patient resolution from this call before I can book. "
+                    "Let me use the identity we already confirmed."
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
+            )
         except VoiceBookingIdentityNotResolvedError:
             return self._build_failed_with_suggested_response(
                 parsed,
@@ -1461,7 +1474,8 @@ class RetellToolCallingAdapter:
             facts=self._build_appointment_response_facts(appointment_summary),
             fallback_text=(
                 "You're all set. Your appointment is confirmed. "
-                "You'll receive a confirmation email shortly."
+                "You'll receive a confirmation email shortly. "
+                "Is there anything else you need today?"
             ),
             response_type=ReceptionistResponseType.CONFIRMATION,
         )

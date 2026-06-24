@@ -55,6 +55,14 @@ def test_master_prompt_v3_uses_preferred_post_booking_wording() -> None:
     assert "how can i help you?" not in prompt
 
 
+def test_master_prompt_v3_limits_scope_to_booking_flow() -> None:
+    prompt = _paste_ready_block().lower()
+
+    assert "booking new appointments" in prompt or "book new appointments" in prompt
+    assert "cancellation and rescheduling" in prompt or "cancel or reschedule" in prompt
+    assert "follow-up" in prompt or "not fully supported" in prompt
+
+
 def test_master_prompt_v3_prohibits_invented_contact_details() -> None:
     prompt = _paste_ready_block().lower()
 

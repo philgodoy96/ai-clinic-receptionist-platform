@@ -27,6 +27,7 @@ def _valid_booking_arguments(
     slot_id: str | None = None,
     explicit_confirmation: bool = True,
     patient_phone: str | None = None,
+    patient_resolution_id: str | None = None,
     confirmation_text: str | None = "Yes, please book it.",
 ) -> dict[str, object]:
     resolved_hold_id = hold_id if hold_id is not None else str(uuid4())
@@ -37,10 +38,31 @@ def _valid_booking_arguments(
         "patient_date_of_birth": "1990-05-15",
         "patient_email": "jane.doe@example.com",
         "patient_phone": patient_phone,
+        "patient_resolution_id": patient_resolution_id,
         "explicit_confirmation": explicit_confirmation,
         "confirmation_text": confirmation_text,
         "notes": "Annual checkup",
     }
+
+
+def test_patient_resolution_id_null_is_allowed() -> None:
+    arguments = BookAppointmentToolArguments.model_validate(
+        _valid_booking_arguments(patient_resolution_id=None),
+    )
+
+    assert arguments.patient_resolution_id is None
+    assert is_book_appointment_executable(arguments) is True
+
+
+def test_patient_resolution_id_accepts_opaque_token() -> None:
+    arguments = BookAppointmentToolArguments.model_validate(
+        _valid_booking_arguments(
+            patient_resolution_id="00000000-0000-4000-8000-000000000001",
+        ),
+    )
+
+    assert arguments.patient_resolution_id == "00000000-0000-4000-8000-000000000001"
+    assert is_book_appointment_executable(arguments) is True
 
 
 def test_valid_booking_tool_args_parse() -> None:

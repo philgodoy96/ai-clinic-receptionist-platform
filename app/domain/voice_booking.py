@@ -51,6 +51,10 @@ class VoiceBookingIdentityNotResolvedError(VoiceBookingConfirmationError):
     """Raised when patient_resolution_id is missing, expired, or not scoped to the call."""
 
 
+class VoiceBookingResolutionIdRequiredError(VoiceBookingConfirmationError):
+    """Raised when booking must include patient_resolution_id from identity resolution."""
+
+
 class VoiceBookingQuotaExceededError(VoiceBookingConfirmationError):
     """Raised when public demo booking quotas are exceeded."""
 
