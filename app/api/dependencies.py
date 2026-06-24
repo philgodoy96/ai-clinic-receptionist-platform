@@ -476,6 +476,7 @@ def get_retell_tool_calling_adapter(
         appointments=SQLAlchemyAppointmentRepository(db),
         clinic_time_service=clinic_time_service,
         patient_identity_resolution=patient_identity_resolution,
+        db=db,
     )
 
 

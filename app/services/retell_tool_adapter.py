@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from sqlalchemy.orm import Session
+
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.api.errors import (
     INVALID_RETELL_PAYLOAD_CODE,
@@ -323,6 +325,7 @@ class RetellToolCallingAdapter:
         appointments: AppointmentRepositoryForRetellToolCalling | None = None,
         clinic_time_service: ClinicTimeService | None = None,
         patient_identity_resolution: PatientIdentityResolutionService | None = None,
+        db: Session | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
         self.scheduling_service = scheduling_service
@@ -339,6 +342,7 @@ class RetellToolCallingAdapter:
         self.appointments = appointments
         self.clinic_time_service = clinic_time_service
         self.patient_identity_resolution = patient_identity_resolution
+        self.db = db
         self.provider = provider
 
     def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
@@ -1275,6 +1279,7 @@ class RetellToolCallingAdapter:
             voice_session=voice_session,
             patient_resolution_id=resolution_result.patient_resolution_id,
         )
+        self._commit_identity_resolution_durable_state()
 
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -1335,6 +1340,7 @@ class RetellToolCallingAdapter:
             voice_session=voice_session,
             patient_resolution_id=resolution_result.patient_resolution_id,
         )
+        self._commit_identity_resolution_durable_state()
 
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -1344,6 +1350,16 @@ class RetellToolCallingAdapter:
                 confirmed=True,
             ),
         )
+
+    def _commit_identity_resolution_durable_state(self) -> None:
+        if self.db is None:
+            return
+
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     def _merge_patient_resolution_voice_context(
         self,
