@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.domain.patient_identity_resolution import (
+    PatientIdentityResolutionRequest,
     PatientResolutionMatchStatus,
     PatientResolutionRecord,
 )
@@ -80,6 +81,157 @@ def _booking_context_with_resolution(
     if not seeded_patients:
         seeded_patients = [context.booking_context.patient]
     return context, resolution_service, seeded_patients
+
+
+def test_new_patient_resolve_created_then_book_succeeds() -> None:
+    repository = FakePatientRepository([])
+    resolution_repository = InMemoryPatientResolutionRepository()
+    resolution_service = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=resolution_repository,
+        patient_intake=PatientIntakeService(
+            patients=repository,
+            mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+        ),
+    )
+    context = create_voice_booking_confirmation_context(
+        patients=[],
+        patient_identity_resolution=resolution_service,
+        voice_patient_intake_mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+    context.booking_context.booking_service.patients = repository
+    context.service.scheduling_service.patients = repository
+    context.service.patient_intake.patients = repository
+    context.service.patient_identity_resolution = resolution_service
+
+    resolve_result = resolution_service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Felipe Logan",
+            patient_date_of_birth=date(1995, 11, 2),
+            patient_email="felipe.logan@example.test",
+            provider_call_id="retell-call-123",
+            conversation_id=context.conversation.id,
+            caller_claims_existing_patient=False,
+            allow_demo_patient_creation=True,
+        ),
+    )
+
+    assert resolve_result.match_status is PatientResolutionMatchStatus.CREATED
+    assert resolve_result.patient_resolution_id is not None
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(
+        replace(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_name="Felipe Logan",
+                patient_email="felipe.logan@example.test",
+                patient_date_of_birth=date(1995, 11, 2),
+            ),
+            patient_resolution_id=resolve_result.patient_resolution_id,
+        ),
+    )
+
+    assert result.patient_id == repository.patients[0].id
+
+
+def test_exact_match_resolve_then_book_succeeds() -> None:
+    context = create_voice_booking_confirmation_context(
+        voice_patient_intake_mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+    )
+    patient = context.booking_context.patient
+    resolution_service, _ = _patient_identity_resolution_service([patient])
+    context.service.patient_identity_resolution = resolution_service
+
+    resolve_result = resolution_service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name=patient.full_name,
+            patient_date_of_birth=patient.date_of_birth,
+            provider_call_id="retell-call-123",
+            conversation_id=context.conversation.id,
+            caller_claims_existing_patient=True,
+            allow_demo_patient_creation=False,
+        ),
+    )
+
+    assert resolve_result.match_status is PatientResolutionMatchStatus.EXACT_MATCH
+    assert resolve_result.patient_resolution_id is not None
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(
+        replace(
+            _build_request(context, hold_id=hold_id),
+            patient_resolution_id=resolve_result.patient_resolution_id,
+        ),
+    )
+
+    assert result.patient_id == patient.id
+
+
+def test_possible_match_resolve_confirm_then_book_succeeds() -> None:
+    patient = Patient(
+        id=uuid4(),
+        full_name="Michael Lee Reed",
+        date_of_birth=date(1988, 3, 15),
+        phone_number=None,
+        email="michael.lee.reed@example.test",
+    )
+    context = create_voice_booking_confirmation_context(
+        patients=[patient],
+        voice_patient_intake_mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+    )
+    resolution_service, _ = _patient_identity_resolution_service([patient])
+    context.service.patient_identity_resolution = resolution_service
+
+    resolve_result = resolution_service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Michael Reed",
+            patient_date_of_birth=date(1988, 3, 15),
+            patient_email="michael.lee.reed@example.test",
+            provider_call_id="retell-call-123",
+            conversation_id=context.conversation.id,
+            caller_claims_existing_patient=True,
+            allow_demo_patient_creation=False,
+        ),
+    )
+
+    assert resolve_result.match_status is PatientResolutionMatchStatus.POSSIBLE_MATCH
+    assert resolve_result.patient_resolution_id is not None
+    hold_id = _active_hold_id(context)
+
+    with pytest.raises(VoiceBookingIdentityConfirmationRequiredError):
+        context.service.confirm_and_book(
+            replace(
+                _build_request(
+                    context,
+                    hold_id=hold_id,
+                    patient_name="Michael Reed",
+                    patient_email="michael.lee.reed@example.test",
+                ),
+                patient_resolution_id=resolve_result.patient_resolution_id,
+            ),
+        )
+
+    resolution_service.confirm_resolution(
+        patient_resolution_id=resolve_result.patient_resolution_id,
+        provider_call_id="retell-call-123",
+        conversation_id=context.conversation.id,
+    )
+
+    result = context.service.confirm_and_book(
+        replace(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_name="Michael Reed",
+                patient_email="michael.lee.reed@example.test",
+            ),
+            patient_resolution_id=resolve_result.patient_resolution_id,
+        ),
+    )
+
+    assert result.patient_id == patient.id
 
 
 def test_booking_succeeds_with_exact_match_resolution_token() -> None:
