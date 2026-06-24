@@ -243,11 +243,27 @@ Hosted public demo example:
 PUBLIC_DEMO_MODE=true
 PUBLIC_DEMO_GUARDRAILS_ENABLED=true
 TRUST_PROXY_HEADERS=true
+VOICE_PATIENT_INTAKE_MODE=demo_auto_create
 ```
 
 Enabling `PUBLIC_DEMO_MODE=true` without `PUBLIC_DEMO_GUARDRAILS_ENABLED=true` is allowed but unsafe for production because the demo is exposed without rate limits.
 
 See also: [Public Demo Guardrails](architecture/public-demo-guardrails.md).
+
+## Voice patient intake
+
+Controls whether voice booking may create minimal demo patients when identity is not found.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VOICE_PATIENT_INTAKE_MODE` | `lookup_only` | `lookup_only` requires a pre-existing patient record. `demo_auto_create` creates a minimal patient for voice booking when identity is new and email uses a `.test` domain. |
+
+Recommended:
+
+- **Production-like / safe default:** `lookup_only`
+- **Public demo / local voice testing:** `demo_auto_create` (see `.env.demo.example`)
+
+Voice intake does not change chat booking or `AppointmentBookingService` rules. Explicit confirmation, hold validation, and booking idempotency remain unchanged.
 
 ## Deployment Environment Templates
 

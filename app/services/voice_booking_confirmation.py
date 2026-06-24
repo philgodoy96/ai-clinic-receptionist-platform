@@ -32,6 +32,11 @@ from app.domain.voice_booking import (
 )
 from app.domain.voice_booking_enums import VoiceBookingAttemptStatus
 from app.domain.voice_conversation import read_voice_context
+from app.domain.voice_patient_intake import (
+    PatientIntakeIdentity,
+    PatientIntakeNotFoundError,
+    VoicePatientIntakeMode,
+)
 from app.messaging.email_job_dispatch import EmailJobDispatchPublisherError
 from app.models.voice_booking_attempt import VoiceBookingAttempt
 from app.repositories.scheduling import AppointmentRepository, AvailabilitySlotRepository
@@ -63,9 +68,9 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
 )
+from app.services.patient_intake import PatientIntakeService
 from app.services.scheduling import (
     InsufficientPatientIdentityError,
-    PatientLookupCriteria,
     SchedulingService,
 )
 
@@ -100,6 +105,7 @@ class VoiceBookingConfirmationService:
         availability_slots: AvailabilitySlotRepository,
         email_job_dispatch: EmailJobDispatchPublisherProtocol | None = None,
         demo_guardrails: DemoGuardrailService | None = None,
+        patient_intake: PatientIntakeService | None = None,
     ) -> None:
         self.db = db
         self.booking_service = booking_service
@@ -113,6 +119,11 @@ class VoiceBookingConfirmationService:
         self.availability_slots = availability_slots
         self.email_job_dispatch = email_job_dispatch
         self.demo_guardrails = demo_guardrails
+        self.patient_intake = patient_intake or PatientIntakeService(
+            patients=scheduling_service.patients,
+            mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+            db=db,
+        )
 
     def confirm_and_book(
         self,
@@ -406,23 +417,20 @@ class VoiceBookingConfirmationService:
 
     def _resolve_patient(self, request: VoiceBookingConfirmationRequest) -> Any:
         try:
-            patient = self.scheduling_service.lookup_patient(
-                PatientLookupCriteria(
-                    full_name=request.patient_name.strip(),
+            return self.patient_intake.resolve_for_voice_booking(
+                PatientIntakeIdentity(
+                    full_name=request.patient_name,
                     date_of_birth=request.patient_date_of_birth,
+                    email=request.patient_email,
                     phone_number=request.patient_phone,
-                    email=request.patient_email.strip(),
                 ),
             )
         except InsufficientPatientIdentityError as exc:
             msg = "patient identity is incomplete"
             raise VoiceBookingMissingIdentityError(msg) from exc
-
-        if patient is None:
+        except PatientIntakeNotFoundError as exc:
             msg = "patient was not found"
-            raise VoiceBookingPatientNotFoundError(msg)
-
-        return patient
+            raise VoiceBookingPatientNotFoundError(msg) from exc
 
     def _check_demo_quotas(self, client_ip: str | None) -> None:
         if self.demo_guardrails is None or not client_ip:

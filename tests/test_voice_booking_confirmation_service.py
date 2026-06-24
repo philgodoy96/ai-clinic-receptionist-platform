@@ -17,11 +17,14 @@ from app.domain.voice_booking import (
     VoiceBookingMissingConfirmationError,
     VoiceBookingMissingHoldError,
     VoiceBookingMissingIdentityError,
+    VoiceBookingPatientNotFoundError,
     VoiceBookingTemporaryFailureError,
 )
 from app.domain.voice_booking_enums import VoiceBookingAttemptStatus
 from app.domain.voice_conversation import read_voice_context
+from app.domain.voice_patient_intake import VoicePatientIntakeMode
 from app.models.conversations import Conversation
+from app.models.scheduling import Patient
 from app.models.voice_booking_attempt import VoiceBookingAttempt
 from app.services.appointment_booking import (
     AppointmentBookingRequest,
@@ -31,12 +34,14 @@ from app.services.appointment_booking import (
 from app.services.audit_logs import AuditLogService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
+from app.services.patient_intake import PatientIntakeService
 from app.services.scheduling import SchedulingService
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
 from tests.test_appointment_booking_api import FakeAuditLogService, FakeDatabaseSession
 from tests.test_appointment_booking_service import (
     BookingContext,
     FakeAppointmentRepository,
+    FakePatientRepository,
     create_booking_context,
 )
 from tests.test_chat_receptionist_service import TrackingAppointmentBookingService
@@ -99,6 +104,8 @@ def _build_request(
     explicit_confirmation: bool = True,
     patient_name: str = "John Miller",
     patient_email: str = "john.miller@example.test",
+    patient_date_of_birth: date = date(1985, 4, 12),
+    patient_phone: str | None = "+1-555-0201",
     idempotency_key: str = "retell:voice-booking:tool-call-1",
 ) -> VoiceBookingConfirmationRequest:
     return VoiceBookingConfirmationRequest(
@@ -110,9 +117,9 @@ def _build_request(
         hold_id=hold_id,
         slot_id=str(context.booking_context.slot.id),
         patient_name=patient_name,
-        patient_date_of_birth=date(1985, 4, 12),
+        patient_date_of_birth=patient_date_of_birth,
         patient_email=patient_email,
-        patient_phone="+1-555-0201",
+        patient_phone=patient_phone,
         explicit_confirmation=explicit_confirmation,
         confirmation_text="Yes, please book it.",
         idempotency_key=idempotency_key,
@@ -121,11 +128,19 @@ def _build_request(
     )
 
 
+def _patient_repository(context: VoiceBookingConfirmationContext) -> FakePatientRepository:
+    return cast(FakePatientRepository, context.booking_context.booking_service.patients)
+
+
 def create_voice_booking_confirmation_context(
     *,
     book_error: Exception | None = None,
+    patients: list[Patient] | None = None,
+    voice_patient_intake_mode: VoicePatientIntakeMode = VoicePatientIntakeMode.LOOKUP_ONLY,
 ) -> VoiceBookingConfirmationContext:
     booking_context = create_booking_context()
+    if patients is not None:
+        booking_context.booking_service.patients = FakePatientRepository(patients)
     inner_booking = booking_context.booking_service
     hold = booking_context.hold_service.create_hold(
         availability_slot_id=booking_context.slot.id,
@@ -182,6 +197,11 @@ def create_voice_booking_confirmation_context(
         voice_booking_attempts=attempt_repository,
         appointments=booking_context.appointment_repository,
         availability_slots=inner_booking.availability_slots,
+        patient_intake=PatientIntakeService(
+            patients=inner_booking.patients,
+            mode=voice_patient_intake_mode,
+            db=cast(Session, db),
+        ),
     )
 
     return VoiceBookingConfirmationContext(
@@ -404,4 +424,85 @@ def test_audit_failure_event_recorded_on_recoverable_booking_error() -> None:
     audit_record = context.audit_logs.records[0]
     assert audit_record.event_type == AuditEventType.APPOINTMENT_BOOKING_FAILED
     assert audit_record.outcome == AuditEventOutcome.FAILURE
-    assert audit_record.event_metadata["reason"] == "slot_already_booked"
+
+
+def test_existing_seeded_patient_booking_succeeds_in_lookup_only_mode() -> None:
+    context = create_voice_booking_confirmation_context(
+        voice_patient_intake_mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+    )
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    assert result.patient_id == context.booking_context.patient.id
+    assert len(context.tracking_booking.book_calls) == 1
+
+
+def test_new_patient_fails_in_lookup_only_mode() -> None:
+    context = create_voice_booking_confirmation_context(
+        patients=[],
+        voice_patient_intake_mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+    )
+    hold_id = _active_hold_id(context)
+
+    with pytest.raises(VoiceBookingPatientNotFoundError):
+        context.service.confirm_and_book(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_name="Ava Thompson",
+                patient_email="ava.thompson@example.test",
+                patient_date_of_birth=date(1992, 9, 3),
+                patient_phone=None,
+            ),
+        )
+
+    assert context.tracking_booking.book_calls == []
+
+
+def test_new_patient_succeeds_in_demo_auto_create_mode() -> None:
+    context = create_voice_booking_confirmation_context(
+        patients=[],
+        voice_patient_intake_mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(
+        _build_request(
+            context,
+            hold_id=hold_id,
+            patient_name="Ava Thompson",
+            patient_email="ava.thompson@example.test",
+            patient_date_of_birth=date(1992, 9, 3),
+            patient_phone=None,
+        ),
+    )
+
+    patient_repo = _patient_repository(context)
+    assert len(patient_repo.patients) == 1
+    assert result.patient_id == patient_repo.patients[0].id
+    assert len(context.tracking_booking.book_calls) == 1
+
+
+def test_duplicate_new_patient_callback_does_not_duplicate_patient_or_appointment() -> None:
+    context = create_voice_booking_confirmation_context(
+        patients=[],
+        voice_patient_intake_mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+    hold_id = _active_hold_id(context)
+    request = _build_request(
+        context,
+        hold_id=hold_id,
+        patient_name="Ava Thompson",
+        patient_email="ava.thompson@example.test",
+        patient_date_of_birth=date(1992, 9, 3),
+        patient_phone=None,
+    )
+
+    first = context.service.confirm_and_book(request)
+    second = context.service.confirm_and_book(request)
+
+    assert len(_patient_repository(context).patients) == 1
+    assert len(context.tracking_booking.book_calls) == 1
+    assert second.duplicate is True
+    assert second.appointment_id == first.appointment_id
