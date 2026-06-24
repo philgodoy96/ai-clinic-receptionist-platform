@@ -58,8 +58,8 @@ class AuditLogService:
     def __init__(self, *, repository: AuditLogRepository) -> None:
         self.repository = repository
 
-    def record(self, payload: AuditLogCreate) -> AuditLog:
-        audit_log = AuditLog(
+    def _build_audit_log(self, payload: AuditLogCreate) -> AuditLog:
+        return AuditLog(
             event_type=payload.event_type,
             outcome=payload.outcome,
             actor_type=payload.actor_type,
@@ -74,11 +74,18 @@ class AuditLogService:
             event_metadata=payload.event_metadata,
         )
 
-        return self.repository.add(audit_log)
+    def record(self, payload: AuditLogCreate) -> AuditLog:
+        return self.repository.add(self._build_audit_log(payload))
 
     def record_best_effort(self, payload: AuditLogCreate) -> None:
+        audit_log = self._build_audit_log(payload)
+        add_best_effort = getattr(self.repository, "add_best_effort", None)
+        if add_best_effort is not None:
+            add_best_effort(audit_log)
+            return
+
         try:
-            self.record(payload)
+            self.repository.add(audit_log)
         except Exception:
             return
 

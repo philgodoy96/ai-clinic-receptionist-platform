@@ -19,6 +19,14 @@ class SQLAlchemyAuditLogRepository:
 
         return audit_log
 
+    def add_best_effort(self, audit_log: AuditLog) -> None:
+        try:
+            with self.session.begin_nested():
+                self.session.add(audit_log)
+                self.session.flush()
+        except Exception:
+            return
+
     def list_recent(
         self,
         *,
