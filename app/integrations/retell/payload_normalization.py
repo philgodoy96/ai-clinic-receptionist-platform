@@ -38,14 +38,6 @@ _LIFECYCLE_BLOCKED_METADATA_FIELDS = frozenset(
     },
 )
 
-_TOOL_CALL_ID_FIELDS = (
-    "tool_call_id",
-    "tool_callId",
-    "invocation_id",
-    "id",
-)
-
-
 class RetellPayloadNormalizationError(ValueError):
     """Raised when a Retell-native payload cannot be normalized safely."""
 
@@ -163,30 +155,128 @@ def _resolve_tool_call_id(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> str:
-    for field_name in _TOOL_CALL_ID_FIELDS:
-        candidate = raw.get(field_name)
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
+    for candidate in _iter_tool_call_id_candidates(raw):
+        if candidate is not None:
+            return candidate
 
-    call = raw.get("call")
-    if isinstance(call, dict):
-        for field_name in _TOOL_CALL_ID_FIELDS:
-            candidate = call.get(field_name)
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
-
-    metadata = raw.get("metadata")
-    if isinstance(metadata, dict):
-        for field_name in _TOOL_CALL_ID_FIELDS:
-            candidate = metadata.get(field_name)
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
+    transcript_candidate = _extract_tool_call_id_from_transcript(
+        raw=raw,
+        tool_name=tool_name,
+        arguments=arguments,
+    )
+    if transcript_candidate is not None:
+        return transcript_candidate
 
     canonical_args = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(
         f"{provider_call_id}:{tool_name}:{canonical_args}".encode(),
     ).hexdigest()[:24]
     return f"derived-{digest}"
+
+
+def _iter_tool_call_id_candidates(raw: dict[str, Any]) -> list[str | None]:
+    """Yield provider tool call id candidates in priority order.
+
+    Ambiguous bare ``id`` fields are intentionally excluded from every scope.
+    """
+    candidates: list[str | None] = [
+        _non_empty_string(raw.get("tool_call_id")),
+        _non_empty_string(raw.get("tool_callId")),
+    ]
+
+    tool_call = raw.get("tool_call")
+    if isinstance(tool_call, dict):
+        candidates.append(_non_empty_string(tool_call.get("id")))
+
+    candidates.append(_non_empty_string(raw.get("function_call_id")))
+    candidates.append(_non_empty_string(raw.get("invocation_id")))
+
+    metadata = raw.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.append(_non_empty_string(metadata.get("tool_call_id")))
+
+    call = raw.get("call")
+    if isinstance(call, dict):
+        candidates.append(_non_empty_string(call.get("tool_call_id")))
+        candidates.append(_non_empty_string(call.get("tool_callId")))
+
+    return candidates
+
+
+def _extract_tool_call_id_from_transcript(
+    *,
+    raw: dict[str, Any],
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str | None:
+    call = raw.get("call")
+    if not isinstance(call, dict):
+        return None
+
+    transcript = call.get("transcript_with_tool_calls")
+    if not isinstance(transcript, list):
+        return None
+
+    canonical_arguments = _canonical_json_object(arguments)
+    if canonical_arguments is None:
+        return None
+
+    for entry in reversed(transcript):
+        if not isinstance(entry, dict):
+            continue
+
+        if entry.get("role") != "tool_call_invocation":
+            continue
+
+        if entry.get("type") != "custom":
+            continue
+
+        entry_name = entry.get("name")
+        if not isinstance(entry_name, str) or entry_name.strip() != tool_name:
+            continue
+
+        tool_call_id = _non_empty_string(entry.get("tool_call_id"))
+        if tool_call_id is None:
+            continue
+
+        if "arguments" not in entry:
+            continue
+
+        entry_arguments = _canonical_json_object(entry.get("arguments"))
+        if entry_arguments is None or entry_arguments != canonical_arguments:
+            continue
+
+        return tool_call_id
+
+    return None
+
+
+def _canonical_json_object(value: Any) -> str | None:
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return json.dumps({}, sort_keys=True, separators=(",", ":"))
+
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        return json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+
+    return None
+
+
+def _non_empty_string(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _is_normalized_lifecycle_payload(raw: dict[str, Any]) -> bool:
