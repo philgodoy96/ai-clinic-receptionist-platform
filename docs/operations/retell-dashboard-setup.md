@@ -151,7 +151,7 @@ Configure the agent prompt so intake follows the master prompt’s **Patient ide
 | Caller type | Agent behavior | Backend tools |
 |-------------|----------------|---------------|
 | **Existing patient** | Ask full name and DOB one at a time; confirm DOB naturally; collect/confirm email when needed. Call `resolve_patient_identity`. On `possible_match`, ask `confirmation_question` then `confirm_patient_identity`. On `multiple_matches`, ask for email or phone once and re-resolve. | `resolve_patient_identity` → `confirm_patient_identity` (if needed) → `book_appointment` with `patient_resolution_id` |
-| **New patient** | Collect name, DOB, and email one question at a time; confirm before resolving. Call `resolve_patient_identity` with `caller_claims_existing_patient: false` and `allow_demo_patient_creation: true` after a confirmed `.test` email. | `resolve_patient_identity` (`created`) → `book_appointment` with `patient_resolution_id` |
+| **New patient** | Collect name, DOB, and email one question at a time; confirm before resolving. **Always** call `resolve_patient_identity` with `caller_claims_existing_patient: false` and `allow_demo_patient_creation: true` after a confirmed `.test` email — even if they said they are new. Backend may return `possible_match` before creating a demo record. | `resolve_patient_identity` → (`confirm_patient_identity` if needed) → `book_appointment` with `patient_resolution_id` |
 
 Inline `patient_name` / `patient_date_of_birth` / `patient_email` on `book_appointment` remain a fallback when no resolution token is used; prefer `patient_resolution_id` for all new dashboard setups.
 
@@ -169,15 +169,19 @@ For new-patient demo flows, use fictional `.test` emails only (for example `feli
 
 `end_call` is a **Retell agent action**, not a backend tool. The prompt controls when the agent ends the call; the backend does not trigger `end_call`.
 
+**Critical:** Manual testing showed the agent must not call `end_call` immediately after asking “Have you been seen at this clinic before?” while a hold is active. Configure the prompt with the [v3 end_call rules](retell-master-prompt-v3.md#paste-ready-retell-master-prompt).
+
 Configure the prompt so the agent:
 
 | Do | Do not |
 |----|--------|
-| End after the caller clearly says they are done and any active scheduling is resolved | End while waiting for the caller to answer a question |
-| End after a polite closing (“Thank you for calling”) | End during identity collection, hold, or tool execution |
-| Release a held time (`release_appointment_hold`) if the caller abandons booking, then close | End immediately after `book_appointment` without asking if anything else is needed |
-| Wait through brief silence while the caller checks a calendar | End on “um” or short pauses mid-flow |
-| Ask “Is there anything else I can help with?” after a successful booking before closing | End the call while a tool request is in flight |
+| End after the caller clearly says goodbye, that's all, no thanks, or explicitly asks to stop | **Never** call `end_call` after asking any question |
+| End only after active scheduling is resolved (booked, cancelled, rescheduled, or hold released) | **Never** call `end_call` while an appointment time is being held |
+| End after a polite closing (“Thank you for calling”) once the caller confirms nothing else is needed | **Never** call `end_call` before patient identity is resolved or the hold is released |
+| Release a held time (`release_appointment_hold`) if the caller abandons booking, then close | **Never** call `end_call` while waiting for: existing/new patient answer, name, DOB, email, possible-match confirmation, or final booking confirmation |
+| Wait through brief silence while the caller checks a calendar | End during identity collection, hold, or tool execution |
+| Ask “Is there anything else I can help with?” after a successful booking and **wait for the answer** | End on “um” or short pauses mid-flow |
+| Continue the conversation when unsure whether the caller is finished | End the call while a tool request is in flight |
 
 Full anti-patterns and dialogue examples: [Retell Conversation UX Playbook — Caller wants to end call](retell-conversation-ux-playbook.md#9-caller-wants-to-end-the-call) and [Smoke Scenario 8](retell-voice-smoke-scenarios.md#scenario-8--no-premature-end_call).
 

@@ -98,6 +98,28 @@ class PatientIdentityResolutionService:
         if request.caller_claims_existing_patient or not request.allow_demo_patient_creation:
             return self._build_not_found_result(identity)
 
+        existing_before_create = self._match_patients(identity)
+        if existing_before_create.status is PatientResolutionMatchStatus.MULTIPLE_MATCHES:
+            return self._build_multiple_matches_result(identity)
+
+        if existing_before_create.status is PatientResolutionMatchStatus.POSSIBLE_MATCH:
+            if existing_before_create.patient is None:
+                return self._build_not_found_result(identity)
+            return self._build_possible_match_result(
+                identity=identity,
+                patient=existing_before_create.patient,
+                request=request,
+            )
+
+        if existing_before_create.status is PatientResolutionMatchStatus.EXACT_MATCH:
+            if existing_before_create.patient is None:
+                return self._build_not_found_result(identity)
+            return self._build_exact_match_result(
+                identity=identity,
+                patient=existing_before_create.patient,
+                request=request,
+            )
+
         return self._create_demo_patient(identity=identity, request=request)
 
     def confirm_resolution(
@@ -205,7 +227,9 @@ class PatientIdentityResolutionService:
             patient_resolution_id=None,
             next_step=PatientResolutionNextStep.RETRY_IDENTITY,
             suggested_response_text=(
-                "No problem. Let's try your name and date of birth once more."
+                "No problem. Could you share the email or phone number on your chart? "
+                "If you're visiting for the first time, we can continue with your "
+                "sample contact details."
             ),
         )
 
@@ -366,6 +390,28 @@ class PatientIdentityResolutionService:
     ) -> PatientIdentityResolutionResult:
         if identity.patient_email is None:
             return self._build_not_found_result(identity)
+
+        pre_create_match = self._match_patients(identity)
+        if pre_create_match.status is PatientResolutionMatchStatus.MULTIPLE_MATCHES:
+            return self._build_multiple_matches_result(identity)
+
+        if pre_create_match.status is PatientResolutionMatchStatus.POSSIBLE_MATCH:
+            if pre_create_match.patient is None:
+                return self._build_not_found_result(identity)
+            return self._build_possible_match_result(
+                identity=identity,
+                patient=pre_create_match.patient,
+                request=request,
+            )
+
+        if pre_create_match.status is PatientResolutionMatchStatus.EXACT_MATCH:
+            if pre_create_match.patient is None:
+                return self._build_not_found_result(identity)
+            return self._build_exact_match_result(
+                identity=identity,
+                patient=pre_create_match.patient,
+                request=request,
+            )
 
         intake = self.patient_intake or PatientIntakeService(
             patients=self.patients,

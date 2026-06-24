@@ -394,7 +394,8 @@ def test_rejected_possible_match_prompts_identity_retry() -> None:
     assert reject.status == "rejected"
     assert reject.error_code == "patient_identity_confirmation_rejected"
     assert reject.result["next_step"] == PatientResolutionNextStep.RETRY_IDENTITY.value
-    assert "name and date of birth" in reject.result["suggested_response_text"].lower()
+    lowered = reject.result["suggested_response_text"].lower()
+    assert "email" in lowered or "phone" in lowered
 
 
 def test_multiple_matches_prompts_for_email() -> None:

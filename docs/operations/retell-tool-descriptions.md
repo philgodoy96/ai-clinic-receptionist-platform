@@ -303,7 +303,7 @@ If release fails because the hold already expired, continue naturally: "No probl
 ### Dashboard description
 
 ```
-Read-only identity resolution (demo create only when allowed). Returns match_status, patient_resolution_id, and suggested_response_text. Use before book_appointment. Collect patient_name and patient_date_of_birth from the caller. Never invent email or phone. Do not expose raw patient_id.
+Read-only identity resolution (demo create only when allowed and no existing match). Returns match_status, patient_resolution_id, and confirmation_question. Call after collecting name, DOB, and email (for new patients) or when email/phone is available. Even when caller_claims_existing_patient is false, the backend may return possible_match for a similar existing record before creating a demo patient. Never invent email or phone. Do not expose raw patient_id or stored contact details.
 ```
 
 ### Exact name
@@ -312,14 +312,16 @@ Read-only identity resolution (demo create only when allowed). Returns match_sta
 
 ### When to call
 
-- After the caller provides name and date of birth (and email or phone when available).
+- After the caller provides name, date of birth, and email (required for new-patient demo path).
 - Before `book_appointment` when patient identity is not yet resolved.
 - When narrowing ambiguous matches (add email or phone on retry).
+- **Even when the caller says they are new** — always resolve after collecting identity fields.
 
 ### When not to call
 
 - Before asking the caller for identity fields.
 - With invented email or phone values.
+- Before the caller confirms their email (for new patients).
 
 ### Expected arguments
 
@@ -366,7 +368,7 @@ Read-only identity resolution (demo create only when allowed). Returns match_sta
 
 | `match_status` | Say |
 |----------------|-----|
-| `possible_match` | Ask `confirmation_question`, then call `confirm_patient_identity` |
+| `possible_match` | Ask `confirmation_question` (safe name only — never read stored email/phone), then call `confirm_patient_identity` |
 | `multiple_matches` | Ask for email (or phone) on file — one question at a time |
 | `not_found` | "I'm not matching those details yet — could we try your name and date of birth once more?" |
 

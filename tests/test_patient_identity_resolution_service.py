@@ -130,9 +130,149 @@ def test_possible_match_by_shortened_name_and_dob() -> None:
     assert result.next_step is PatientResolutionNextStep.CONFIRM_IDENTITY
     assert result.candidate_display_name == "Michael Lee Reed"
     assert result.confirmation_question is not None
+    assert "possible existing profile" in result.confirmation_question.lower()
     assert "Michael Lee Reed" in result.confirmation_question
     assert "michael.lee.reed@example.test" not in (result.confirmation_question or "").lower()
     assert result.patient_resolution_id is not None
+
+
+def test_new_caller_with_exact_existing_patient_returns_exact_match_without_create() -> None:
+    patient = Patient(
+        id=uuid4(),
+        full_name="John Miller",
+        date_of_birth=date(1985, 4, 12),
+        phone_number="+1-555-0201",
+        email="john.miller@example.test",
+    )
+    repository = FakePatientRepository([patient])
+    service = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=InMemoryPatientResolutionRepository(),
+        patient_intake=PatientIntakeService(
+            patients=repository,
+            mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+        ),
+    )
+
+    result = service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="John Miller",
+            patient_date_of_birth=date(1985, 4, 12),
+            patient_email="john.miller.new@example.test",
+            caller_claims_existing_patient=False,
+            allow_demo_patient_creation=True,
+            provider_call_id="call-new-exact",
+        ),
+    )
+
+    assert result.match_status is PatientResolutionMatchStatus.EXACT_MATCH
+    assert result.patient_resolution_id is not None
+    assert len(repository.patients) == 1
+
+
+def test_new_caller_with_possible_existing_patient_does_not_create_duplicate() -> None:
+    patient = Patient(
+        id=uuid4(),
+        full_name="Michael Lee Reed",
+        date_of_birth=date(1985, 4, 12),
+        phone_number=None,
+        email="michael.lee.reed@example.test",
+    )
+    repository = FakePatientRepository([patient])
+    service = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=InMemoryPatientResolutionRepository(),
+        patient_intake=PatientIntakeService(
+            patients=repository,
+            mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+        ),
+    )
+
+    result = service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Michael Reed",
+            patient_date_of_birth=date(1985, 4, 12),
+            patient_email="michael.reed@example.test",
+            caller_claims_existing_patient=False,
+            allow_demo_patient_creation=True,
+            provider_call_id="call-new-possible",
+        ),
+    )
+
+    assert result.match_status is PatientResolutionMatchStatus.POSSIBLE_MATCH
+    assert result.requires_confirmation is True
+    assert result.confirmation_question is not None
+    assert "Michael Lee Reed" in result.confirmation_question
+    assert "michael.lee.reed@example.test" not in result.confirmation_question.lower()
+    assert "michael.reed@example.test" not in (result.suggested_response_text or "").lower()
+    assert len(repository.patients) == 1
+
+
+def test_rejected_possible_match_suggests_email_or_new_demo_path() -> None:
+    patient = Patient(
+        id=uuid4(),
+        full_name="Michael Lee Reed",
+        date_of_birth=date(1985, 4, 12),
+        phone_number=None,
+        email="michael.lee.reed@example.test",
+    )
+    service = _service([patient], mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE)
+
+    resolved = service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Michael Reed",
+            patient_date_of_birth=date(1985, 4, 12),
+            patient_email="michael.reed@example.test",
+            caller_claims_existing_patient=False,
+            allow_demo_patient_creation=True,
+            provider_call_id="call-reject",
+        ),
+    )
+    assert resolved.patient_resolution_id is not None
+
+    rejected = service.reject_resolution(
+        patient_resolution_id=resolved.patient_resolution_id,
+        provider_call_id="call-reject",
+    )
+
+    assert rejected.match_status is PatientResolutionMatchStatus.NOT_FOUND
+    assert rejected.next_step is PatientResolutionNextStep.RETRY_IDENTITY
+    lowered = rejected.suggested_response_text.lower()
+    assert "email" in lowered or "phone" in lowered
+    assert "first time" in lowered or "sample contact" in lowered
+
+
+def test_possible_match_response_does_not_expose_stored_contact_details() -> None:
+    patient = Patient(
+        id=uuid4(),
+        full_name="Michael Lee Reed",
+        date_of_birth=date(1988, 3, 15),
+        phone_number="+1-555-0199",
+        email="michael.lee.reed@example.test",
+    )
+    service = _service([patient])
+
+    result = service.resolve(
+        PatientIdentityResolutionRequest(
+            patient_name="Michael Reed",
+            patient_date_of_birth=date(1988, 3, 15),
+            provider_call_id="call-privacy",
+        ),
+    )
+
+    combined = " ".join(
+        filter(
+            None,
+            [
+                result.confirmation_question,
+                result.suggested_response_text,
+                result.candidate_display_name,
+            ],
+        ),
+    ).lower()
+    assert "michael.lee.reed@example.test" not in combined
+    assert "+1-555-0199" not in combined
+    assert "555-0199" not in combined
 
 
 def test_multiple_matches_when_name_and_dob_collide() -> None:
