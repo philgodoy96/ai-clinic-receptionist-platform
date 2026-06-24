@@ -72,6 +72,24 @@ class VoiceConversationBridgeService:
 
         return self.link_voice_call_to_conversation(voice_call.id, conversation.id)
 
+    def ensure_conversation_for_tool_callback(
+        self,
+        provider: str,
+        provider_call_id: str,
+    ) -> Conversation:
+        normalized_provider_call_id = provider_call_id.strip()
+        if not normalized_provider_call_id:
+            raise VoiceCallNotFoundForBridgeError("voice call was not found")
+
+        self.voice_calls.get_or_create_voice_call(
+            provider=provider,
+            provider_call_id=normalized_provider_call_id,
+        )
+        return self.get_or_create_conversation_for_call(
+            provider,
+            normalized_provider_call_id,
+        )
+
     def link_voice_call_to_conversation(
         self,
         voice_call_id: UUID,

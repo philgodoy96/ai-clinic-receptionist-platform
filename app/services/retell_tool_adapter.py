@@ -14,6 +14,7 @@ from app.api.errors import (
     RETELL_TOOL_PROVIDER_CALL_ID_REQUIRED_CODE,
     UNSUPPORTED_RETELL_TOOL_CODE,
 )
+from app.core.request_context import get_correlation_id, get_request_id
 from app.domain.appointment_rescheduling import (
     AppointmentReschedulingError,
     AppointmentReschedulingHoldExpiredError,
@@ -75,6 +76,8 @@ from app.domain.voice_cancellation import (
     validate_cancel_appointment_conversation_context,
 )
 from app.domain.voice_conversation import (
+    ConversationNotFoundForBridgeError,
+    VoiceCallNotFoundForBridgeError,
     merge_check_availability_identity_fields,
     read_voice_context,
 )
@@ -647,22 +650,14 @@ class RetellToolCallingAdapter:
 
         voice_session = self._ensure_voice_conversation(parsed)
         if voice_session is None:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="missing_voice_conversation_context",
-            )
+            return self._missing_voice_conversation_context_response(parsed)
 
         voice_call = self.voice_calls.get_by_provider_call_id(
             provider=self.provider,
             provider_call_id=parsed.provider_call_id,
         )
         if voice_call is None:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="missing_voice_conversation_context",
-            )
+            return self._missing_voice_conversation_context_response(parsed)
 
         idempotency_key = self._build_book_appointment_idempotency_key(parsed)
 
@@ -770,11 +765,7 @@ class RetellToolCallingAdapter:
 
         voice_session = self._ensure_voice_conversation(parsed)
         if voice_session is None:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="missing_voice_conversation_context",
-            )
+            return self._missing_voice_conversation_context_response(parsed)
 
         conversation = voice_session.conversation
         voice_context = voice_session.voice_context
@@ -894,11 +885,7 @@ class RetellToolCallingAdapter:
 
         voice_session = self._ensure_voice_conversation(parsed)
         if voice_session is None:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="missing_voice_conversation_context",
-            )
+            return self._missing_voice_conversation_context_response(parsed)
 
         conversation = voice_session.conversation
         voice_context = voice_session.voice_context
@@ -1278,21 +1265,44 @@ class RetellToolCallingAdapter:
         if self.voice_conversation_bridge is None:
             return None
 
-        voice_call = self.voice_calls.get_by_provider_call_id(
-            provider=self.provider,
-            provider_call_id=parsed.provider_call_id,
-        )
-        if voice_call is None:
+        try:
+            conversation = self.voice_conversation_bridge.ensure_conversation_for_tool_callback(
+                self.provider,
+                parsed.provider_call_id,
+            )
+        except (VoiceCallNotFoundForBridgeError, ConversationNotFoundForBridgeError):
+            self._log_missing_voice_conversation_context(parsed)
             return None
-
-        conversation = self.voice_conversation_bridge.get_or_create_conversation_for_call(
-            self.provider,
-            parsed.provider_call_id,
-        )
 
         return _VoiceConversationSession(
             conversation=conversation,
             voice_context=read_voice_context(conversation.conversation_metadata),
+        )
+
+    def _missing_voice_conversation_context_response(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        self._log_missing_voice_conversation_context(parsed)
+        return build_failed_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            error_code="missing_voice_conversation_context",
+        )
+
+    def _log_missing_voice_conversation_context(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> None:
+        logger.warning(
+            "retell_voice_conversation_context_missing",
+            extra={
+                "event": "retell_voice_conversation_context_missing",
+                "provider_call_id": parsed.provider_call_id,
+                "tool_name": parsed.tool_name.value,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
         )
 
     def _update_voice_context_after_check_availability(
