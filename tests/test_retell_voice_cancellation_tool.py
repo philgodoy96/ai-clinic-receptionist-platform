@@ -34,12 +34,16 @@ from tests.retell_webhook_support import (
 def _tool_request(
     *,
     appointment_id: str | None = None,
+    patient_resolution_id: str | None = None,
     explicit_confirmation: bool = True,
+    confirmation_text: str = "yes, cancel it",
     tool_call_id: str = TOOL_CALL_ID,
 ) -> RetellToolCallRequest:
     return cancellation_tool_request(
         appointment_id=appointment_id,
+        patient_resolution_id=patient_resolution_id,
         explicit_confirmation=explicit_confirmation,
+        confirmation_text=confirmation_text,
         tool_call_id=tool_call_id,
     )
 
@@ -49,7 +53,10 @@ def test_valid_verified_cancellation_cancels_through_service() -> None:
     appointment = context["appointment"]
 
     response = context["adapter"].execute(
-        _tool_request(appointment_id=str(appointment.id)),
+        _tool_request(
+            appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
+        ),
     )
 
     assert response.status == "succeeded"
@@ -59,21 +66,17 @@ def test_valid_verified_cancellation_cancels_through_service() -> None:
     assert response.result["appointment_id"] == str(appointment.id)
     assert response.duplicate is False
 
-    stored_conversation = context["conversation_repository"].get_by_id(
-        context["conversation"].id,
-    )
-    assert stored_conversation is not None
-    voice_context = stored_conversation.conversation_metadata["voice_context"]
-    assert voice_context["appointment_status"] == AppointmentStatus.CANCELLED.value
-    assert voice_context["appointment_id"] == str(appointment.id)
 
-
-def test_cancellation_resolves_appointment_from_voice_context_without_arg() -> None:
+def test_cancellation_resolves_appointment_from_explicit_argument() -> None:
     context = create_retell_cancellation_tool_context()
     appointment = context["appointment"]
 
     response = context["adapter"].execute(
-        _tool_request(appointment_id=None, tool_call_id="tool-call-cancel-context"),
+        _tool_request(
+            appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
+            tool_call_id="tool-call-cancel-context",
+        ),
     )
 
     assert response.status == "succeeded"
@@ -82,21 +85,16 @@ def test_cancellation_resolves_appointment_from_voice_context_without_arg() -> N
     assert context["tracking_cancellation"].cancel_calls[0].appointment_id == appointment.id
 
 
-def test_ambiguous_appointment_reference_rejected_by_adapter() -> None:
+def test_missing_patient_resolution_id_rejected_by_adapter() -> None:
     context = create_retell_cancellation_tool_context()
-    conversation = context["conversation"]
-    other_appointment_id = uuid4()
-    conversation.conversation_metadata = {
-        "voice_context": {"appointment_id": str(other_appointment_id)},
-    }
-    conversation.appointment_id = context["appointment"].id
+    appointment = context["appointment"]
 
     response = context["adapter"].execute(
-        _tool_request(appointment_id=None, tool_call_id="tool-call-cancel-ambiguous"),
+        _tool_request(appointment_id=str(appointment.id), patient_resolution_id=None),
     )
 
     assert response.status == "failed"
-    assert response.error_code == "appointment_reference_required"
+    assert response.error_code == "patient_resolution_id_required"
     assert context["tracking_cancellation"].cancel_calls == []
 
 
@@ -110,6 +108,7 @@ def test_cancellation_does_not_enqueue_email_job() -> None:
         response = context["adapter"].execute(
             _tool_request(
                 appointment_id=str(appointment.id),
+                patient_resolution_id=context["patient_resolution_id"],
                 tool_call_id="tool-call-cancel-no-email",
             ),
         )
@@ -120,12 +119,12 @@ def test_cancellation_does_not_enqueue_email_job() -> None:
 
 def test_missing_appointment_reference_rejected() -> None:
     context = create_retell_cancellation_tool_context()
-    conversation = context["conversation"]
-    conversation.appointment_id = None
-    conversation.conversation_metadata = {"voice_context": {}}
 
     response = context["adapter"].execute(
-        _tool_request(appointment_id=None),
+        _tool_request(
+            appointment_id=None,
+            patient_resolution_id=context["patient_resolution_id"],
+        ),
     )
 
     assert response.status == "failed"
@@ -140,19 +139,23 @@ def test_missing_confirmation_rejected() -> None:
     response = context["adapter"].execute(
         _tool_request(
             appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
             explicit_confirmation=False,
         ),
     )
 
     assert response.status == "failed"
-    assert response.error_code == "cancellation_confirmation_required"
+    assert response.error_code == "missing_explicit_confirmation"
     assert context["tracking_cancellation"].cancel_calls == []
 
 
 def test_duplicate_tool_callback_does_not_duplicate_side_effects() -> None:
     context = create_retell_cancellation_tool_context()
     appointment = context["appointment"]
-    request = _tool_request(appointment_id=str(appointment.id))
+    request = _tool_request(
+        appointment_id=str(appointment.id),
+        patient_resolution_id=context["patient_resolution_id"],
+    )
 
     first = context["adapter"].execute(request)
     second = context["adapter"].execute(request)
@@ -174,6 +177,7 @@ def test_already_cancelled_appointment_returns_safe_result() -> None:
     response = context["adapter"].execute(
         _tool_request(
             appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
             tool_call_id="tool-call-cancel-already",
         ),
     )
@@ -189,7 +193,12 @@ def test_appointment_row_remains_after_cancellation() -> None:
     appointment = context["appointment"]
     appointment_id = appointment.id
 
-    context["adapter"].execute(_tool_request(appointment_id=str(appointment_id)))
+    context["adapter"].execute(
+        _tool_request(
+            appointment_id=str(appointment_id),
+            patient_resolution_id=context["patient_resolution_id"],
+        ),
+    )
 
     stored = context["cancellation_context"].appointment_repository.get_by_id(appointment_id)
     assert stored is not None
@@ -227,7 +236,10 @@ def test_success_response_has_no_raw_payload_or_secrets() -> None:
     appointment = context["appointment"]
 
     response = context["adapter"].execute(
-        _tool_request(appointment_id=str(appointment.id)),
+        _tool_request(
+            appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
+        ),
     )
 
     serialized = response.model_dump(mode="json")
@@ -256,7 +268,8 @@ def test_invalid_signature_prevents_cancellation() -> None:
                 b'{"provider_call_id":"retell-call-123","tool_name":"cancel_appointment",'
                 b'"tool_call_id":"tool-call-1","arguments":{"appointment_id":"'
                 + str(uuid4()).encode()
-                + b'","explicit_confirmation":true}}'
+                + b'","patient_resolution_id":"res-1","explicit_confirmation":true,'
+                b'"confirmation_text":"yes"}}'
             ),
             headers={
                 "Content-Type": "application/json",
@@ -291,7 +304,10 @@ def test_verified_route_cancellation_returns_provider_safe_response() -> None:
                 "provider_call_id": PROVIDER_CALL_ID,
                 "tool_call_id": TOOL_CALL_ID,
                 "tool_name": "cancel_appointment",
-                "arguments": cancellation_arguments(appointment_id=str(appointment.id)),
+                "arguments": cancellation_arguments(
+                    appointment_id=str(appointment.id),
+                    patient_resolution_id=context["patient_resolution_id"],
+                ),
             },
         )
 
@@ -321,7 +337,10 @@ def test_retell_disabled_rejects_cancellation_route() -> None:
                 "provider_call_id": PROVIDER_CALL_ID,
                 "tool_call_id": TOOL_CALL_ID,
                 "tool_name": "cancel_appointment",
-                "arguments": cancellation_arguments(appointment_id=str(uuid4())),
+                "arguments": cancellation_arguments(
+                    appointment_id=str(uuid4()),
+                    patient_resolution_id="res-1",
+                ),
             },
         )
 
@@ -338,7 +357,10 @@ def test_cancellation_tool_does_not_trigger_llm() -> None:
 
     with patch("app.ai.provider_factory.build_llm_provider") as llm_factory_mock:
         response = context["adapter"].execute(
-            _tool_request(appointment_id=str(appointment.id)),
+            _tool_request(
+                appointment_id=str(appointment.id),
+                patient_resolution_id=context["patient_resolution_id"],
+            ),
         )
 
     assert response.status == "succeeded"
