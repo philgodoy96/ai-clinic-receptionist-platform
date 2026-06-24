@@ -1,8 +1,12 @@
 # Retell Master Prompt v2
 
-Version: `retell-receptionist-v2`
+**Prompt version:** `retell-receptionist-v2`  
+**Status:** Historical — superseded by [Retell Master Prompt v3](retell-master-prompt-v3.md)  
+**Scope:** Booking with inline patient identity at `book_appointment` (pre-resolution tools)
 
-Use this document as the canonical system prompt for the Retell voice agent in the public scheduling demo. Copy the **Master prompt** section into the Retell dashboard agent instructions. Pair it with [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) for scenario examples.
+**Note:** Repository prompt history starts at v2. Earlier dashboard-only prompt iterations were not preserved as standalone repository artifacts.
+
+This document is kept for version history. Do not configure new Retell agents with v2. Copy the **Master prompt** section below only when reviewing prior behavior. Pair with [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) for scenario examples.
 
 Related runbooks:
 

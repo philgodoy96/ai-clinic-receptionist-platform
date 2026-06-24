@@ -4,7 +4,8 @@ Realistic end-to-end smoke tests for the public scheduling voice demo. Run after
 
 Companion docs:
 
-- [Retell Master Prompt v2](retell-master-prompt-v2.md) — agent prompt
+- [Retell Master Prompt v3](retell-master-prompt-v3.md) — active agent prompt (`retell-receptionist-v3`)
+- [Retell Manual Smoke Tests](retell-manual-smoke-tests.md) — validated booking scenarios
 - [Retell Tool Descriptions](retell-tool-descriptions.md) — tool contracts and recovery
 - [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md) — dialogue examples
 
@@ -19,7 +20,7 @@ Use **fictional sample contact information** only. Default clinic hours: Monday�
 | API healthy | `GET /health` → 200 |
 | Retell enabled | `RETELL_ENABLED=true`, webhooks verified |
 | Demo data | `python -m scripts.seed_demo_data` |
-| Agent prompt | [Retell Master Prompt v2](retell-master-prompt-v2.md) published |
+| Agent prompt | [Retell Master Prompt v3](retell-master-prompt-v3.md) published (`retell-receptionist-v3`) |
 | Tools registered | All 9 tools per [tool descriptions](retell-tool-descriptions.md) |
 
 Seeded patients:
@@ -474,7 +475,7 @@ If testing via API: send the same `book_appointment` payload twice with identica
 
 - [ ] Review Retell call transcript for banned words: slot, hold reference, demo system, patient not found, UUID.
 - [ ] Confirm lifecycle webhook created `VoiceCall` for `call_id`.
-- [ ] Log prompt version `retell-receptionist-v2` in deployment notes.
+- [ ] Log prompt version `retell-receptionist-v3` in deployment notes.
 - [ ] File issues against prompt or tool descriptions if recovery language drifted.
 
 See also: [Retell Dashboard Setup — Smoke Test Checklist](retell-dashboard-setup.md#smoke-test-checklist).
