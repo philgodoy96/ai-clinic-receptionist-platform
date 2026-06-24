@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.patient_identity_matching import sanitize_spoken_email
 from app.domain.scheduling.expressions import DateExpressionKind, TimeWindowExpressionKind
 from app.schemas.scheduling_expressions import (
     DateExpressionSchema,
@@ -22,6 +23,7 @@ MAX_CANCEL_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_CANCEL_APPOINTMENT_CANCELLATION_REASON_LENGTH = 500
 MAX_RESCHEDULE_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_RESCHEDULE_APPOINTMENT_RESCHEDULE_REASON_LENGTH = 500
+MAX_PATIENT_IDENTITY_CONFIRMATION_TEXT_LENGTH = 500
 _PATIENT_EMAIL_PATTERN = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
@@ -210,6 +212,7 @@ class BookAppointmentToolArguments(BaseModel):
     patient_date_of_birth: date
     patient_email: str = Field(min_length=1, max_length=255, pattern=_PATIENT_EMAIL_PATTERN)
     patient_phone: str | None = Field(default=None, max_length=40)
+    patient_resolution_id: str | None = Field(default=None, max_length=120)
     explicit_confirmation: bool
     confirmation_text: str | None = Field(
         default=None,
@@ -220,6 +223,14 @@ class BookAppointmentToolArguments(BaseModel):
         max_length=MAX_BOOK_APPOINTMENT_NOTES_LENGTH,
     )
 
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
+
     @field_validator("patient_name")
     @classmethod
     def validate_patient_name_not_blank(cls, value: str) -> str:
@@ -227,6 +238,22 @@ class BookAppointmentToolArguments(BaseModel):
         if not stripped:
             msg = "patient_name cannot be blank"
             raise ValueError(msg)
+        return stripped
+
+    @field_validator("patient_resolution_id")
+    @classmethod
+    def validate_patient_resolution_id_not_blank_if_present(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
         return stripped
 
     @model_validator(mode="after")
@@ -259,6 +286,14 @@ class CancelAppointmentToolArguments(BaseModel):
         max_length=255,
         pattern=_PATIENT_EMAIL_PATTERN,
     )
+
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
 
     @field_validator("patient_name")
     @classmethod
@@ -297,6 +332,14 @@ class RescheduleAppointmentToolArguments(BaseModel):
         pattern=_PATIENT_EMAIL_PATTERN,
     )
 
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
+
     @field_validator("patient_name")
     @classmethod
     def validate_patient_name_not_blank_if_present(cls, value: str | None) -> str | None:
@@ -318,3 +361,57 @@ class RescheduleAppointmentToolArguments(BaseModel):
             msg = "either hold_id or new_slot_id is required"
             raise ValueError(msg)
         return self
+
+
+class ResolvePatientIdentityToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patient_name: str = Field(min_length=1, max_length=160)
+    patient_date_of_birth: date
+    patient_email: str | None = Field(
+        default=None,
+        max_length=255,
+        pattern=_PATIENT_EMAIL_PATTERN,
+    )
+    patient_phone: str | None = Field(default=None, max_length=40)
+    caller_claims_existing_patient: bool = True
+    allow_demo_patient_creation: bool = False
+
+    @field_validator("patient_email", mode="before")
+    @classmethod
+    def sanitize_patient_email_before_validation(cls, value: object) -> object:
+        if value is None:
+            return None
+
+        return sanitize_spoken_email(str(value))
+
+    @field_validator("patient_name")
+    @classmethod
+    def validate_patient_name_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_name cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+
+class ConfirmPatientIdentityToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patient_resolution_id: str = Field(min_length=1, max_length=120)
+    confirmed: bool
+    confirmation_text: str | None = Field(
+        default=None,
+        max_length=MAX_PATIENT_IDENTITY_CONFIRMATION_TEXT_LENGTH,
+    )
+
+    @field_validator("patient_resolution_id")
+    @classmethod
+    def validate_patient_resolution_id_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
+        return stripped

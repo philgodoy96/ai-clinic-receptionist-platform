@@ -36,6 +36,10 @@ from app.domain.appointments import (
     AppointmentNotFoundError,
 )
 from app.domain.audit.enums import AuditActorType
+from app.domain.patient_identity_resolution import (
+    PatientIdentityResolutionRequest,
+    PatientIdentityResolutionResult,
+)
 from app.domain.receptionist.enums import ReceptionistResponseType, ReceptionistTemplateType
 from app.domain.retell_tools import (
     MissingProviderCallIdError,
@@ -58,12 +62,15 @@ from app.domain.voice_booking import (
     VoiceBookingConfirmationRequest,
     VoiceBookingExpiredHoldError,
     VoiceBookingHoldOwnershipError,
+    VoiceBookingIdentityConfirmationRequiredError,
+    VoiceBookingIdentityNotResolvedError,
     VoiceBookingMissingConfirmationError,
     VoiceBookingMissingContextError,
     VoiceBookingMissingHoldError,
     VoiceBookingMissingIdentityError,
     VoiceBookingPatientNotFoundError,
     VoiceBookingQuotaExceededError,
+    VoiceBookingResolutionIdRequiredError,
     VoiceBookingTemporaryFailureError,
     is_book_appointment_executable,
 )
@@ -97,9 +104,11 @@ from app.schemas.retell_tools import (
     BookAppointmentToolArguments,
     CancelAppointmentToolArguments,
     CheckAvailabilityToolArguments,
+    ConfirmPatientIdentityToolArguments,
     HoldAppointmentSlotToolArguments,
     ReleaseAppointmentHoldToolArguments,
     RescheduleAppointmentToolArguments,
+    ResolvePatientIdentityToolArguments,
     RetellCheckAvailabilityRequest,
     RetellToolCallRequest,
     RetellToolCallResponse,
@@ -114,6 +123,11 @@ from app.services.appointment_holds import (
 )
 from app.services.clinic_time import ClinicTimeService
 from app.services.conversations import ConversationNotFoundError
+from app.services.patient_identity_resolution import (
+    PatientIdentityIncompleteError,
+    PatientIdentityResolutionService,
+    PatientResolutionNotFoundError,
+)
 from app.services.receptionist_response_planning import build_suggested_retell_response_text
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
 from app.services.retell_tool_registry import is_side_effecting_retell_tool
@@ -128,6 +142,9 @@ from app.services.voice_conversation_bridge import VoiceConversationBridgeServic
 logger = logging.getLogger("app.retell_tool_adapter")
 
 _RETELL_TOOL_EXECUTION_FAILED_CODE = "retell_tool_execution_failed"
+_PATIENT_RESOLUTION_NOT_FOUND_CODE = "patient_resolution_not_found"
+_PATIENT_IDENTITY_CONFIRMATION_REJECTED_CODE = "patient_identity_confirmation_rejected"
+_PATIENT_IDENTITY_RESOLUTION_UNAVAILABLE_CODE = "patient_identity_resolution_unavailable"
 
 _READ_ONLY_VOICE_CONTEXT_RECOVERABLE_ERRORS = (
     VoiceCallNotFoundForBridgeError,
@@ -305,6 +322,7 @@ class RetellToolCallingAdapter:
         appointment_rescheduling: AppointmentReschedulingForRetell | None = None,
         appointments: AppointmentRepositoryForRetellToolCalling | None = None,
         clinic_time_service: ClinicTimeService | None = None,
+        patient_identity_resolution: PatientIdentityResolutionService | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
         self.scheduling_service = scheduling_service
@@ -320,6 +338,7 @@ class RetellToolCallingAdapter:
         self.appointment_rescheduling = appointment_rescheduling
         self.appointments = appointments
         self.clinic_time_service = clinic_time_service
+        self.patient_identity_resolution = patient_identity_resolution
         self.provider = provider
 
     def execute(self, request: RetellToolCallRequest) -> RetellToolCallResponse:
@@ -399,6 +418,12 @@ class RetellToolCallingAdapter:
 
         if parsed.tool_name is RetellSupportedToolName.RESCHEDULE_APPOINTMENT:
             return self._execute_reschedule_appointment(parsed)
+
+        if parsed.tool_name is RetellSupportedToolName.RESOLVE_PATIENT_IDENTITY:
+            return self._execute_resolve_patient_identity(parsed)
+
+        if parsed.tool_name is RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY:
+            return self._execute_confirm_patient_identity(parsed)
 
         return build_rejected_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -690,6 +715,7 @@ class RetellToolCallingAdapter:
                     patient_date_of_birth=arguments.patient_date_of_birth,
                     patient_email=arguments.patient_email,
                     patient_phone=arguments.patient_phone,
+                    patient_resolution_id=arguments.patient_resolution_id,
                     explicit_confirmation=arguments.explicit_confirmation,
                     confirmation_text=arguments.confirmation_text,
                     notes=arguments.notes,
@@ -741,6 +767,42 @@ class RetellToolCallingAdapter:
                 fallback_text=(
                     "I'm not matching those details yet — could we try your name "
                     "and date of birth once more?"
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
+            )
+        except VoiceBookingIdentityConfirmationRequiredError:
+            return self._build_failed_with_suggested_response(
+                parsed,
+                error_code="patient_identity_confirmation_required",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_identity_confirmation_required"},
+                fallback_text=(
+                    "Before I can book this appointment, I need to confirm your identity. "
+                    "Is the patient record I found correct?"
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
+            )
+        except VoiceBookingResolutionIdRequiredError:
+            return self._build_failed_with_suggested_response(
+                parsed,
+                error_code="patient_resolution_id_required",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_resolution_id_required"},
+                fallback_text=(
+                    "I need the patient resolution from this call before I can book. "
+                    "Let me use the identity we already confirmed."
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
+            )
+        except VoiceBookingIdentityNotResolvedError:
+            return self._build_failed_with_suggested_response(
+                parsed,
+                error_code="patient_identity_not_resolved",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_identity_not_resolved"},
+                fallback_text=(
+                    "I need to verify your patient details again before booking. "
+                    "Let's confirm your name and date of birth."
                 ),
                 response_type=ReceptionistResponseType.CONFIRMATION,
             )
@@ -1173,6 +1235,158 @@ class RetellToolCallingAdapter:
             response_type=ReceptionistResponseType.CONFIRMATION,
         )
 
+    def _execute_resolve_patient_identity(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        if self.patient_identity_resolution is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=_PATIENT_IDENTITY_RESOLUTION_UNAVAILABLE_CODE,
+            )
+
+        arguments = _as_resolve_patient_identity_arguments(parsed.arguments)
+        voice_session = self._ensure_voice_conversation_for_read_only_tool(parsed)
+
+        try:
+            resolution_result = self.patient_identity_resolution.resolve(
+                PatientIdentityResolutionRequest(
+                    patient_name=arguments.patient_name,
+                    patient_date_of_birth=arguments.patient_date_of_birth,
+                    provider_call_id=parsed.provider_call_id,
+                    conversation_id=(
+                        voice_session.conversation.id if voice_session is not None else None
+                    ),
+                    patient_email=arguments.patient_email,
+                    patient_phone=arguments.patient_phone,
+                    caller_claims_existing_patient=arguments.caller_claims_existing_patient,
+                    allow_demo_patient_creation=arguments.allow_demo_patient_creation,
+                ),
+            )
+        except PatientIdentityIncompleteError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="booking_identity_missing",
+            )
+
+        self._merge_patient_resolution_voice_context(
+            voice_session=voice_session,
+            patient_resolution_id=resolution_result.patient_resolution_id,
+        )
+
+        return build_succeeded_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            result=self._build_patient_identity_resolution_result(resolution_result),
+        )
+
+    def _execute_confirm_patient_identity(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> RetellToolCallResponse:
+        if self.patient_identity_resolution is None:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=_PATIENT_IDENTITY_RESOLUTION_UNAVAILABLE_CODE,
+            )
+
+        arguments = _as_confirm_patient_identity_arguments(parsed.arguments)
+        voice_session = self._ensure_voice_conversation_for_read_only_tool(parsed)
+        conversation_id = voice_session.conversation.id if voice_session is not None else None
+
+        if not arguments.confirmed:
+            try:
+                rejection_result = self.patient_identity_resolution.reject_resolution(
+                    patient_resolution_id=arguments.patient_resolution_id,
+                    provider_call_id=parsed.provider_call_id,
+                    conversation_id=conversation_id,
+                )
+            except PatientResolutionNotFoundError:
+                return build_failed_tool_call_response(
+                    tool_name=parsed.tool_name.value,
+                    tool_call_id=parsed.tool_call_id,
+                    error_code=_PATIENT_RESOLUTION_NOT_FOUND_CODE,
+                )
+
+            return build_rejected_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=_PATIENT_IDENTITY_CONFIRMATION_REJECTED_CODE,
+                result=self._build_patient_identity_resolution_result(rejection_result),
+            )
+
+        try:
+            resolution_result = self.patient_identity_resolution.confirm_resolution(
+                patient_resolution_id=arguments.patient_resolution_id,
+                provider_call_id=parsed.provider_call_id,
+                conversation_id=conversation_id,
+            )
+        except PatientResolutionNotFoundError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=_PATIENT_RESOLUTION_NOT_FOUND_CODE,
+            )
+
+        self._merge_patient_resolution_voice_context(
+            voice_session=voice_session,
+            patient_resolution_id=resolution_result.patient_resolution_id,
+        )
+
+        return build_succeeded_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            result=self._build_patient_identity_resolution_result(
+                resolution_result,
+                confirmed=True,
+            ),
+        )
+
+    def _merge_patient_resolution_voice_context(
+        self,
+        *,
+        voice_session: _VoiceConversationSession | None,
+        patient_resolution_id: str | None,
+    ) -> None:
+        if voice_session is None or self.conversations is None:
+            return
+
+        if patient_resolution_id is None:
+            self.conversations.merge_voice_context(
+                conversation_id=voice_session.conversation.id,
+                voice_context={"patient_resolution_id": None},
+            )
+            return
+
+        self.conversations.merge_voice_context(
+            conversation_id=voice_session.conversation.id,
+            voice_context={"patient_resolution_id": patient_resolution_id},
+        )
+
+    def _build_patient_identity_resolution_result(
+        self,
+        resolution_result: PatientIdentityResolutionResult,
+        *,
+        confirmed: bool | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "match_status": resolution_result.match_status.value,
+            "requires_confirmation": resolution_result.requires_confirmation,
+            "display_name": resolution_result.display_name,
+            "candidate_display_name": resolution_result.candidate_display_name,
+            "confirmation_question": resolution_result.confirmation_question,
+            "patient_resolution_id": resolution_result.patient_resolution_id,
+            "next_step": resolution_result.next_step.value,
+            "suggested_response_text": resolution_result.suggested_response_text,
+        }
+        if confirmed is not None:
+            payload["confirmed"] = confirmed
+
+        return payload
+
     def _build_cancel_appointment_result(
         self,
         cancellation_result: AppointmentCancellationResult,
@@ -1260,7 +1474,8 @@ class RetellToolCallingAdapter:
             facts=self._build_appointment_response_facts(appointment_summary),
             fallback_text=(
                 "You're all set. Your appointment is confirmed. "
-                "You'll receive a confirmation email shortly."
+                "You'll receive a confirmation email shortly. "
+                "Is there anything else you need today?"
             ),
             response_type=ReceptionistResponseType.CONFIRMATION,
         )
@@ -1691,6 +1906,26 @@ def _as_reschedule_appointment_arguments(
 ) -> RescheduleAppointmentToolArguments:
     if not isinstance(arguments, RescheduleAppointmentToolArguments):
         msg = "expected reschedule appointment tool arguments"
+        raise TypeError(msg)
+
+    return arguments
+
+
+def _as_resolve_patient_identity_arguments(
+    arguments: Any,
+) -> ResolvePatientIdentityToolArguments:
+    if not isinstance(arguments, ResolvePatientIdentityToolArguments):
+        msg = "expected resolve patient identity tool arguments"
+        raise TypeError(msg)
+
+    return arguments
+
+
+def _as_confirm_patient_identity_arguments(
+    arguments: Any,
+) -> ConfirmPatientIdentityToolArguments:
+    if not isinstance(arguments, ConfirmPatientIdentityToolArguments):
+        msg = "expected confirm patient identity tool arguments"
         raise TypeError(msg)
 
     return arguments

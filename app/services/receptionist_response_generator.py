@@ -371,27 +371,34 @@ def render_deterministic_template(
         )
 
     if template_type == ReceptionistTemplateType.BOOKING_SUCCEEDED:
+        closing = " Is there anything else you need today?"
         if appointment_time is not None and doctor_name is not None:
             return (
                 f"You're all set. Your appointment is confirmed for {appointment_time} "
                 f"with {doctor_name}. You'll receive a confirmation email shortly."
+                f"{closing}"
             )
         if appointment_time is not None:
             return (
                 f"You're all set. Your appointment is confirmed for {appointment_time}. "
-                "You'll receive a confirmation email shortly."
+                f"You'll receive a confirmation email shortly.{closing}"
             )
         if doctor_name is not None:
             return (
                 f"You're all set. Your appointment is confirmed with {doctor_name}. "
-                "You'll receive a confirmation email shortly."
+                f"You'll receive a confirmation email shortly.{closing}"
             )
         return (
             "You're all set. Your appointment is confirmed. "
-            "You'll receive a confirmation email shortly."
+            f"You'll receive a confirmation email shortly.{closing}"
         )
 
     if template_type == ReceptionistTemplateType.BOOKING_FAILED:
+        if failure_code == "patient_resolution_id_required":
+            return (
+                "I need the patient resolution from this call before I can book. "
+                "Let me use the identity we already confirmed."
+            )
         if failure_code in {
             "appointment_hold_expired",
             "booking_hold_expired",

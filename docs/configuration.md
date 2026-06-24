@@ -256,7 +256,7 @@ Controls whether voice booking may create minimal demo patients when identity is
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VOICE_PATIENT_INTAKE_MODE` | `lookup_only` | `lookup_only` requires a pre-existing patient record. `demo_auto_create` creates a minimal patient for voice booking when identity is new and email uses a `.test` domain. |
+| `VOICE_PATIENT_INTAKE_MODE` | `lookup_only` | `lookup_only` requires a pre-existing patient record. `demo_auto_create` creates a minimal patient for voice booking when identity is new and the email passes schema validation. |
 
 Recommended:
 

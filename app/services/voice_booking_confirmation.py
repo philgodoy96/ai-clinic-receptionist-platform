@@ -18,6 +18,8 @@ from app.domain.voice_booking import (
     VoiceBookingConfirmationResult,
     VoiceBookingExpiredHoldError,
     VoiceBookingHoldOwnershipError,
+    VoiceBookingIdentityConfirmationRequiredError,
+    VoiceBookingIdentityNotResolvedError,
     VoiceBookingMissingConfirmationError,
     VoiceBookingMissingContextError,
     VoiceBookingMissingHoldError,
@@ -25,6 +27,7 @@ from app.domain.voice_booking import (
     VoiceBookingPatientIdentity,
     VoiceBookingPatientNotFoundError,
     VoiceBookingQuotaExceededError,
+    VoiceBookingResolutionIdRequiredError,
     VoiceBookingTemporaryFailureError,
     is_voice_booking_patient_identity_complete,
     resolve_voice_booking_owner_id,
@@ -68,6 +71,11 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
 )
+from app.services.patient_identity_resolution import (
+    PatientIdentityConfirmationRequiredError,
+    PatientIdentityResolutionService,
+    PatientResolutionNotFoundError,
+)
 from app.services.patient_intake import PatientIntakeService
 from app.services.scheduling import (
     InsufficientPatientIdentityError,
@@ -106,6 +114,7 @@ class VoiceBookingConfirmationService:
         email_job_dispatch: EmailJobDispatchPublisherProtocol | None = None,
         demo_guardrails: DemoGuardrailService | None = None,
         patient_intake: PatientIntakeService | None = None,
+        patient_identity_resolution: PatientIdentityResolutionService | None = None,
     ) -> None:
         self.db = db
         self.booking_service = booking_service
@@ -124,6 +133,7 @@ class VoiceBookingConfirmationService:
             mode=VoicePatientIntakeMode.LOOKUP_ONLY,
             db=db,
         )
+        self.patient_identity_resolution = patient_identity_resolution
 
     def confirm_and_book(
         self,
@@ -155,7 +165,7 @@ class VoiceBookingConfirmationService:
             owner_id=targets.owner_id,
         )
 
-        patient = self._resolve_patient(request)
+        patient = self._resolve_patient(request, voice_context)
         self._check_demo_quotas(request.client_ip)
 
         attempt = existing_attempt or self._create_pending_attempt(
@@ -320,6 +330,9 @@ class VoiceBookingConfirmationService:
             msg = "explicit_confirmation is required"
             raise VoiceBookingMissingConfirmationError(msg)
 
+        if _has_patient_resolution_id(request):
+            return
+
         identity = VoiceBookingPatientIdentity(
             patient_name=request.patient_name,
             patient_date_of_birth=request.patient_date_of_birth,
@@ -415,7 +428,30 @@ class VoiceBookingConfirmationService:
             msg = "appointment hold was not found or expired"
             raise VoiceBookingExpiredHoldError(msg) from exc
 
-    def _resolve_patient(self, request: VoiceBookingConfirmationRequest) -> Any:
+    def _resolve_patient(
+        self,
+        request: VoiceBookingConfirmationRequest,
+        voice_context: dict[str, Any] | None = None,
+    ) -> Any:
+        effective_resolution_id = _effective_patient_resolution_id(request, voice_context)
+        identity_was_resolved_on_call = _voice_context_has_patient_resolution_id(voice_context)
+
+        if effective_resolution_id is not None:
+            try:
+                return self._resolve_patient_from_resolution_token(
+                    request,
+                    patient_resolution_id=effective_resolution_id,
+                )
+            except PatientResolutionNotFoundError as exc:
+                if identity_was_resolved_on_call and not _has_patient_resolution_id(request):
+                    msg = (
+                        "patient_resolution_id is required for booking after "
+                        "identity resolution"
+                    )
+                    raise VoiceBookingResolutionIdRequiredError(msg) from exc
+                msg = "patient identity is not resolved"
+                raise VoiceBookingIdentityNotResolvedError(msg) from exc
+
         try:
             return self.patient_intake.resolve_for_voice_booking(
                 PatientIntakeIdentity(
@@ -429,8 +465,39 @@ class VoiceBookingConfirmationService:
             msg = "patient identity is incomplete"
             raise VoiceBookingMissingIdentityError(msg) from exc
         except PatientIntakeNotFoundError as exc:
+            if identity_was_resolved_on_call and not _has_patient_resolution_id(request):
+                msg = (
+                    "patient_resolution_id is required for booking after "
+                    "identity resolution"
+                )
+                raise VoiceBookingResolutionIdRequiredError(msg) from exc
             msg = "patient was not found"
             raise VoiceBookingPatientNotFoundError(msg) from exc
+
+    def _resolve_patient_from_resolution_token(
+        self,
+        request: VoiceBookingConfirmationRequest,
+        *,
+        patient_resolution_id: str | None = None,
+    ) -> Any:
+        if self.patient_identity_resolution is None:
+            msg = "patient identity resolution is unavailable"
+            raise VoiceBookingIdentityNotResolvedError(msg)
+
+        resolution_id = patient_resolution_id or request.patient_resolution_id
+        if resolution_id is None or resolution_id.strip() == "":
+            msg = "patient_resolution_id is required"
+            raise VoiceBookingIdentityNotResolvedError(msg)
+
+        try:
+            return self.patient_identity_resolution.resolve_patient_for_booking(
+                patient_resolution_id=resolution_id,
+                provider_call_id=request.provider_call_id,
+                conversation_id=request.conversation_id,
+            )
+        except PatientIdentityConfirmationRequiredError as exc:
+            msg = "patient identity confirmation is required"
+            raise VoiceBookingIdentityConfirmationRequiredError(msg) from exc
 
     def _check_demo_quotas(self, client_ip: str | None) -> None:
         if self.demo_guardrails is None or not client_ip:
@@ -595,3 +662,37 @@ class VoiceBookingConfirmationService:
         if isinstance(exc, BookingPatientNotFoundError):
             return "patient_not_found"
         return "booking_failed"
+
+
+def _has_patient_resolution_id(request: VoiceBookingConfirmationRequest) -> bool:
+    return (
+        request.patient_resolution_id is not None
+        and request.patient_resolution_id.strip() != ""
+    )
+
+
+def _voice_context_has_patient_resolution_id(voice_context: dict[str, Any] | None) -> bool:
+    if not voice_context:
+        return False
+
+    context_resolution_id = voice_context.get("patient_resolution_id")
+    return context_resolution_id is not None and str(context_resolution_id).strip() != ""
+
+
+def _effective_patient_resolution_id(
+    request: VoiceBookingConfirmationRequest,
+    voice_context: dict[str, Any] | None,
+) -> str | None:
+    if _has_patient_resolution_id(request):
+        assert request.patient_resolution_id is not None
+        return request.patient_resolution_id.strip()
+
+    if not voice_context:
+        return None
+
+    context_resolution_id = voice_context.get("patient_resolution_id")
+    if context_resolution_id is None:
+        return None
+
+    normalized = str(context_resolution_id).strip()
+    return normalized or None

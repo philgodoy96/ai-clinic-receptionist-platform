@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -143,6 +143,8 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
             RetellSupportedToolName.BOOK_APPOINTMENT,
             RetellSupportedToolName.CANCEL_APPOINTMENT,
             RetellSupportedToolName.RESCHEDULE_APPOINTMENT,
+            RetellSupportedToolName.RESOLVE_PATIENT_IDENTITY,
+            RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY,
         },
     )
     assert RetellSupportedToolName.GET_CLINIC_CONTEXT not in SIDE_EFFECTING_RETELL_TOOLS
@@ -152,6 +154,8 @@ def test_explicit_tool_allowlist_only_includes_supported_tools() -> None:
     assert RetellSupportedToolName.BOOK_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.CANCEL_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
     assert RetellSupportedToolName.RESCHEDULE_APPOINTMENT in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.RESOLVE_PATIENT_IDENTITY in SIDE_EFFECTING_RETELL_TOOLS
+    assert RetellSupportedToolName.CONFIRM_PATIENT_IDENTITY in SIDE_EFFECTING_RETELL_TOOLS
 
 
 def test_adapter_dispatch_does_not_use_reflection() -> None:
@@ -686,3 +690,356 @@ class NeverCalledLLMService:
     def complete(self, *_args: Any, **_kwargs: Any) -> None:
         self.calls.append("complete")
         raise AssertionError("llm service must not be called")
+
+
+class PatientIdentityAdapterBundle:
+    def __init__(self, *, adapter: RetellToolCallingAdapter, patients: list[Patient]) -> None:
+        self.adapter = adapter
+        self.patients = patients
+
+
+@pytest.fixture()
+def patient_identity_adapter_bundle() -> PatientIdentityAdapterBundle:
+    from app.domain.voice_patient_intake import VoicePatientIntakeMode
+    from app.repositories.memory.patient_resolution import InMemoryPatientResolutionRepository
+    from app.services.patient_identity_resolution import PatientIdentityResolutionService
+    from app.services.patient_intake import PatientIntakeService
+
+    patients = [
+        Patient(
+            id=uuid4(),
+            full_name="John Miller",
+            date_of_birth=date(1985, 4, 12),
+            phone_number="+1-555-0201",
+            email="john.miller@example.test",
+        ),
+        Patient(
+            id=uuid4(),
+            full_name="Michael Lee Reed",
+            date_of_birth=date(1988, 3, 15),
+            phone_number=None,
+            email="michael.lee.reed@example.test",
+        ),
+    ]
+    repository = IdentityFakePatientRepository(patients)
+    resolution_repository = InMemoryPatientResolutionRepository()
+    patient_intake = PatientIntakeService(
+        patients=repository,
+        mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+    patient_identity_resolution = PatientIdentityResolutionService(
+        patients=repository,
+        resolutions=resolution_repository,
+        patient_intake=patient_intake,
+    )
+    adapter = RetellToolCallingAdapter(
+        scheduling_service=TrackingSchedulingService(
+            specialties=[],
+            doctors=[],
+            availability_slots=[],
+        ),
+        hold_service=AppointmentHoldService(
+            repository=TrackingAppointmentHoldRepository(),
+            ttl_seconds=300,
+        ),
+        voice_calls=TrackingVoiceCallRepository(),
+        patient_identity_resolution=patient_identity_resolution,
+    )
+
+    return PatientIdentityAdapterBundle(adapter=adapter, patients=patients)
+
+
+class IdentityFakePatientRepository:
+    def __init__(self, patients: Sequence[Patient]) -> None:
+        self.patients = list(patients)
+
+    def get_by_id(self, patient_id: UUID) -> Patient | None:
+        for patient in self.patients:
+            if patient.id == patient_id:
+                return patient
+
+        return None
+
+    def get_by_email(self, email: str) -> Patient | None:
+        normalized = email.strip().lower()
+        for patient in self.patients:
+            if patient.email.lower() == normalized:
+                return patient
+
+        return None
+
+    def get_by_phone_number(self, phone_number: str) -> Patient | None:
+        for patient in self.patients:
+            if patient.phone_number == phone_number:
+                return patient
+
+        return None
+
+    def get_by_identity(
+        self,
+        *,
+        full_name: str,
+        date_of_birth: date,
+        phone_number: str | None = None,
+        email: str | None = None,
+    ) -> Patient | None:
+        del phone_number, email
+        for patient in self.patients:
+            if patient.full_name == full_name and patient.date_of_birth == date_of_birth:
+                return patient
+
+        return None
+
+    def list_by_date_of_birth(self, date_of_birth: date) -> list[Patient]:
+        return [patient for patient in self.patients if patient.date_of_birth == date_of_birth]
+
+    def add(self, patient: Patient) -> Patient:
+        self.patients.append(patient)
+        return patient
+
+
+def _resolve_request(
+    *,
+    arguments: dict[str, Any],
+    tool_call_id: str = "resolve-tool-1",
+) -> RetellToolCallRequest:
+    return RetellToolCallRequest.model_validate(
+        {
+            "provider_call_id": "retell-call-identity",
+            "tool_call_id": tool_call_id,
+            "tool_name": "resolve_patient_identity",
+            "arguments": arguments,
+        },
+    )
+
+
+def _confirm_request(
+    *,
+    patient_resolution_id: str,
+    confirmed: bool,
+    tool_call_id: str = "confirm-tool-1",
+) -> RetellToolCallRequest:
+    return RetellToolCallRequest.model_validate(
+        {
+            "provider_call_id": "retell-call-identity",
+            "tool_call_id": tool_call_id,
+            "tool_name": "confirm_patient_identity",
+            "arguments": {
+                "patient_resolution_id": patient_resolution_id,
+                "confirmed": confirmed,
+            },
+        },
+    )
+
+
+def test_resolve_patient_identity_exact_match(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "John Miller",
+                "patient_date_of_birth": "1985-04-12",
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["match_status"] == "exact_match"
+    assert response.result["requires_confirmation"] is False
+    assert response.result["patient_resolution_id"] is not None
+    assert "patient_id" not in response.result
+
+
+def test_resolve_patient_identity_possible_match_requires_confirmation(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Michael Reed",
+                "patient_date_of_birth": "1988-03-15",
+                "patient_email": "michael.lee.reed@example.test",
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["match_status"] == "possible_match"
+    assert response.result["requires_confirmation"] is True
+    assert response.result["confirmation_question"] is not None
+
+
+def test_confirm_patient_identity_confirms_possible_match(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    resolve_response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Michael Reed",
+                "patient_date_of_birth": "1988-03-15",
+                "patient_email": "michael.lee.reed@example.test",
+            },
+        ),
+    )
+    resolution_id = resolve_response.result["patient_resolution_id"]
+
+    confirm_response = patient_identity_adapter_bundle.adapter.execute(
+        _confirm_request(
+            patient_resolution_id=resolution_id,
+            confirmed=True,
+            tool_call_id="confirm-tool-2",
+        ),
+    )
+
+    assert confirm_response.status == "succeeded"
+    assert confirm_response.result["confirmed"] is True
+    assert confirm_response.result["requires_confirmation"] is False
+
+
+def test_confirm_patient_identity_rejects_possible_match(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    resolve_response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Michael Reed",
+                "patient_date_of_birth": "1988-03-15",
+                "patient_email": "michael.lee.reed@example.test",
+            },
+        ),
+    )
+    resolution_id = resolve_response.result["patient_resolution_id"]
+
+    confirm_response = patient_identity_adapter_bundle.adapter.execute(
+        _confirm_request(
+            patient_resolution_id=resolution_id,
+            confirmed=False,
+            tool_call_id="confirm-tool-3",
+        ),
+    )
+
+    assert confirm_response.status == "rejected"
+    assert confirm_response.error_code == "patient_identity_confirmation_rejected"
+
+
+def test_resolve_patient_identity_not_found(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Unknown Patient",
+                "patient_date_of_birth": "1990-01-01",
+                "caller_claims_existing_patient": True,
+                "allow_demo_patient_creation": False,
+            },
+            tool_call_id="resolve-tool-not-found",
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["match_status"] == "not_found"
+    assert response.result["patient_resolution_id"] is None
+
+
+def test_resolve_patient_identity_created_when_demo_creation_allowed(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Felipe Logan",
+                "patient_date_of_birth": "1995-11-02",
+                "patient_email": "felipe.logan@example.test",
+                "caller_claims_existing_patient": False,
+                "allow_demo_patient_creation": True,
+            },
+            tool_call_id="resolve-tool-created",
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["match_status"] == "created"
+    assert response.result["patient_resolution_id"] is not None
+    assert response.result["next_step"] == "proceed_to_final_booking_confirmation"
+
+
+def test_resolve_patient_identity_created_with_real_email(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        _resolve_request(
+            arguments={
+                "patient_name": "Felipe Logan",
+                "patient_date_of_birth": "1996-09-19",
+                "patient_email": "mike@gmail.com",
+                "caller_claims_existing_patient": False,
+                "allow_demo_patient_creation": True,
+            },
+            tool_call_id="resolve-tool-real-email",
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["match_status"] == "created"
+    assert response.result["next_step"] == "proceed_to_final_booking_confirmation"
+    assert response.result["patient_resolution_id"] is not None
+
+
+def test_resolve_patient_identity_rejects_invalid_email(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-identity",
+                "tool_name": "resolve_patient_identity",
+                "arguments": {
+                    "patient_name": "Felipe Logan",
+                    "patient_date_of_birth": "1996-09-19",
+                    "patient_email": "not-an-email",
+                    "caller_claims_existing_patient": False,
+                    "allow_demo_patient_creation": True,
+                },
+            },
+        ),
+    )
+
+    assert response.status == "rejected"
+    assert response.error_code == "retell_tool_arguments_invalid"
+
+
+def test_resolve_patient_identity_invalid_args_rejected(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-identity",
+                "tool_name": "resolve_patient_identity",
+                "arguments": {
+                    "patient_name": " ",
+                    "patient_date_of_birth": "1985-04-12",
+                },
+            },
+        ),
+    )
+
+    assert response.status == "rejected"
+    assert response.error_code == "retell_tool_arguments_invalid"
+
+
+def test_confirm_patient_identity_unknown_token_fails(
+    patient_identity_adapter_bundle: PatientIdentityAdapterBundle,
+) -> None:
+    response = patient_identity_adapter_bundle.adapter.execute(
+        _confirm_request(
+            patient_resolution_id="00000000-0000-4000-8000-000000000099",
+            confirmed=True,
+            tool_call_id="confirm-tool-unknown",
+        ),
+    )
+
+    assert response.status == "failed"
+    assert response.error_code == "patient_resolution_not_found"
