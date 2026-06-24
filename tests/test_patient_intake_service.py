@@ -75,7 +75,39 @@ def test_new_demo_patient_succeeds_in_demo_auto_create_mode() -> None:
     assert len(repository.patients) == 1
     assert patient.full_name == "Ava Thompson"
     assert patient.email == "ava.thompson@example.test"
-    assert patient.phone_number.startswith("+1-555-")
+    assert patient.phone_number is None
+
+
+def test_demo_auto_create_stores_caller_provided_phone_only() -> None:
+    repository = FakePatientRepository([])
+    service = PatientIntakeService(
+        patients=repository,
+        mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+
+    patient = service.resolve_for_voice_booking(
+        _identity(phone_number="+1-555-9999"),
+    )
+
+    assert patient.phone_number == "+1-555-9999"
+
+
+def test_demo_auto_create_does_not_invent_phone_when_omitted() -> None:
+    repository = FakePatientRepository([])
+    service = PatientIntakeService(
+        patients=repository,
+        mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+    )
+
+    patient = service.resolve_for_voice_booking(
+        _identity(
+            full_name="Felipe Logan",
+            email="felipe.logan@example.test",
+        ),
+    )
+
+    assert patient.email == "felipe.logan@example.test"
+    assert patient.phone_number is None
 
 
 def test_demo_auto_create_rejects_non_sample_email_domain() -> None:

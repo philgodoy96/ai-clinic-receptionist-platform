@@ -265,6 +265,10 @@ Recommended:
 
 Voice intake does not change chat booking or `AppointmentBookingService` rules. Explicit confirmation, hold validation, and booking idempotency remain unchanged.
 
+Demo auto-create stores `patient_phone` only when the caller provided it; omitted phone is stored as `NULL` (no synthetic contact data).
+
+Future: fuzzy identity resolution — see [Voice Patient Identity Resolution](operations/voice-patient-identity-resolution.md).
+
 ## Deployment Environment Templates
 
 | File | Purpose |

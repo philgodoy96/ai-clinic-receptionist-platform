@@ -303,7 +303,7 @@ If release fails because the hold already expired, continue naturally: "No probl
 ### Dashboard description
 
 ```
-Side effect: books the appointment after explicit caller confirmation. Requires active hold, patient_name, patient_date_of_birth, patient_email, explicit_confirmation: true. Never call before final yes. Never invent email. Only say "booked" when status=succeeded.
+Side effect: books the appointment after explicit caller confirmation. Requires active hold, patient_name, patient_date_of_birth, patient_email from the caller, explicit_confirmation: true. Never call immediately after asking a question. Never invent email or phone. Only say "booked" when status=succeeded.
 ```
 
 ### Exact name
@@ -314,14 +314,16 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 
 - After reading back a full summary (doctor, appointment time, name, email).
 - After the caller gives an explicit yes to schedule.
-- With `explicit_confirmation: true` and identity fields collected from the caller (not invented).
+- With `explicit_confirmation: true` and identity fields collected **from the caller** (never invented or placeholder values).
 
 ### When not to call
 
 - Before `hold_appointment_slot` succeeds.
 - Before the caller confirms the summary.
+- **Immediately after asking a question** — wait for the caller's answer first (especially email, DOB, or final confirmation).
 - With `explicit_confirmation: false` or missing.
-- With guessed or placeholder email addresses.
+- With guessed, invented, or placeholder email addresses (for example do not fabricate `felipe.logan@example.test`).
+- With invented `patient_phone` — omit the field unless the caller provided a number.
 - When the caller is still thinking, checking a calendar, or asking clarifying questions.
 
 ### Expected arguments
@@ -344,9 +346,9 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 | `slot_id` | Alt | UUID when hold id omitted but context has slot |
 | `patient_name` | Yes | Full name as confirmed with caller |
 | `patient_date_of_birth` | Yes | ISO date `YYYY-MM-DD` in tool args only — do not require caller to speak this format |
-| `patient_email` | Yes | Must match what caller confirmed; never invent |
-| `patient_phone` | No | Optional unless clinic rules require it |
-| `explicit_confirmation` | Yes | Must be `true` |
+| `patient_email` | Yes | Must match what caller **spoke and confirmed**; never invent |
+| `patient_phone` | No | Omit unless caller provided a number; never invent |
+| `explicit_confirmation` | Yes | Must be `true` only after hold + identity collected/confirmed + final summary + clear yes |
 | `confirmation_text` | No | Short caller confirmation phrase |
 | `notes` | No | Visit reason if collected |
 
@@ -360,10 +362,11 @@ Side effect: books the appointment after explicit caller confirmation. Requires 
 
 ### Booking rules (critical)
 
-1. **Never call before final confirmation** — summary + explicit yes required.
-2. **Do not invent email** — use only the address the caller provided and confirmed.
-3. **Do not say booked unless `status: succeeded`** — failed or rejected means the appointment was not created.
-4. **`duplicate: true`** on retry with the same `tool_call_id` still means success — do not create alarm; confirm once to the caller.
+1. **Never call before final confirmation** — hold succeeded, name/DOB/email collected and confirmed, full summary spoken, explicit yes received.
+2. **Never call right after asking a question** — wait for the caller's answer before `book_appointment`.
+3. **Do not invent email or phone** — use only addresses and numbers the caller provided and you confirmed.
+4. **Do not say booked unless `status: succeeded`** — failed or rejected means the appointment was not created.
+5. **`duplicate: true`** on retry with the same `tool_call_id` still means success — do not create alarm; confirm once to the caller.
 
 ### Common errors
 

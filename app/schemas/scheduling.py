@@ -47,7 +47,7 @@ class PatientResponse(BaseModel):
     id: UUID
     full_name: str
     date_of_birth: date
-    phone_number: str
+    phone_number: str | None
     email: str
 
     model_config = ConfigDict(from_attributes=True)
