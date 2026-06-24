@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.domain.patient_identity_matching import is_exact_name_match
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.domain.scheduling.phone import normalize_phone_digits
@@ -240,13 +241,13 @@ class FakePatientRepository:
 
         candidates: list[Patient] = []
         for patient in self.patients:
-            if patient.full_name != full_name:
+            if not is_exact_name_match(full_name, patient.full_name):
                 continue
 
             if patient.date_of_birth != date_of_birth:
                 continue
 
-            if email is not None and patient.email != email:
+            if email is not None and patient.email.lower() != email.lower():
                 continue
 
             candidates.append(patient)
@@ -265,6 +266,9 @@ class FakePatientRepository:
                 return patient
 
         return None
+
+    def list_by_date_of_birth(self, date_of_birth: date) -> list[Patient]:
+        return [patient for patient in self.patients if patient.date_of_birth == date_of_birth]
 
     def add(self, patient: Patient) -> Patient:
         self.patients.append(patient)

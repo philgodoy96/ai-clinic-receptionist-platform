@@ -20,7 +20,7 @@ Use **fictional sample contact information** only. Default clinic hours: Monday�
 | Retell enabled | `RETELL_ENABLED=true`, webhooks verified |
 | Demo data | `python -m scripts.seed_demo_data` |
 | Agent prompt | [Retell Master Prompt v2](retell-master-prompt-v2.md) published |
-| Tools registered | All 7 tools per [tool descriptions](retell-tool-descriptions.md) |
+| Tools registered | All 9 tools per [tool descriptions](retell-tool-descriptions.md) |
 
 Seeded patients:
 
@@ -28,12 +28,167 @@ Seeded patients:
 |------|--------------|-------|------------------------------|
 | John Miller | April 12, 1985 | john.miller@example.test | `1985-04-12` |
 | Ava Thompson | September 3, 1992 | ava.thompson@example.test | `1992-09-03` |
+| Michael Lee Reed | March 15, 1988 | michael.lee.reed@example.test | `1988-03-15` |
+
+Automated coverage for identity-resolution flows lives in `tests/test_voice_identity_resolution_flow.py`.
+
+---
+
+## Patient identity resolution flows
+
+These scenarios exercise `resolve_patient_identity`, `confirm_patient_identity`, and `book_appointment` with `patient_resolution_id`. Run after identity tools are registered and `VOICE_PATIENT_INTAKE_MODE=demo_auto_create` for new-patient paths.
+
+### IR-1 — Existing exact patient
+
+**Purpose:** Returning patient with full seeded name + DOB resolves cleanly and books via token.
+
+#### Caller script
+
+1. "I've been here before."
+2. Name: **John Miller**; DOB: **April twelfth, nineteen eighty-five**.
+3. Complete hold → summary → **"Yes, please schedule that."**
+
+#### Expected tool sequence
+
+1. `hold_appointment_slot`
+2. `resolve_patient_identity` with name + DOB → `match_status: exact_match`, `patient_resolution_id` present
+3. `book_appointment` with `patient_resolution_id`, `explicit_confirmation: true`
+
+#### Pass criteria
+
+- [ ] `resolve_patient_identity` → `exact_match`, no extra identity confirmation beyond normal summary.
+- [ ] `book_appointment` → `status: succeeded`.
+- [ ] No `patient_id` in tool results.
+
+---
+
+### IR-2 — Existing possible match (Michael Reed)
+
+**Purpose:** Shortened spoken name triggers confirmation before booking.
+
+#### Setup
+
+Database has **Michael Lee Reed** (DOB March 15, 1988).
+
+#### Caller script
+
+1. Name: **Michael Reed**; same DOB; email **michael dot lee dot reed at example dot test**.
+2. When agent asks: **"I have Michael Lee Reed, born in March 1988 — is that you?"** → **"Yes."**
+3. Complete booking summary → yes.
+
+#### Expected tool sequence
+
+1. `resolve_patient_identity` → `possible_match`, `requires_confirmation: true`, `confirmation_question` mentions **Michael Lee Reed** (not raw email).
+2. `confirm_patient_identity` with `confirmed: true` → `confirmed: true` in result.
+3. `book_appointment` with same `patient_resolution_id` → `status: succeeded`.
+
+#### Pass criteria
+
+- [ ] Agent uses natural confirmation question from tool result (or equivalent wording).
+- [ ] `book_appointment` **not** called before `confirm_patient_identity` succeeds.
+- [ ] Unconfirmed token → `patient_identity_confirmation_required` if booking attempted early.
+
+---
+
+### IR-3 — Rejected possible match
+
+**Purpose:** Caller denies candidate profile; agent recovers without booking wrong patient.
+
+#### Caller script
+
+1. Same as IR-2 through `possible_match`.
+2. When asked "Is that you?" → **"No."**
+
+#### Expected tool sequence
+
+1. `resolve_patient_identity` → `possible_match`
+2. `confirm_patient_identity` with `confirmed: false` → `status: rejected`, `error_code: patient_identity_confirmation_rejected`
+
+#### Pass criteria
+
+- [ ] Agent does **not** call `book_appointment` after rejection.
+- [ ] Agent asks for email/phone **or** offers new-patient path with caller-provided email.
+- [ ] Suggested recovery follows `suggested_response_text` from tool result.
+
+---
+
+### IR-4 — Multiple matches
+
+**Purpose:** Ambiguous name + DOB requires email or phone before booking.
+
+#### Setup
+
+Two **Sarah Chen** patients share DOB July 22, 1990 (different emails in seed data).
+
+#### Caller script
+
+1. Name **Sarah Chen**; DOB **July twenty-second, nineteen ninety** (no email yet).
+2. When asked for email → **sarah dot chen at example dot test**.
+
+#### Expected tool sequence
+
+1. `resolve_patient_identity` (name + DOB only) → `multiple_matches`, `next_step: ask_email_or_phone`, **no** `patient_resolution_id`.
+2. `resolve_patient_identity` (with email) → `exact_match`, `patient_resolution_id` present.
+
+#### Pass criteria
+
+- [ ] Agent asks for **one** discriminant (email or phone) — not both at once.
+- [ ] Tool results never expose stored email/phone before caller provides it.
+
+---
+
+### IR-5 — New demo patient
+
+**Purpose:** First-time caller with demo auto-create enabled.
+
+#### Caller script
+
+1. "I'm a new patient."
+2. Name: **Felipe Logan**; DOB: **November second, nineteen ninety-five**.
+3. Email: **felipe dot logan at example dot test** — confirm yes.
+4. Hold → summary → yes.
+
+#### Expected tool sequence
+
+1. `resolve_patient_identity` with `caller_claims_existing_patient: false`, `allow_demo_patient_creation: true` → `created`
+2. `book_appointment` with `patient_resolution_id` → `status: succeeded`
+
+#### Pass criteria
+
+- [ ] Demo patient row created without invented phone.
+- [ ] Booking succeeds with resolution token.
+- [ ] Non-real email invented by agent → booking must not proceed.
+
+---
+
+### IR-6 — Invented email guard (manual + automated)
+
+**Purpose:** Agent must never book before caller speaks and confirms email.
+
+#### Prompt rule
+
+Master prompt prohibits inventing email or calling `book_appointment` immediately after asking for email.
+
+#### Manual validation
+
+1. Start booking; reach email collection question.
+2. **Do not** speak an email — pause.
+3. Verify agent does **not** call `book_appointment` with a fabricated address.
+
+#### Automated guard (CI)
+
+`tests/test_voice_identity_resolution_flow.py::test_invented_email_guard_rejects_booking_before_caller_confirms_email` verifies inline `book_appointment` without prior `resolve_patient_identity` fails with `patient_not_found` when no matching patient exists.
+
+#### Pass criteria
+
+- [ ] No `book_appointment` until caller provides and confirms email.
+- [ ] Never use placeholder or agent-invented `.test` addresses.
 
 ---
 
 ## Scenario 1 — Existing seeded patient booking
 
-**Purpose:** Verify returning-patient flow, hold → identity → summary → book.
+**Purpose:** Verify returning-patient flow, hold → identity resolution → summary → book.
 
 ### Caller script
 
@@ -50,12 +205,14 @@ Seeded patients:
 1. `get_clinic_context`
 2. `check_availability` with `date_expression: { "kind": "tomorrow" }`, `time_window_expression: { "kind": "morning" }`, `doctor_name: "Dr. Emily Carter"`
 3. `hold_appointment_slot` with chosen `availability_slot_id`
-4. `book_appointment` with `explicit_confirmation: true`, seeded identity
+4. `resolve_patient_identity` → `exact_match`
+5. `book_appointment` with `patient_resolution_id`, `explicit_confirmation: true`
 
 ### Pass criteria
 
 - [ ] Receptionist says "I can hold that time while I get your details" (not "hold slot").
 - [ ] Full summary read back before `book_appointment`.
+- [ ] `resolve_patient_identity` returns `exact_match` before booking.
 - [ ] `book_appointment` returns `status: succeeded`.
 - [ ] Receptionist confirms booking only after success.
 - [ ] `end_call` only after caller indicates they are done.
@@ -85,7 +242,9 @@ Seeded patients:
 
 ### Expected tool sequence
 
-Same pattern as Scenario 1 with Ava's identity on `book_appointment`.
+1. `hold_appointment_slot`
+2. `resolve_patient_identity` with `allow_demo_patient_creation: true` → `created` (or `exact_match` on retry)
+3. `book_appointment` with `patient_resolution_id`, `explicit_confirmation: true`
 
 ### Pass criteria
 
@@ -268,6 +427,8 @@ If testing via API: send the same `book_appointment` payload twice with identica
 | Tool type | `tool_call_id` present | Expected behavior |
 |-----------|------------------------|-------------------|
 | `book_appointment` | Yes, same on retry | Stored outcome replayed, `duplicate: true` |
+| `resolve_patient_identity` | Yes, same on retry | Stored outcome replayed, `duplicate: true` |
+| `confirm_patient_identity` | Yes, same on retry | Stored outcome replayed, `duplicate: true` |
 | `cancel_appointment` | Yes, same on retry | No double cancellation |
 | `reschedule_appointment` | Yes, same on retry | No double reschedule |
 | `hold_appointment_slot` | Yes, same on retry | Recorded outcome replayed if side-effect path stored |
@@ -290,7 +451,13 @@ If testing via API: send the same `book_appointment` payload twice with identica
 
 | # | Scenario | Key tools | Must-pass phrase / behavior |
 |---|----------|-----------|----------------------------|
-| 1 | Existing patient | hold → book | Hold that time; summary before book |
+| IR-1 | Exact patient identity | resolve → book | `exact_match` then succeeded book |
+| IR-2 | Possible match | resolve → confirm → book | Natural "is that you?" confirm |
+| IR-3 | Rejected match | resolve → confirm (no) | Retry identity, no book |
+| IR-4 | Multiple matches | resolve → resolve+email | Ask for email once |
+| IR-5 | New demo patient | resolve (created) → book | No invented phone |
+| IR-6 | Invented email guard | — | No book before email confirmed |
+| 1 | Existing patient | hold → resolve → book | Hold that time; summary before book |
 | 2 | New patient | hold → book | One question at a time |
 | 3 | Weekend closed | check_availability | "We're closed that day" |
 | 4 | No exact time | check_availability | Offer alternative |

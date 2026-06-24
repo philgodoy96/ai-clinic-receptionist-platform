@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import date
 from uuid import uuid4
@@ -8,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.domain.patient_identity_matching import is_exact_name_match, normalize_patient_name
 from app.domain.voice_patient_intake import (
     PatientIntakeIdentity,
     PatientIntakeNotFoundError,
@@ -16,9 +16,6 @@ from app.domain.voice_patient_intake import (
 from app.models.scheduling import Patient
 from app.repositories.scheduling import PatientRepository
 from app.services.scheduling import InsufficientPatientIdentityError
-
-_DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN = re.compile(r"\.test$", re.IGNORECASE)
-_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,17 +50,13 @@ class PatientIntakeService:
             msg = "patient was not found"
             raise PatientIntakeNotFoundError(msg)
 
-        if not _is_demo_sample_email(normalized.email):
-            msg = "patient was not found"
-            raise PatientIntakeNotFoundError(msg)
-
         return self._create_demo_patient_idempotent(normalized)
 
     def _normalize_identity(
         self,
         identity: PatientIntakeIdentity,
     ) -> NormalizedPatientIntakeIdentity:
-        full_name = _WHITESPACE_PATTERN.sub(" ", identity.full_name.strip())
+        full_name = normalize_patient_name(identity.full_name)
         email = identity.email.strip().lower()
         phone_number = identity.phone_number.strip() if identity.phone_number else None
         if phone_number == "":
@@ -148,7 +141,7 @@ class PatientIntakeService:
         identity: NormalizedPatientIntakeIdentity,
         patient: Patient,
     ) -> bool:
-        if patient.full_name != identity.full_name:
+        if not is_exact_name_match(identity.full_name, patient.full_name):
             return False
 
         if patient.date_of_birth != identity.date_of_birth:
@@ -161,8 +154,3 @@ class PatientIntakeService:
             return True
 
         return patient.phone_number == identity.phone_number
-
-
-def _is_demo_sample_email(email: str) -> bool:
-    domain = email.rsplit("@", maxsplit=1)[-1]
-    return _DEMO_SAMPLE_EMAIL_DOMAIN_PATTERN.search(domain) is not None

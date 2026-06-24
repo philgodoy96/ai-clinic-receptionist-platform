@@ -21,6 +21,7 @@ from app.messaging.email_job_dispatch import (
     RabbitMQEmailJobDispatchPublisher,
 )
 from app.repositories.redis.appointment_holds import RedisAppointmentHoldRepository
+from app.repositories.redis.patient_resolution import RedisPatientResolutionRepository
 from app.repositories.sqlalchemy.appointments import (
     SQLAlchemyAppointmentCancellationAttemptRepository,
     SQLAlchemyAppointmentRescheduleAttemptRepository,
@@ -59,6 +60,7 @@ from app.services.llm_receptionist import (
     LLMReceptionistAnalysisService,
     build_llm_receptionist_analysis_service_from_settings,
 )
+from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.patient_intake import PatientIntakeService
 from app.services.public_demo_voice_session import PublicDemoVoiceSessionService
 from app.services.receptionist_response_generator import (
@@ -351,6 +353,20 @@ def get_patient_intake_service(
     )
 
 
+def get_patient_identity_resolution_service(
+    db: Annotated[Session, Depends(get_db)],
+    redis_client: Annotated[Any, Depends(get_redis_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    patient_intake: Annotated[PatientIntakeService, Depends(get_patient_intake_service)],
+) -> PatientIdentityResolutionService:
+    return PatientIdentityResolutionService(
+        patients=SQLAlchemyPatientRepository(db),
+        resolutions=RedisPatientResolutionRepository(redis_client),
+        patient_intake=patient_intake,
+        resolution_ttl_seconds=settings.patient_resolution_ttl_seconds,
+    )
+
+
 def get_voice_booking_confirmation_service(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -367,6 +383,10 @@ def get_voice_booking_confirmation_service(
     ],
     demo_guardrails: Annotated[DemoGuardrailService, Depends(get_demo_guardrail_service)],
     patient_intake: Annotated[PatientIntakeService, Depends(get_patient_intake_service)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
 ) -> VoiceBookingConfirmationService:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return VoiceBookingConfirmationService(
@@ -383,6 +403,7 @@ def get_voice_booking_confirmation_service(
         email_job_dispatch=email_job_dispatch,
         demo_guardrails=demo_guardrails,
         patient_intake=patient_intake,
+        patient_identity_resolution=patient_identity_resolution,
     )
 
 
@@ -437,6 +458,10 @@ def get_retell_tool_calling_adapter(
         Depends(get_appointment_rescheduling_service),
     ],
     clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -450,6 +475,7 @@ def get_retell_tool_calling_adapter(
         appointment_rescheduling=appointment_rescheduling,
         appointments=SQLAlchemyAppointmentRepository(db),
         clinic_time_service=clinic_time_service,
+        patient_identity_resolution=patient_identity_resolution,
     )
 
 
