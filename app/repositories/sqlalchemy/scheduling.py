@@ -94,6 +94,8 @@ class SQLAlchemyPatientRepository:
 
         normalized_phone = normalize_phone_digits(phone_number)
         for patient in candidates:
+            if patient.phone_number is None:
+                continue
             if normalize_phone_digits(patient.phone_number) == normalized_phone:
                 return patient
 

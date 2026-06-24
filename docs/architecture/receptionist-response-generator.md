@@ -66,9 +66,9 @@ Assistant message metadata stores safe `response_generation` fields such as `mod
 
 ### Voice integration
 
-The Retell tool adapter may attach `suggested_response_text` to successful booking, cancellation, reschedule, and hold tool results.
+The Retell tool adapter may attach `suggested_response_text` to successful booking, cancellation, reschedule, and hold tool results. Selected booking failures such as expired holds and patient lookup misses may also include suggested text while preserving structured `error_code` values.
 
-Voice suggested text is generated through the deterministic response generator only. Retell may speak or display that text, but the backend does not delegate voice turn-taking to this LLM boundary.
+Voice suggested text is generated through the deterministic response generator only. Wording avoids internal terms such as "slot" or hold/appointment IDs, and uses natural scheduling language such as "appointment time", "opening", "schedule", and "that time". Retell may speak or display that text, but the backend does not delegate voice turn-taking to this LLM boundary.
 
 ## Safety Boundary
 

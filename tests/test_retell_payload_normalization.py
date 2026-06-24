@@ -615,6 +615,251 @@ def test_native_tool_payload_preserves_explicit_tool_call_id() -> None:
     assert normalized["tool_call_id"] == "tool-native-42"
 
 
+def test_resolve_tool_call_id_prefers_top_level_tool_call_id() -> None:
+    normalized = normalize_retell_tool_payload(
+        _native_tool_payload(
+            tool_call_id="top-level-id",
+            args={},
+        )
+        | {
+            "tool_call": {"id": "nested-tool-call-id"},
+            "function_call_id": "function-id",
+            "metadata": {"tool_call_id": "metadata-id"},
+            "call": {"call_id": "call-native-1", "tool_call_id": "call-id"},
+        },
+    )
+
+    assert normalized["tool_call_id"] == "top-level-id"
+
+
+def test_resolve_tool_call_id_prefers_nested_tool_call_id() -> None:
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "get_clinic_context",
+            "call": {"call_id": "call-native-1"},
+            "args": {},
+            "tool_call": {"id": "nested-tool-call-id"},
+            "function_call_id": "function-id",
+        },
+    )
+
+    assert normalized["tool_call_id"] == "nested-tool-call-id"
+
+
+def test_resolve_tool_call_id_prefers_function_call_id() -> None:
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "get_clinic_context",
+            "call": {"call_id": "call-native-1"},
+            "args": {},
+            "function_call_id": "function-id",
+            "invocation_id": "invocation-id",
+        },
+    )
+
+    assert normalized["tool_call_id"] == "function-id"
+
+
+def test_resolve_tool_call_id_prefers_metadata_tool_call_id() -> None:
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "get_clinic_context",
+            "call": {"call_id": "call-native-1"},
+            "args": {},
+            "metadata": {"tool_call_id": "metadata-id"},
+        },
+    )
+
+    assert normalized["tool_call_id"] == "metadata-id"
+
+
+def test_resolve_tool_call_id_prefers_call_tool_call_id() -> None:
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "get_clinic_context",
+            "call": {
+                "call_id": "call-native-1",
+                "tool_call_id": "call-tool-call-id",
+            },
+            "args": {},
+        },
+    )
+
+    assert normalized["tool_call_id"] == "call-tool-call-id"
+
+
+def test_resolve_tool_call_id_prefers_call_tool_call_id_camel_case() -> None:
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "get_clinic_context",
+            "call": {
+                "call_id": "call-native-1",
+                "tool_callId": "call-tool-call-camel-id",
+            },
+            "args": {},
+        },
+    )
+
+    assert normalized["tool_call_id"] == "call-tool-call-camel-id"
+
+
+def test_resolve_tool_call_id_ignores_ambiguous_bare_id_fields() -> None:
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "get_clinic_context",
+            "id": "ambiguous-top-level-id",
+            "call": {
+                "call_id": "call-native-1",
+                "id": "ambiguous-call-id",
+            },
+            "metadata": {"id": "ambiguous-metadata-id"},
+            "args": {},
+        },
+    )
+
+    assert normalized["tool_call_id"].startswith("derived-")
+
+
+def test_resolve_tool_call_id_derived_fallback_is_stable() -> None:
+    first = normalize_retell_tool_payload(_native_tool_payload())
+    second = normalize_retell_tool_payload(_native_tool_payload())
+
+    assert first["tool_call_id"] == second["tool_call_id"]
+    assert first["tool_call_id"].startswith("derived-")
+
+
+def _online_retell_tool_payload(
+    *,
+    name: str = "get_clinic_context",
+    call_id: str = "playground",
+    args: dict[str, Any] | None = None,
+    tool_call_id: str = "call_ZgEdFSfi7rGghZE8im0AMAQR",
+    transcript_arguments: str | dict[str, Any] | None = None,
+    transcript_name: str | None = None,
+    time_sec: int = 0,
+) -> dict[str, Any]:
+    resolved_args = args if args is not None else {}
+    resolved_transcript_arguments = (
+        transcript_arguments if transcript_arguments is not None else "{}"
+    )
+    return {
+        "call": {
+            "call_id": call_id,
+            "transcript_with_tool_calls": [
+                {
+                    "role": "tool_call_invocation",
+                    "tool_call_id": tool_call_id,
+                    "name": transcript_name if transcript_name is not None else name,
+                    "arguments": resolved_transcript_arguments,
+                    "time_sec": time_sec,
+                    "type": "custom",
+                },
+            ],
+        },
+        "name": name,
+        "args": resolved_args,
+    }
+
+
+def test_extracts_tool_call_id_from_transcript_with_tool_calls() -> None:
+    normalized = normalize_retell_tool_payload(_online_retell_tool_payload())
+
+    assert normalized["provider_call_id"] == "playground"
+    assert normalized["tool_name"] == "get_clinic_context"
+    assert normalized["tool_call_id"] == "call_ZgEdFSfi7rGghZE8im0AMAQR"
+
+
+def test_extracts_tool_call_id_from_transcript_matching_name_and_arguments() -> None:
+    args = {
+        "doctor_name": "Dr. Emily Carter",
+        "date_expression": {"kind": "tomorrow"},
+    }
+    normalized = normalize_retell_tool_payload(
+        _online_retell_tool_payload(
+            name="check_availability",
+            args=args,
+            tool_call_id="call_check_avail_1",
+            transcript_arguments=json.dumps(args, separators=(",", ":")),
+        ),
+    )
+
+    assert normalized["tool_call_id"] == "call_check_avail_1"
+
+
+def test_prefers_direct_tool_call_id_over_transcript_tool_call_id() -> None:
+    normalized = normalize_retell_tool_payload(
+        _online_retell_tool_payload(tool_call_id="call_from_transcript")
+        | {"tool_call_id": "call_direct"},
+    )
+
+    assert normalized["tool_call_id"] == "call_direct"
+
+
+def test_falls_back_to_derived_when_transcript_name_does_not_match() -> None:
+    normalized = normalize_retell_tool_payload(
+        _online_retell_tool_payload(transcript_name="check_availability"),
+    )
+
+    assert normalized["tool_call_id"].startswith("derived-")
+
+
+def test_falls_back_to_derived_when_transcript_entry_has_no_tool_call_id() -> None:
+    payload = _online_retell_tool_payload()
+    payload["call"]["transcript_with_tool_calls"][0].pop("tool_call_id")
+
+    normalized = normalize_retell_tool_payload(payload)
+
+    assert normalized["tool_call_id"].startswith("derived-")
+
+
+def test_extracts_tool_call_id_when_transcript_arguments_are_json_string() -> None:
+    args = {"date_expression": {"kind": "tomorrow"}}
+    normalized = normalize_retell_tool_payload(
+        _online_retell_tool_payload(
+            name="check_availability",
+            args=args,
+            tool_call_id="call_json_string_args",
+            transcript_arguments='{"date_expression":{"kind":"tomorrow"}}',
+        ),
+    )
+
+    assert normalized["tool_call_id"] == "call_json_string_args"
+
+
+def test_prefers_most_recent_matching_transcript_entry() -> None:
+    args = {"date_expression": {"kind": "tomorrow"}}
+    canonical_args = json.dumps(args, sort_keys=True, separators=(",", ":"))
+    normalized = normalize_retell_tool_payload(
+        {
+            "name": "check_availability",
+            "args": args,
+            "call": {
+                "call_id": "playground",
+                "transcript_with_tool_calls": [
+                    {
+                        "role": "tool_call_invocation",
+                        "tool_call_id": "call_older",
+                        "name": "check_availability",
+                        "arguments": canonical_args,
+                        "time_sec": 1,
+                        "type": "custom",
+                    },
+                    {
+                        "role": "tool_call_invocation",
+                        "tool_call_id": "call_newer",
+                        "name": "check_availability",
+                        "arguments": canonical_args,
+                        "time_sec": 5,
+                        "type": "custom",
+                    },
+                ],
+            },
+        },
+    )
+
+    assert normalized["tool_call_id"] == "call_newer"
+
+
 def test_normalized_tool_request_model_accepts_native_mapping_output() -> None:
     request = RetellToolCallRequest.model_validate(
         normalize_retell_tool_payload(_native_tool_payload()),

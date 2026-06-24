@@ -1,13 +1,34 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
 from app.db.session import SessionLocal
 from app.domain.scheduling.enums import AvailabilitySlotStatus
 from app.models.scheduling import AvailabilitySlot, Doctor, Patient, Specialty
+
+SEED_SLOT_START_TIMES: tuple[time, ...] = (
+    time(10, 0),
+    time(11, 0),
+    time(14, 0),
+    time(15, 0),
+)
+SEED_BUSINESS_DAY_COUNT = 7
+_MAX_SEED_CALENDAR_SCAN_DAYS = 21
+
+_WEEKDAY_NAME_TO_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
 
 
 def main() -> None:
@@ -122,14 +143,41 @@ def seed_patients(session: Session) -> None:
             session.add(Patient(**patient_data))
 
 
-def seed_availability_slots(session: Session) -> None:
+def seed_availability_slots(
+    session: Session,
+    *,
+    settings: Settings | None = None,
+    clinic_now: datetime | None = None,
+) -> None:
+    resolved_settings = settings or get_settings()
+    clinic_tz = ZoneInfo(resolved_settings.clinic_timezone)
+    resolved_clinic_now = clinic_now or datetime.now(clinic_tz)
+    if resolved_clinic_now.tzinfo is None:
+        resolved_clinic_now = resolved_clinic_now.replace(tzinfo=clinic_tz)
+    else:
+        resolved_clinic_now = resolved_clinic_now.astimezone(clinic_tz)
+
+    business_weekdays = parse_clinic_business_weekdays(resolved_settings.clinic_business_days)
+    slot_dates = rolling_clinic_business_dates(
+        clinic_now=resolved_clinic_now,
+        business_weekdays=business_weekdays,
+        slot_start_times=SEED_SLOT_START_TIMES,
+        business_day_count=SEED_BUSINESS_DAY_COUNT,
+    )
+
     doctors = session.scalars(select(Doctor)).all()
-    slot_dates = next_weekdays(count=5)
 
     for doctor in doctors:
         for slot_date in slot_dates:
-            for slot_start in [time(9, 0), time(10, 0), time(14, 0), time(15, 0)]:
-                start_time = datetime.combine(slot_date, slot_start, tzinfo=UTC)
+            for slot_start in SEED_SLOT_START_TIMES:
+                start_time = clinic_local_slot_to_utc(
+                    slot_date=slot_date,
+                    slot_start=slot_start,
+                    clinic_timezone=clinic_tz,
+                )
+                if start_time <= datetime.now(UTC):
+                    continue
+
                 end_time = start_time + timedelta(minutes=30)
 
                 existing = session.scalar(
@@ -150,17 +198,76 @@ def seed_availability_slots(session: Session) -> None:
                     )
 
 
-def next_weekdays(count: int) -> list[date]:
-    days: list[date] = []
-    current = datetime.now(UTC).date() + timedelta(days=1)
+def parse_clinic_business_weekdays(business_days: str) -> frozenset[int]:
+    weekdays: set[int] = set()
+    for day_name in business_days.split(","):
+        normalized = day_name.strip().lower()
+        if not normalized:
+            continue
+        weekdays.add(_WEEKDAY_NAME_TO_INDEX[normalized])
+    return frozenset(weekdays)
 
-    while len(days) < count:
-        if current.weekday() < 5:
-            days.append(current)
 
-        current += timedelta(days=1)
+def rolling_clinic_business_dates(
+    *,
+    clinic_now: datetime,
+    business_weekdays: frozenset[int],
+    slot_start_times: tuple[time, ...],
+    business_day_count: int,
+) -> list[date]:
+    dates: list[date] = []
+    cursor = clinic_now.date()
 
-    return days
+    for _ in range(_MAX_SEED_CALENDAR_SCAN_DAYS):
+        if cursor.weekday() in business_weekdays:
+            if cursor == clinic_now.date():
+                if has_future_clinic_slot_on_date(
+                    clinic_now=clinic_now,
+                    slot_date=cursor,
+                    slot_start_times=slot_start_times,
+                ):
+                    dates.append(cursor)
+            else:
+                dates.append(cursor)
+
+        if len(dates) >= business_day_count:
+            break
+
+        cursor += timedelta(days=1)
+
+    return dates
+
+
+def has_future_clinic_slot_on_date(
+    *,
+    clinic_now: datetime,
+    slot_date: date,
+    slot_start_times: tuple[time, ...],
+) -> bool:
+    clinic_tz = clinic_now.tzinfo
+    if clinic_tz is None:
+        return False
+
+    for slot_start in slot_start_times:
+        slot_start_utc = clinic_local_slot_to_utc(
+            slot_date=slot_date,
+            slot_start=slot_start,
+            clinic_timezone=clinic_tz,
+        )
+        if slot_start_utc > clinic_now.astimezone(UTC):
+            return True
+
+    return False
+
+
+def clinic_local_slot_to_utc(
+    *,
+    slot_date: date,
+    slot_start: time,
+    clinic_timezone: ZoneInfo | tzinfo,
+) -> datetime:
+    start_local = datetime.combine(slot_date, slot_start, tzinfo=clinic_timezone)
+    return start_local.astimezone(UTC)
 
 
 if __name__ == "__main__":

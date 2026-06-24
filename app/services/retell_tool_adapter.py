@@ -78,6 +78,7 @@ from app.domain.voice_cancellation import (
 from app.domain.voice_conversation import (
     ConversationNotFoundForBridgeError,
     VoiceCallNotFoundForBridgeError,
+    VoiceConversationLinkConflictError,
     merge_check_availability_identity_fields,
     read_voice_context,
 )
@@ -112,6 +113,7 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldWindowError,
 )
 from app.services.clinic_time import ClinicTimeService
+from app.services.conversations import ConversationNotFoundError
 from app.services.receptionist_response_planning import build_suggested_retell_response_text
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
 from app.services.retell_tool_registry import is_side_effecting_retell_tool
@@ -126,6 +128,17 @@ from app.services.voice_conversation_bridge import VoiceConversationBridgeServic
 logger = logging.getLogger("app.retell_tool_adapter")
 
 _RETELL_TOOL_EXECUTION_FAILED_CODE = "retell_tool_execution_failed"
+
+_READ_ONLY_VOICE_CONTEXT_RECOVERABLE_ERRORS = (
+    VoiceCallNotFoundForBridgeError,
+    ConversationNotFoundForBridgeError,
+    VoiceConversationLinkConflictError,
+)
+
+_CHECK_AVAILABILITY_CONTEXT_UPDATE_RECOVERABLE_ERRORS = (
+    ConversationNotFoundError,
+    ConversationNotFoundForBridgeError,
+)
 
 
 class SchedulingServiceForRetellToolCalling(Protocol):
@@ -415,7 +428,7 @@ class RetellToolCallingAdapter:
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
         arguments = _as_check_availability_arguments(parsed.arguments)
-        voice_session = self._ensure_voice_conversation(parsed)
+        voice_session = self._ensure_voice_conversation_for_read_only_tool(parsed)
         voice_context = voice_session.voice_context if voice_session is not None else {}
 
         if self.clinic_time_service is None:
@@ -475,7 +488,8 @@ class RetellToolCallingAdapter:
             result["available_slots"] = slots[: resolved_arguments.limit]
 
         if voice_session is not None:
-            self._update_voice_context_after_check_availability(
+            self._try_update_voice_context_after_check_availability(
+                parsed=parsed,
                 conversation_id=voice_session.conversation.id,
                 arguments=resolved_arguments,
                 result=result,
@@ -580,9 +594,10 @@ class RetellToolCallingAdapter:
                     "expires_in_seconds": self._resolve_hold_ttl_seconds(arguments.ttl_seconds),
                 },
                 template_type=ReceptionistTemplateType.SLOT_HOLD_CREATED,
-                facts={"hold_id": str(hold.hold_id)},
+                facts={},
                 fallback_text=(
-                    "I temporarily held a slot for you. Please provide patient details to confirm."
+                    "I can hold that time while I get your details. I'll need your name, "
+                    "date of birth, and email before I can book it."
                 ),
                 response_type=ReceptionistResponseType.SCHEDULING,
             ),
@@ -700,10 +715,16 @@ class RetellToolCallingAdapter:
                 error_code="booking_hold_missing",
             )
         except VoiceBookingExpiredHoldError:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
+            return self._build_failed_with_suggested_response(
+                parsed,
                 error_code="appointment_hold_expired",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "appointment_hold_expired"},
+                fallback_text=(
+                    "That time may no longer be available. "
+                    "Let me check the latest schedule again."
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
             )
         except VoiceBookingHoldOwnershipError:
             return build_failed_tool_call_response(
@@ -712,10 +733,16 @@ class RetellToolCallingAdapter:
                 error_code="appointment_hold_owner_mismatch",
             )
         except VoiceBookingPatientNotFoundError:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
+            return self._build_failed_with_suggested_response(
+                parsed,
                 error_code="patient_not_found",
+                template_type=ReceptionistTemplateType.BOOKING_FAILED,
+                facts={"failure_code": "patient_not_found"},
+                fallback_text=(
+                    "I'm not matching those details yet — could we try your name "
+                    "and date of birth once more?"
+                ),
+                response_type=ReceptionistResponseType.CONFIRMATION,
             )
         except VoiceBookingQuotaExceededError:
             return build_failed_tool_call_response(
@@ -1138,10 +1165,10 @@ class RetellToolCallingAdapter:
                 "email_confirmation_queued": reschedule_result.confirmation_email_created,
             },
             template_type=ReceptionistTemplateType.RESCHEDULE_SUCCEEDED,
-            facts={"appointment_id": str(reschedule_result.new_appointment_id)},
+            facts=self._build_appointment_response_facts(appointment_summary),
             fallback_text=(
                 "Your appointment has been rescheduled. "
-                f"New reference: {reschedule_result.new_appointment_id}."
+                "You'll receive a confirmation email shortly."
             ),
             response_type=ReceptionistResponseType.CONFIRMATION,
         )
@@ -1171,10 +1198,8 @@ class RetellToolCallingAdapter:
                 "appointment": appointment_summary,
             },
             template_type=ReceptionistTemplateType.CANCELLATION_SUCCEEDED,
-            facts={"appointment_id": str(cancellation_result.appointment_id)},
-            fallback_text=(
-                f"The appointment {cancellation_result.appointment_id} has been cancelled."
-            ),
+            facts={},
+            fallback_text="Your appointment has been cancelled.",
             response_type=ReceptionistResponseType.CONFIRMATION,
         )
 
@@ -1232,12 +1257,77 @@ class RetellToolCallingAdapter:
                 "email_confirmation_queued": booking_result.confirmation_email_created,
             },
             template_type=ReceptionistTemplateType.BOOKING_SUCCEEDED,
-            facts={"appointment_id": str(booking_result.appointment_id)},
+            facts=self._build_appointment_response_facts(appointment_summary),
             fallback_text=(
-                f"Your appointment is confirmed. Reference: {booking_result.appointment_id}."
+                "You're all set. Your appointment is confirmed. "
+                "You'll receive a confirmation email shortly."
             ),
             response_type=ReceptionistResponseType.CONFIRMATION,
         )
+
+    def _build_failed_with_suggested_response(
+        self,
+        parsed: ParsedRetellToolCall,
+        *,
+        error_code: str,
+        template_type: ReceptionistTemplateType,
+        facts: dict[str, Any],
+        fallback_text: str,
+        response_type: ReceptionistResponseType,
+    ) -> RetellToolCallResponse:
+        return build_failed_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            error_code=error_code,
+            result=self._with_suggested_response_text(
+                {},
+                template_type=template_type,
+                facts=facts,
+                fallback_text=fallback_text,
+                response_type=response_type,
+            ),
+        )
+
+    def _build_appointment_response_facts(
+        self,
+        appointment_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        facts: dict[str, Any] = {}
+        appointment_id = appointment_summary.get("id") or appointment_summary.get("appointment_id")
+        if appointment_id is not None:
+            facts["appointment_id"] = str(appointment_id)
+
+        start_time_raw = appointment_summary.get("start_time")
+        if start_time_raw is not None:
+            try:
+                parsed_start = datetime.fromisoformat(str(start_time_raw).replace("Z", "+00:00"))
+            except ValueError:
+                parsed_start = None
+            if parsed_start is not None:
+                facts["appointment_time"] = self._format_voice_appointment_time(parsed_start)
+
+        doctor_id = appointment_summary.get("doctor_id")
+        if doctor_id is not None:
+            doctor_name = self._resolve_doctor_display_name(UUID(str(doctor_id)))
+            if doctor_name is not None:
+                facts["doctor_name"] = doctor_name
+
+        return facts
+
+    def _format_voice_appointment_time(self, start_time: datetime) -> str:
+        if self.clinic_time_service is not None:
+            localized = start_time.astimezone(self.clinic_time_service.timezone)
+            date_part = f"{localized.strftime('%A, %B')} {localized.day}"
+            time_part = localized.strftime("%I:%M %p").lstrip("0")
+            return f"{date_part} at {time_part}"
+
+        return start_time.strftime("%Y-%m-%d %H:%M")
+
+    def _resolve_doctor_display_name(self, doctor_id: UUID) -> str | None:
+        for doctor in self.scheduling_service.list_doctors():
+            if doctor.id == doctor_id:
+                return doctor.full_name
+        return None
 
     def _with_suggested_response_text(
         self,
@@ -1277,6 +1367,73 @@ class RetellToolCallingAdapter:
         return _VoiceConversationSession(
             conversation=conversation,
             voice_context=read_voice_context(conversation.conversation_metadata),
+        )
+
+    def _ensure_voice_conversation_for_read_only_tool(
+        self,
+        parsed: ParsedRetellToolCall,
+    ) -> _VoiceConversationSession | None:
+        if self.voice_conversation_bridge is None:
+            return None
+
+        try:
+            conversation = self.voice_conversation_bridge.ensure_conversation_for_tool_callback(
+                self.provider,
+                parsed.provider_call_id,
+            )
+        except _READ_ONLY_VOICE_CONTEXT_RECOVERABLE_ERRORS as exc:
+            self._log_recoverable_check_availability_voice_context_failure(
+                parsed,
+                failure_stage="ensure",
+                failure_type=type(exc).__name__,
+            )
+            return None
+
+        return _VoiceConversationSession(
+            conversation=conversation,
+            voice_context=read_voice_context(conversation.conversation_metadata),
+        )
+
+    def _try_update_voice_context_after_check_availability(
+        self,
+        *,
+        parsed: ParsedRetellToolCall,
+        conversation_id: UUID,
+        arguments: CheckAvailabilityToolArguments,
+        result: dict[str, Any],
+    ) -> None:
+        try:
+            self._update_voice_context_after_check_availability(
+                conversation_id=conversation_id,
+                arguments=arguments,
+                result=result,
+            )
+        except _CHECK_AVAILABILITY_CONTEXT_UPDATE_RECOVERABLE_ERRORS as exc:
+            self._log_recoverable_check_availability_voice_context_failure(
+                parsed,
+                failure_stage="context_update",
+                failure_type=type(exc).__name__,
+            )
+
+    def _log_recoverable_check_availability_voice_context_failure(
+        self,
+        parsed: ParsedRetellToolCall,
+        *,
+        failure_stage: str,
+        failure_type: str,
+    ) -> None:
+        logger.warning(
+            "retell_check_availability_voice_context_failure",
+            extra={
+                "event": "retell_check_availability_voice_context_failure",
+                "failure_stage": failure_stage,
+                "failure_type": failure_type,
+                "provider_call_id": parsed.provider_call_id,
+                "tool_name": parsed.tool_name.value,
+                "tool_call_id": parsed.tool_call_id,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
         )
 
     def _missing_voice_conversation_context_response(
