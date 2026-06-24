@@ -15,12 +15,14 @@ from app.domain.appointments import (
     is_appointment_cancelable,
 )
 from app.domain.audit.enums import AuditEventOutcome, AuditEventType
-from app.domain.scheduling.enums import AppointmentStatus
+from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.models.appointment_cancellation_attempt import AppointmentCancellationAttempt
+from app.models.scheduling import Appointment
 from app.repositories.appointments import (
     AppointmentCancellationAttemptRepository,
     AppointmentRepository,
 )
+from app.repositories.scheduling import AvailabilitySlotRepository
 from app.services.audit_logs import AuditLogCreate, AuditLogService
 
 
@@ -31,10 +33,12 @@ class AppointmentCancellationService:
         appointments: AppointmentRepository,
         cancellation_attempts: AppointmentCancellationAttemptRepository,
         audit_logs: AuditLogService,
+        availability_slots: AvailabilitySlotRepository | None = None,
     ) -> None:
         self.appointments = appointments
         self.cancellation_attempts = cancellation_attempts
         self.audit_logs = audit_logs
+        self.availability_slots = availability_slots
 
     def cancel_appointment(
         self,
@@ -61,6 +65,7 @@ class AppointmentCancellationService:
                 appointment_id=appointment.id,
                 patient_id=appointment.patient_id,
                 already_cancelled=True,
+                cancelled_at=appointment.cancelled_at,
             )
 
         if not is_appointment_cancelable(appointment.status):
@@ -72,6 +77,7 @@ class AppointmentCancellationService:
         appointment.cancellation_reason = self._normalize_reason(
             request.cancellation_reason,
         )
+        self._release_linked_availability_slot(appointment)
 
         self.audit_logs.record_best_effort(
             AuditLogCreate(
@@ -97,6 +103,7 @@ class AppointmentCancellationService:
         return AppointmentCancellationResult(
             appointment_id=appointment.id,
             patient_id=appointment.patient_id,
+            cancelled_at=appointment.cancelled_at,
         )
 
     def _result_from_existing_attempt(
@@ -115,6 +122,7 @@ class AppointmentCancellationService:
             patient_id=appointment.patient_id,
             duplicate=duplicate,
             already_cancelled=appointment.status == AppointmentStatus.CANCELLED,
+            cancelled_at=appointment.cancelled_at,
         )
 
     def _record_attempt_best_effort(
@@ -135,6 +143,16 @@ class AppointmentCancellationService:
             )
             if existing_attempt is None:
                 return
+
+    def _release_linked_availability_slot(self, appointment: Appointment) -> None:
+        if self.availability_slots is None or appointment.availability_slot_id is None:
+            return
+
+        slot = self.availability_slots.get_by_id(appointment.availability_slot_id)
+        if slot is None:
+            return
+
+        slot.status = AvailabilitySlotStatus.AVAILABLE
 
     def _normalize_reason(self, reason: str | None) -> str | None:
         if reason is None:

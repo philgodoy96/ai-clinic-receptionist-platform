@@ -402,6 +402,7 @@ def test_foundation_retell_voice_cancellation_regression_still_cancels() -> None
     response = context["adapter"].execute(
         cancellation_tool_request(
             appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
             tool_call_id="tool-call-cancel-foundation-regression",
         ),
     )

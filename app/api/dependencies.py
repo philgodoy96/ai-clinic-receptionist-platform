@@ -76,6 +76,7 @@ from app.services.retell_web_call import (
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from app.services.voice_appointment_cancellation import VoiceAppointmentCancellationService
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
 from app.services.voice_calls import VoiceCallInspectionService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
@@ -416,6 +417,7 @@ def get_appointment_cancellation_service(
         appointments=SQLAlchemyAppointmentRepository(db),
         cancellation_attempts=SQLAlchemyAppointmentCancellationAttemptRepository(db),
         audit_logs=audit_logs,
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
     )
 
 
@@ -455,6 +457,28 @@ def get_voice_patient_appointment_lookup_service(
     )
 
 
+def get_voice_appointment_cancellation_service(
+    db: Annotated[Session, Depends(get_db)],
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
+    appointment_cancellation: Annotated[
+        AppointmentCancellationService,
+        Depends(get_appointment_cancellation_service),
+    ],
+) -> VoiceAppointmentCancellationService:
+    return VoiceAppointmentCancellationService(
+        patient_identity_resolution=patient_identity_resolution,
+        appointments=SQLAlchemyAppointmentRepository(db),
+        appointment_cancellation=appointment_cancellation,
+        scheduling_metadata=scheduling_service,
+        clinic_time_service=clinic_time_service,
+    )
+
+
 def get_retell_tool_calling_adapter(
     db: Annotated[Session, Depends(get_db)],
     scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
@@ -484,6 +508,10 @@ def get_retell_tool_calling_adapter(
         VoicePatientAppointmentLookupService,
         Depends(get_voice_patient_appointment_lookup_service),
     ],
+    voice_appointment_cancellation: Annotated[
+        VoiceAppointmentCancellationService,
+        Depends(get_voice_appointment_cancellation_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -499,6 +527,7 @@ def get_retell_tool_calling_adapter(
         clinic_time_service=clinic_time_service,
         patient_identity_resolution=patient_identity_resolution,
         voice_patient_appointment_lookup=voice_patient_appointment_lookup,
+        voice_appointment_cancellation=voice_appointment_cancellation,
         db=db,
     )
 

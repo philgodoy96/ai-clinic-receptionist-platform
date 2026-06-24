@@ -201,6 +201,7 @@ def test_regression_cancellation_tool_does_not_enqueue_email() -> None:
         response = context["adapter"].execute(
             cancellation_tool_request(
                 appointment_id=str(appointment.id),
+                patient_resolution_id=context["patient_resolution_id"],
                 tool_call_id="tool-call-cancel-regression-email",
             ),
         )
@@ -217,6 +218,7 @@ def test_regression_cancellation_tool_does_not_trigger_llm() -> None:
         response = context["adapter"].execute(
             cancellation_tool_request(
                 appointment_id=str(appointment.id),
+                patient_resolution_id=context["patient_resolution_id"],
                 tool_call_id="tool-call-cancel-regression-llm",
             ),
         )

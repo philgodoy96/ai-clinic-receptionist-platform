@@ -859,7 +859,10 @@ def test_regression_retell_cancellation_tool_still_works() -> None:
     appointment = context["appointment"]
 
     response = context["adapter"].execute(
-        cancellation_tool_request(appointment_id=str(appointment.id)),
+        cancellation_tool_request(
+            appointment_id=str(appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
+        ),
     )
 
     assert response.status == "succeeded"
