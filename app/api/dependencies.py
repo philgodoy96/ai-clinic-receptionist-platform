@@ -453,6 +453,10 @@ def get_retell_tool_calling_adapter(
         Depends(get_appointment_rescheduling_service),
     ],
     clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
 ) -> RetellToolCallingAdapter:
     conversation_repository = SQLAlchemyConversationRepository(db)
     return RetellToolCallingAdapter(
@@ -466,6 +470,7 @@ def get_retell_tool_calling_adapter(
         appointment_rescheduling=appointment_rescheduling,
         appointments=SQLAlchemyAppointmentRepository(db),
         clinic_time_service=clinic_time_service,
+        patient_identity_resolution=patient_identity_resolution,
     )
 
 

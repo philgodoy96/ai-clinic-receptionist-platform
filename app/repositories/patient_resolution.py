@@ -15,3 +15,6 @@ class PatientResolutionRepository(Protocol):
 
     def update(self, record: PatientResolutionRecord, *, ttl_seconds: int) -> None:
         raise NotImplementedError
+
+    def delete(self, resolution_id: UUID) -> None:
+        raise NotImplementedError

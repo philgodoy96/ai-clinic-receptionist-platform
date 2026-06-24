@@ -39,6 +39,10 @@ class PatientIdentityIncompleteError(PatientIdentityResolutionError):
     """Raised when required identity fields are missing."""
 
 
+class PatientResolutionNotFoundError(PatientIdentityResolutionError):
+    """Raised when a patient resolution token cannot be loaded."""
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedResolutionIdentity:
     patient_name: str
@@ -105,14 +109,7 @@ class PatientIdentityResolutionService:
             conversation_id=conversation_id,
         )
         if record is None:
-            return self._build_not_found_result(
-                NormalizedResolutionIdentity(
-                    patient_name="",
-                    patient_date_of_birth=date.min,
-                    patient_email=None,
-                    patient_phone=None,
-                ),
-            )
+            raise PatientResolutionNotFoundError
 
         if record.match_status is not PatientResolutionMatchStatus.POSSIBLE_MATCH:
             patient = self.patients.get_by_id(record.patient_id)
@@ -173,6 +170,39 @@ class PatientIdentityResolutionService:
             patient_resolution_id=str(confirmed_record.resolution_id),
             next_step=PatientResolutionNextStep.PROCEED_TO_BOOKING,
             suggested_response_text="Thanks for confirming. Let's finish booking your appointment.",
+        )
+
+    def reject_resolution(
+        self,
+        *,
+        patient_resolution_id: str,
+        provider_call_id: str | None = None,
+        conversation_id: UUID | None = None,
+    ) -> PatientIdentityResolutionResult:
+        record = self._load_scoped_record(
+            patient_resolution_id=patient_resolution_id,
+            provider_call_id=provider_call_id,
+            conversation_id=conversation_id,
+        )
+        if record is None:
+            raise PatientResolutionNotFoundError
+
+        if record.match_status is not PatientResolutionMatchStatus.POSSIBLE_MATCH:
+            raise PatientResolutionNotFoundError
+
+        self.resolutions.delete(record.resolution_id)
+
+        return PatientIdentityResolutionResult(
+            match_status=PatientResolutionMatchStatus.NOT_FOUND,
+            requires_confirmation=False,
+            display_name=None,
+            candidate_display_name=None,
+            confirmation_question=None,
+            patient_resolution_id=None,
+            next_step=PatientResolutionNextStep.RETRY_IDENTITY,
+            suggested_response_text=(
+                "No problem. Let's try your name and date of birth once more."
+            ),
         )
 
     def get_resolution_for_booking(

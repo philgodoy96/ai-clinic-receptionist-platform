@@ -18,3 +18,6 @@ class InMemoryPatientResolutionRepository:
 
     def update(self, record: PatientResolutionRecord, *, ttl_seconds: int) -> None:
         self.save(record, ttl_seconds=ttl_seconds)
+
+    def delete(self, resolution_id: UUID) -> None:
+        self._records.pop(resolution_id, None)
