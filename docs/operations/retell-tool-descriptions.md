@@ -1,11 +1,11 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste the **Dashboard description** into each tool's description field in the Retell console. Use the full sections below for agent prompt authoring, debugging, and recovery behavior.
+Canonical descriptions for the nine Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block).
 
 Related docs:
 
 - [Retell Dashboard Setup](retell-dashboard-setup.md)
-- [Retell Master Prompt v2](retell-master-prompt-v2.md)
+- [Retell Master Prompt v3](retell-master-prompt-v3.md)
 - [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md)
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)
 - [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context-and-tool-contracts.md)
@@ -694,9 +694,9 @@ Side-effecting tools without `tool_call_id` do not get cross-retry deduplication
 
 ## Dashboard registration checklist
 
-- [ ] All seven tools registered at `POST /api/v1/retell/tools`
+- [ ] All nine tools registered at `POST /api/v1/retell/tools`
 - [ ] Tool names match exactly (snake_case)
 - [ ] Dashboard descriptions pasted from this document
 - [ ] **Payload: args only** is **OFF** (Retell default envelope)
-- [ ] Agent prompt uses [Retell Master Prompt v2](retell-master-prompt-v2.md)
+- [ ] Agent prompt uses [Retell Master Prompt v3](retell-master-prompt-v3.md) (paste-ready block)
 - [ ] Smoke tests follow [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)
