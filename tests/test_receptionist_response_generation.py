@@ -398,25 +398,34 @@ def test_chat_deterministic_regression_preserves_expected_semantics(
 
 
 @pytest.mark.parametrize(
-    ("builder_name", "template_type", "facts", "fallback_text"),
+    ("builder_name", "template_type", "facts", "fallback_text", "expected_phrase"),
     [
         (
             "_build_book_appointment_result",
             ReceptionistTemplateType.BOOKING_SUCCEEDED,
-            {"appointment_id": "apt-safe-123"},
-            "Your appointment is confirmed. Reference: apt-safe-123.",
+            {},
+            (
+                "You're all set. Your appointment is confirmed. "
+                "You'll receive a confirmation email shortly."
+            ),
+            "you're all set",
         ),
         (
             "_build_cancel_appointment_result",
             ReceptionistTemplateType.CANCELLATION_SUCCEEDED,
-            {"appointment_id": "apt-cancel-123"},
-            "The appointment apt-cancel-123 has been cancelled.",
+            {},
+            "Your appointment has been cancelled.",
+            "has been cancelled",
         ),
         (
             "_build_reschedule_appointment_result",
             ReceptionistTemplateType.RESCHEDULE_SUCCEEDED,
-            {"appointment_id": "apt-reschedule-123"},
-            "Your appointment has been rescheduled. New reference: apt-reschedule-123.",
+            {},
+            (
+                "Your appointment has been rescheduled. "
+                "You'll receive a confirmation email shortly."
+            ),
+            "has been rescheduled",
         ),
     ],
 )
@@ -425,6 +434,7 @@ def test_voice_tool_response_includes_safe_suggested_response_text(
     template_type: ReceptionistTemplateType,
     facts: dict[str, str],
     fallback_text: str,
+    expected_phrase: str,
 ) -> None:
     adapter = RetellToolCallingAdapter(
         scheduling_service=SimpleNamespace(),
@@ -435,7 +445,7 @@ def test_voice_tool_response_includes_safe_suggested_response_text(
     if builder_name == "_build_book_appointment_result":
         payload = adapter._build_book_appointment_result(
             SimpleNamespace(
-                appointment_id=facts["appointment_id"],
+                appointment_id="apt-safe-123",
                 patient_id="patient-1",
                 availability_slot_id="slot-1",
                 hold_id="hold-1",
@@ -447,7 +457,7 @@ def test_voice_tool_response_includes_safe_suggested_response_text(
             cast(
                 AppointmentCancellationResult,
                 SimpleNamespace(
-                    appointment_id=facts["appointment_id"],
+                    appointment_id="apt-cancel-123",
                     patient_id="patient-1",
                     already_cancelled=False,
                 ),
@@ -459,7 +469,7 @@ def test_voice_tool_response_includes_safe_suggested_response_text(
                 AppointmentReschedulingResult,
                 SimpleNamespace(
                     original_appointment_id="apt-original",
-                    new_appointment_id=facts["appointment_id"],
+                    new_appointment_id="apt-reschedule-123",
                     patient_id="patient-1",
                     duplicate=False,
                     already_rescheduled=False,
@@ -469,9 +479,15 @@ def test_voice_tool_response_includes_safe_suggested_response_text(
         )
 
     assert "suggested_response_text" in payload
-    assert facts["appointment_id"] in payload["suggested_response_text"]
+    suggested = payload["suggested_response_text"].lower()
+    assert expected_phrase in suggested
+    assert "slot" not in suggested
+    assert "reference" not in suggested
+    assert "apt-safe-123" not in suggested
+    assert "apt-cancel-123" not in suggested
+    assert "apt-reschedule-123" not in suggested
     assert "raw_provider_output" not in payload
-    assert "api_key" not in payload["suggested_response_text"].lower()
+    assert "api_key" not in suggested
 
 
 def test_voice_hold_tool_response_includes_safe_suggested_response_text() -> None:
@@ -483,13 +499,19 @@ def test_voice_hold_tool_response_includes_safe_suggested_response_text() -> Non
     result = adapter._with_suggested_response_text(
         {"hold_id": "hold-safe-123"},
         template_type=ReceptionistTemplateType.SLOT_HOLD_CREATED,
-        facts={"hold_id": "hold-safe-123"},
-        fallback_text="I temporarily held a slot for you.",
+        facts={},
+        fallback_text=(
+            "I can hold that time while I get your details. I'll need your name, "
+            "date of birth, and email before I can book it."
+        ),
         response_type=ReceptionistResponseType.SCHEDULING,
     )
 
-    assert result["suggested_response_text"]
-    assert "hold-safe-123" in result["suggested_response_text"]
+    suggested = result["suggested_response_text"].lower()
+    assert "hold that time" in suggested
+    assert "slot" not in suggested
+    assert "hold-safe-123" not in suggested
+    assert "hold reference" not in suggested
     assert "raw_payload" not in result
 
 

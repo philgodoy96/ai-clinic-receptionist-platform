@@ -203,6 +203,10 @@ def test_retell_tool_result_includes_provider_safe_suggested_response_text() -> 
     result = adapter._build_book_appointment_result(booking_result)
 
     assert "suggested_response_text" in result
-    assert "apt-safe-123" in result["suggested_response_text"]
-    assert "api_key" not in result["suggested_response_text"].lower()
+    suggested = result["suggested_response_text"].lower()
+    assert "you're all set" in suggested
+    assert "apt-safe-123" not in suggested
+    assert "slot" not in suggested
+    assert "reference" not in suggested
+    assert "api_key" not in suggested
     assert "raw_provider_output" not in result

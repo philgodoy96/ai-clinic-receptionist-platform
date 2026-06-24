@@ -48,8 +48,6 @@ _CORE_TEMPLATE_FACTS: dict[ReceptionistTemplateType, dict[str, object]] = {
     },
     ReceptionistTemplateType.SLOT_HOLD_CREATED: {
         "template_type": "slot_hold_created",
-        "hold_id": "hold-123",
-        "doctor_name": "Dr. Smith",
     },
     ReceptionistTemplateType.ASK_FOR_PATIENT_IDENTITY: {
         "template_type": "ask_for_patient_identity",
@@ -59,15 +57,15 @@ _CORE_TEMPLATE_FACTS: dict[ReceptionistTemplateType, dict[str, object]] = {
     },
     ReceptionistTemplateType.BOOKING_SUCCEEDED: {
         "template_type": "booking_succeeded",
-        "appointment_id": "apt-456",
+        "appointment_time": "Tuesday, July 2 at 2:00 PM",
+        "doctor_name": "Dr. Emily Carter",
     },
     ReceptionistTemplateType.BOOKING_FAILED: {
         "template_type": "booking_failed",
-        "failure_reason": "The slot is no longer available.",
+        "failure_code": "appointment_hold_expired",
     },
     ReceptionistTemplateType.CANCELLATION_SUCCEEDED: {
         "template_type": "cancellation_succeeded",
-        "appointment_id": "apt-789",
     },
     ReceptionistTemplateType.CANCELLATION_FAILED: {
         "template_type": "cancellation_failed",
@@ -75,11 +73,11 @@ _CORE_TEMPLATE_FACTS: dict[ReceptionistTemplateType, dict[str, object]] = {
     },
     ReceptionistTemplateType.RESCHEDULE_SUCCEEDED: {
         "template_type": "reschedule_succeeded",
-        "appointment_id": "apt-321",
+        "appointment_time": "Tuesday, July 2 at 2:00 PM",
     },
     ReceptionistTemplateType.RESCHEDULE_FAILED: {
         "template_type": "reschedule_failed",
-        "failure_reason": "The selected slot is unavailable.",
+        "failure_reason": "That opening is no longer available.",
     },
     ReceptionistTemplateType.EMERGENCY_GUIDANCE: {
         "template_type": "emergency_guidance",
@@ -157,7 +155,7 @@ def test_incomplete_facts_use_fallback_text() -> None:
         response_type=ReceptionistResponseType.SCHEDULING,
         channel=ConversationChannel.CHAT,
         fallback_text=fallback_text,
-        facts={"template_type": "booking_succeeded"},
+        facts={"template_type": "availability_options", "requested_date": "2026-07-15"},
     )
 
     response = generator.generate(plan)

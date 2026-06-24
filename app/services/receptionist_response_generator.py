@@ -43,10 +43,6 @@ _REQUIRED_TEMPLATE_FACTS: dict[ReceptionistTemplateType, frozenset[str]] = {
     ReceptionistTemplateType.AVAILABILITY_OPTIONS: frozenset(
         {"offered_slot_count", "requested_date"},
     ),
-    ReceptionistTemplateType.SLOT_HOLD_CREATED: frozenset({"hold_id"}),
-    ReceptionistTemplateType.BOOKING_SUCCEEDED: frozenset({"appointment_id"}),
-    ReceptionistTemplateType.CANCELLATION_SUCCEEDED: frozenset({"appointment_id"}),
-    ReceptionistTemplateType.RESCHEDULE_SUCCEEDED: frozenset({"appointment_id"}),
 }
 
 
@@ -319,9 +315,9 @@ def render_deterministic_template(
     time_window_label = _safe_fact_text(facts.get("time_window_label"))
     offered_slot_count = facts.get("offered_slot_count")
     offered_slots_summary = _safe_fact_text(facts.get("offered_slots_summary"))
-    hold_id = _safe_fact_text(facts.get("hold_id"))
-    appointment_id = _safe_fact_text(facts.get("appointment_id"))
+    appointment_time = _safe_fact_text(facts.get("appointment_time"))
     doctor_name = _safe_fact_text(facts.get("doctor_name"))
+    failure_code = _safe_fact_text(facts.get("failure_code"))
     failure_reason = _safe_fact_text(facts.get("failure_reason"))
 
     if template_type == ReceptionistTemplateType.GREETING:
@@ -359,15 +355,9 @@ def render_deterministic_template(
         return f"I found {count} available appointments on {requested_date}."
 
     if template_type == ReceptionistTemplateType.SLOT_HOLD_CREATED:
-        if doctor_name is not None:
-            return (
-                f"I temporarily held a slot with {doctor_name}. Your hold reference is "
-                f"{hold_id}. This is not booked yet. Please provide patient details to "
-                "confirm."
-            )
         return (
-            f"I temporarily held a slot for you. Your hold reference is {hold_id}. "
-            "This is not booked yet. Please provide patient details to confirm."
+            "I can hold that time while I get your details. I'll need your name, "
+            "date of birth, and email before I can book it."
         )
 
     if template_type == ReceptionistTemplateType.ASK_FOR_PATIENT_IDENTITY:
@@ -376,18 +366,54 @@ def render_deterministic_template(
         )
 
     if template_type == ReceptionistTemplateType.ASK_FOR_CONFIRMATION:
-        return "I have your patient details on file. Please confirm to book the held appointment."
+        return (
+            "I have your patient details on file. Please confirm to book that appointment time."
+        )
 
     if template_type == ReceptionistTemplateType.BOOKING_SUCCEEDED:
-        return f"Your appointment is confirmed. Reference: {appointment_id}."
+        if appointment_time is not None and doctor_name is not None:
+            return (
+                f"You're all set. Your appointment is confirmed for {appointment_time} "
+                f"with {doctor_name}. You'll receive a confirmation email shortly."
+            )
+        if appointment_time is not None:
+            return (
+                f"You're all set. Your appointment is confirmed for {appointment_time}. "
+                "You'll receive a confirmation email shortly."
+            )
+        if doctor_name is not None:
+            return (
+                f"You're all set. Your appointment is confirmed with {doctor_name}. "
+                "You'll receive a confirmation email shortly."
+            )
+        return (
+            "You're all set. Your appointment is confirmed. "
+            "You'll receive a confirmation email shortly."
+        )
 
     if template_type == ReceptionistTemplateType.BOOKING_FAILED:
+        if failure_code in {
+            "appointment_hold_expired",
+            "booking_hold_expired",
+            "hold_expired",
+        }:
+            return (
+                "That time may no longer be available. "
+                "Let me check the latest schedule again."
+            )
+        if failure_code == "patient_not_found":
+            return (
+                "I'm not matching those details yet — could we try your name "
+                "and date of birth once more?"
+            )
         if failure_reason is not None:
             return f"I could not complete the booking. {failure_reason}"
-        return "I could not complete the booking. Please try again or choose another time."
+        return (
+            "I could not complete the booking. Please try again or choose another opening."
+        )
 
     if template_type == ReceptionistTemplateType.CANCELLATION_SUCCEEDED:
-        return f"The appointment {appointment_id} has been cancelled."
+        return "Your appointment has been cancelled."
 
     if template_type == ReceptionistTemplateType.CANCELLATION_FAILED:
         if failure_reason is not None:
@@ -395,12 +421,20 @@ def render_deterministic_template(
         return "I could not cancel the appointment. Please verify the appointment details."
 
     if template_type == ReceptionistTemplateType.RESCHEDULE_SUCCEEDED:
-        return f"Your appointment has been rescheduled. New reference: {appointment_id}."
+        if appointment_time is not None:
+            return (
+                f"Your appointment has been rescheduled to {appointment_time}. "
+                "You'll receive a confirmation email shortly."
+            )
+        return (
+            "Your appointment has been rescheduled. "
+            "You'll receive a confirmation email shortly."
+        )
 
     if template_type == ReceptionistTemplateType.RESCHEDULE_FAILED:
         if failure_reason is not None:
             return f"I could not reschedule the appointment. {failure_reason}"
-        return "I could not reschedule the appointment. Please try another time."
+        return "I could not reschedule the appointment. Please try another opening."
 
     if template_type == ReceptionistTemplateType.EMERGENCY_GUIDANCE:
         return (
