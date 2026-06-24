@@ -34,6 +34,7 @@ _SAFE_VOICE_CONTEXT_KEYS = frozenset(
         "doctor_name",
         "end_time",
         "hold_id",
+        "patient_resolution_id",
         "requested_date",
         "requested_time_window",
         "rescheduled_from_appointment_id",

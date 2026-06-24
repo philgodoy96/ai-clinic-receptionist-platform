@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         default=300,
         alias="APPOINTMENT_HOLD_TTL_SECONDS",
     )
+    patient_resolution_ttl_seconds: int = Field(
+        default=300,
+        alias="PATIENT_RESOLUTION_TTL_SECONDS",
+    )
     rabbitmq_url: str = Field(
         default="amqp://clinic:clinic@localhost:5672/",
         alias="RABBITMQ_URL",

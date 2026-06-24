@@ -101,6 +101,11 @@ class SQLAlchemyPatientRepository:
 
         return None
 
+    def list_by_date_of_birth(self, date_of_birth: date) -> Sequence[Patient]:
+        statement = select(Patient).where(Patient.date_of_birth == date_of_birth)
+
+        return list(self.session.scalars(statement).all())
+
     def add(self, patient: Patient) -> Patient:
         self.session.add(patient)
         self.session.flush()

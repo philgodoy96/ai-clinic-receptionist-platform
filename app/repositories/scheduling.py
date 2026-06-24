@@ -47,6 +47,9 @@ class PatientRepository(Protocol):
     ) -> Patient | None:
         raise NotImplementedError
 
+    def list_by_date_of_birth(self, date_of_birth: date) -> Sequence[Patient]:
+        raise NotImplementedError
+
     def add(self, patient: Patient) -> Patient:
         raise NotImplementedError
 
