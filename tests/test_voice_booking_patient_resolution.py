@@ -15,6 +15,7 @@ from app.domain.voice_booking import (
     VoiceBookingIdentityNotResolvedError,
     VoiceBookingMissingConfirmationError,
     VoiceBookingMissingHoldError,
+    VoiceBookingResolutionIdRequiredError,
 )
 from app.domain.voice_patient_intake import VoicePatientIntakeMode
 from app.models.scheduling import Patient
@@ -375,7 +376,7 @@ def test_duplicate_booking_retry_remains_idempotent_with_resolution_token() -> N
     assert len(context.email_repository.email_jobs) == 1
 
 
-def test_booking_fails_when_voice_context_has_resolution_without_token() -> None:
+def test_booking_recovers_patient_resolution_id_from_voice_context() -> None:
     context, _, patients = _booking_context_with_resolution()
     patient = patients[0]
     _, resolution_repository = _patient_identity_resolution_service(patients)
@@ -403,5 +404,133 @@ def test_booking_fails_when_voice_context_has_resolution_without_token() -> None
         },
     }
 
-    with pytest.raises(VoiceBookingIdentityNotResolvedError):
+    result = context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    assert result.patient_id == patient.id
+
+
+def test_booking_with_resolution_token_ignores_patient_name_casing() -> None:
+    context, _, patients = _booking_context_with_resolution()
+    patient = patients[0]
+    _, resolution_repository = _patient_identity_resolution_service(patients)
+    context.service.patient_identity_resolution = PatientIdentityResolutionService(
+        patients=FakePatientRepository(patients),
+        resolutions=resolution_repository,
+        patient_intake=PatientIntakeService(
+            patients=FakePatientRepository(patients),
+            mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+        ),
+    )
+    resolution_id = _store_resolution(
+        resolution_repository=resolution_repository,
+        patient=patient,
+        match_status=PatientResolutionMatchStatus.EXACT_MATCH,
+        conversation_id=context.conversation.id,
+        confirmed=True,
+    )
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(
+        replace(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_name=patient.full_name.lower(),
+            ),
+            patient_resolution_id=resolution_id,
+        ),
+    )
+
+    assert result.patient_id == patient.id
+
+
+def test_booking_prefers_resolution_token_over_mismatched_inline_identity() -> None:
+    base_context = create_voice_booking_confirmation_context()
+    patient = base_context.booking_context.patient
+    other_patient = Patient(
+        id=uuid4(),
+        full_name="Someone Else",
+        date_of_birth=date(1990, 1, 1),
+        phone_number=None,
+        email="someone.else@example.test",
+    )
+    context, _, patients = _booking_context_with_resolution(
+        patients=[patient, other_patient],
+    )
+    _, resolution_repository = _patient_identity_resolution_service(patients)
+    context.service.patient_identity_resolution = PatientIdentityResolutionService(
+        patients=FakePatientRepository(patients),
+        resolutions=resolution_repository,
+        patient_intake=PatientIntakeService(
+            patients=FakePatientRepository(patients),
+            mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+        ),
+    )
+    resolution_id = _store_resolution(
+        resolution_repository=resolution_repository,
+        patient=patient,
+        match_status=PatientResolutionMatchStatus.EXACT_MATCH,
+        conversation_id=context.conversation.id,
+        confirmed=True,
+    )
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(
+        replace(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_name=other_patient.full_name,
+                patient_email=other_patient.email,
+                patient_date_of_birth=other_patient.date_of_birth,
+            ),
+            patient_resolution_id=resolution_id,
+        ),
+    )
+
+    assert result.patient_id == patient.id
+
+
+def test_legacy_fallback_matches_patient_name_case_insensitively() -> None:
+    patient = Patient(
+        id=uuid4(),
+        full_name="Felipe Godoy",
+        date_of_birth=date(1992, 4, 10),
+        phone_number=None,
+        email="felipe.godoy@example.test",
+    )
+    context = create_voice_booking_confirmation_context(
+        patients=[patient],
+        voice_patient_intake_mode=VoicePatientIntakeMode.LOOKUP_ONLY,
+    )
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(
+        replace(
+            _build_request(
+                context,
+                hold_id=hold_id,
+                patient_name="Felipe godoy",
+                patient_email=patient.email,
+                patient_date_of_birth=patient.date_of_birth,
+                patient_phone=None,
+            ),
+        ),
+    )
+
+    assert result.patient_id == patient.id
+
+
+def test_booking_requires_resolution_token_when_context_token_expired() -> None:
+    context, _, _patients = _booking_context_with_resolution()
+    hold_id = _active_hold_id(context)
+    context.conversation.conversation_metadata = {
+        "voice_context": {
+            "hold_id": hold_id,
+            "availability_slot_id": str(context.booking_context.slot.id),
+            "patient_resolution_id": "00000000-0000-4000-8000-000000000099",
+        },
+    }
+
+    with pytest.raises(VoiceBookingResolutionIdRequiredError):
         context.service.confirm_and_book(_build_request(context, hold_id=hold_id))

@@ -32,7 +32,8 @@ from app.services.retell_tool_adapter import RetellToolCallingAdapter
             },
             (
                 "You're all set. Your appointment is confirmed for Tuesday, July 2 at 2:00 PM "
-                "with Dr. Emily Carter. You'll receive a confirmation email shortly."
+                "with Dr. Emily Carter. You'll receive a confirmation email shortly. "
+                "Is there anything else you need today?"
             ),
         ),
         (
@@ -87,6 +88,7 @@ def test_voice_suggested_text_omits_ids_from_booking_result() -> None:
     assert appointment_id not in suggested
     assert "slot" not in suggested.lower()
     assert "you're all set" in suggested.lower()
+    assert "is there anything else you need today?" in suggested.lower()
 
 
 def test_failed_booking_includes_hold_expired_suggested_response_text() -> None:
