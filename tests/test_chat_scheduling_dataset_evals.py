@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from app.ai.fake_llm_provider import FakeLLMProvider
 from app.evals.chat_scheduling import (
     ChatSchedulingEvaluationError,
     ChatSchedulingEvaluationScenario,
@@ -13,48 +12,10 @@ from app.evals.chat_scheduling import (
     load_chat_scheduling_eval_scenarios,
     run_chat_scheduling_scenario,
 )
-from app.services.chat_receptionist import ChatReceptionistService
-from tests.llm_provider_test_helpers import RaisingLLMProvider
-from tests.test_chat_receptionist_service import (
-    _create_availability_guidance_service,
-    _create_hold_service,
-    create_appointment_booking_service_for_scheduling,
-)
-from tests.test_chat_structured_slot_filling import create_structured_slot_filling_chat_service
-from tests.test_scheduling_services import (
-    create_demo_scheduling_service_with_emily_july_availability,
-)
+from app.evals.chat_scheduling_fixtures import build_chat_scheduling_eval_service
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMITTED_DATASET_PATH = REPO_ROOT / "evals" / "chat_scheduling.jsonl"
-
-
-def _build_chat_scheduling_eval_service(fixture: str) -> ChatReceptionistService:
-    scheduling = create_demo_scheduling_service_with_emily_july_availability()
-
-    if fixture == "availability_guidance":
-        service, _repository, _hold_service = _create_availability_guidance_service(scheduling)
-        return service
-
-    if fixture == "structured_slot_filling":
-        hold_service = _create_hold_service()
-        appointment_booking = create_appointment_booking_service_for_scheduling(
-            scheduling,
-            hold_service,
-        )
-        return create_structured_slot_filling_chat_service(
-            llm_provider=FakeLLMProvider(),
-            scheduling=scheduling,
-            appointment_booking=appointment_booking,
-        )
-
-    if fixture == "llm_failure_fallback":
-        return create_structured_slot_filling_chat_service(
-            llm_provider=RaisingLLMProvider(),
-            scheduling=scheduling,
-        )
-
-    raise ValueError(f"Unsupported chat scheduling eval fixture: {fixture}")
 
 
 def _scenario_payload(
@@ -144,7 +105,7 @@ def test_load_chat_scheduling_eval_scenarios_rejects_duplicate_scenario_id(
 def test_committed_chat_scheduling_dataset_scenarios_pass(
     scenario: ChatSchedulingEvaluationScenario,
 ) -> None:
-    service = _build_chat_scheduling_eval_service(scenario.fixture)
+    service = build_chat_scheduling_eval_service(scenario.fixture)
     result = run_chat_scheduling_scenario(service=service, scenario=scenario)
 
     assert result.passed, format_chat_scheduling_scenario_failure(

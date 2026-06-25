@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -105,6 +105,15 @@ class ChatSchedulingScenarioResult:
     conversation_id: UUID | None
     step_results: tuple[ChatSchedulingStepResult, ...]
     failure_reason: str | None = None
+    fixture: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatSchedulingEvaluationSummary:
+    total_scenarios: int
+    passed_scenarios: int
+    failed_scenarios: int
+    scenario_results: tuple[ChatSchedulingScenarioResult, ...]
 
 
 def reply_contains_uuid(reply: str) -> bool:
@@ -678,4 +687,118 @@ def run_chat_scheduling_scenario(
         conversation_id=conversation_id,
         step_results=tuple(step_results),
         failure_reason=scenario_failure_reason,
+        fixture=scenario.fixture,
     )
+
+
+def evaluate_chat_scheduling_scenarios(
+    scenarios: tuple[ChatSchedulingEvaluationScenario, ...],
+    *,
+    service_builder: Callable[[str], ChatReceptionistService],
+) -> ChatSchedulingEvaluationSummary:
+    scenario_results: list[ChatSchedulingScenarioResult] = []
+
+    for scenario in scenarios:
+        try:
+            service = service_builder(scenario.fixture)
+        except ChatSchedulingEvaluationError as exc:
+            scenario_results.append(
+                ChatSchedulingScenarioResult(
+                    scenario_name=scenario.name,
+                    passed=False,
+                    conversation_id=None,
+                    step_results=(),
+                    failure_reason=str(exc),
+                    fixture=scenario.fixture,
+                ),
+            )
+            continue
+
+        result = run_chat_scheduling_scenario(service=service, scenario=scenario)
+        scenario_results.append(
+            ChatSchedulingScenarioResult(
+                scenario_name=result.scenario_name,
+                passed=result.passed,
+                conversation_id=result.conversation_id,
+                step_results=result.step_results,
+                failure_reason=result.failure_reason,
+                fixture=scenario.fixture,
+            ),
+        )
+
+    passed_scenarios = sum(1 for result in scenario_results if result.passed)
+    total_scenarios = len(scenario_results)
+
+    return ChatSchedulingEvaluationSummary(
+        total_scenarios=total_scenarios,
+        passed_scenarios=passed_scenarios,
+        failed_scenarios=total_scenarios - passed_scenarios,
+        scenario_results=tuple(scenario_results),
+    )
+
+
+def build_chat_scheduling_evaluation_report(
+    *,
+    summary: ChatSchedulingEvaluationSummary,
+    dataset_path: Path,
+    scenarios: tuple[ChatSchedulingEvaluationScenario, ...],
+) -> dict[str, object]:
+    scenarios_by_name = {scenario.name: scenario for scenario in scenarios}
+
+    scenario_reports: list[dict[str, object]] = []
+    for result in summary.scenario_results:
+        scenario = scenarios_by_name.get(result.scenario_name)
+        scenario_reports.append(
+            {
+                "scenario_id": result.scenario_name,
+                "description": scenario.description if scenario is not None else None,
+                "fixture": result.fixture,
+                "passed": result.passed,
+                "step_count": len(result.step_results),
+                "failure_reason": result.failure_reason,
+                "failed_expectations": _failed_expectations_for_report(result),
+            },
+        )
+
+    return {
+        "dataset": str(dataset_path),
+        "total_scenarios": summary.total_scenarios,
+        "passed_scenarios": summary.passed_scenarios,
+        "failed_scenarios": summary.failed_scenarios,
+        "scenarios": scenario_reports,
+    }
+
+
+def _failed_expectations_for_report(
+    result: ChatSchedulingScenarioResult,
+) -> list[dict[str, object]]:
+    if result.failure_reason is not None and not result.step_results:
+        return [
+            {
+                "step_index": None,
+                "field": "fixture",
+                "message": result.failure_reason,
+                "expected": None,
+                "actual": None,
+            },
+        ]
+
+    failed: list[dict[str, object]] = []
+    for step in result.step_results:
+        if step.passed:
+            continue
+
+        for expectation in step.expectation_results:
+            if expectation.passed:
+                continue
+            failed.append(
+                {
+                    "step_index": step.step_index,
+                    "field": expectation.field,
+                    "message": expectation.message,
+                    "expected": expectation.expected,
+                    "actual": expectation.actual,
+                },
+            )
+
+    return failed
