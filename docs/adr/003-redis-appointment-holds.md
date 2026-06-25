@@ -107,6 +107,22 @@ Booking must still rely on PostgreSQL constraints as the final consistency layer
 
 Redis holds should not contain medical diagnosis, clinical notes, or unnecessary patient data.
 
+## Redis Degradation Policy
+
+Availability lookup may degrade gracefully when Redis hold filtering fails: PostgreSQL-backed candidate slots can still be returned without exposing internal Redis errors to callers.
+
+Reservation and booking flows fail closed when Redis is required:
+
+- Hold creation returns `appointment_hold_store_unavailable` when Redis cannot store the hold.
+- Booking requires a valid hold; it cannot proceed without Redis coordination.
+
+This is intentional partial degradation, not global fail-open behavior:
+
+    Fail open for advisory availability reads.
+    Fail closed for reservation, identity validation, booking, and cancellation safety boundaries.
+
+Postgres slot status and database constraints remain the durable source of truth and final safety net.
+
 ## Related ADRs
 
 - ADR-001: Voice UX must not be modeled as chat UX

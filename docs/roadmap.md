@@ -78,7 +78,7 @@ Planned entities:
 
 ## Stage 4 — Scheduling Tools
 
-Status: Planned
+Status: In progress
 
 Goals:
 
@@ -89,9 +89,14 @@ Goals:
 - Implement appointment rescheduling foundation
 - Implement cancellation
 
+Implemented:
+
+- Scheduling availability hardening with minimum booking lead time, booking horizon, clinic-time-aware filtering, durable status filtering, and Redis-held slot exclusion when Redis is available (see `docs/architecture/scheduling-services.md`)
+- Graceful Redis degradation for advisory availability reads; fail-closed holds and booking when Redis is required
+
 ## Stage 5 — Redis Appointment Holds
 
-Status: Planned
+Status: In progress
 
 Goals:
 
@@ -99,6 +104,12 @@ Goals:
 - Prevent double booking
 - Enforce hold ownership
 - Enforce hold expiration
+
+Implemented:
+
+- Redis appointment holds with atomic set-if-not-exists semantics (see `docs/adr/003-redis-appointment-holds.md`)
+- Batch hold lookup for availability filtering
+- Redis degradation policy: fail open for availability hold filtering; fail closed for hold creation and booking validation (see `docs/architecture/scheduling-services.md#redis-degradation-policy`)
 
 ## Stage 6 — Chat Channel
 
@@ -142,6 +153,7 @@ Implemented:
 - Retell voice appointment rescheduling with explicit reschedule confirmation, original appointment and hold/slot validation, idempotent provider callback handling, and delegation to `AppointmentReschedulingService` (see `docs/architecture/retell-voice-rescheduling.md`)
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService`, original appointment validation, target slot/hold validation, explicit confirmation, idempotency, safe audit logging, and safe conversation metadata updates (see `docs/architecture/appointment-rescheduling-foundation.md`)
 - Clinic time configuration with validated `CLINIC_*` settings, `ClinicTimeService`, structured date/time expressions, business-day and business-hours enforcement on scheduling tools, and `get_clinic_context` Retell tool (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
+- Scheduling availability policy with `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` and `SCHEDULING_BOOKING_HORIZON_DAYS`, hardened `check_availability`, and Redis degradation policy (see `docs/architecture/scheduling-services.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 - Public demo deployment runbook, `.env.demo.example`, production configuration validation, and deployment safety tests
 - Public web demo shell in `web/` (Next.js landing, backend-powered chat panel, Retell Web SDK voice demo behind feature flag, safe API error handling)
@@ -152,6 +164,9 @@ Upcoming:
 - richer response-quality evaluation dataset for receptionist phrasing
 - Prompt regression reports
 - Voice provider transfer integration
+- Voice rescheduling execution (foundation and lookup exist; full voice flow is future work)
+- Dynamic doctor schedule rules and rolling availability generation
+- Admin schedule management
 - StaffUser/RBAC
 - Assignment notification job
 - Staff notification provider adapter
@@ -192,6 +207,9 @@ Upcoming:
 
 - written chat reschedule flow
 - Tool call recording
+- Dynamic doctor schedule rules and rolling availability generation
+- Admin schedule management
+- Cancellation and rescheduling email notifications
 
 ## Stage 8 — Background Email Jobs
 
@@ -259,6 +277,7 @@ Implemented:
 - [`docs/operations/retell-dashboard-setup.md`](operations/retell-dashboard-setup.md) Retell dashboard runbook (UX rules, patient intake, Payload: args only OFF, ngrok)
 - Retell conversation UX documentation (master prompt v3, tool descriptions, smoke scenarios, playbook)
 - Retell web call activation safety tests and public voice demo deployment documentation
+- Scheduling availability hardening with policy configuration, Redis degradation policy, and manual smoke tests (`docs/operations/retell-manual-smoke-tests.md`)
 
 Potential work:
 

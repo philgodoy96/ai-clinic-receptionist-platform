@@ -169,13 +169,14 @@ Update the Retell dashboard when this file changes. Do not store the full prompt
 - **Appointment lookup** is supported via `list_patient_appointments` after patient identity resolution.
 - **Cancellation execution** is supported via `cancel_appointment` after explicit confirmation, `patient_resolution_id`, and `appointment_id` from prior tool results.
 - **Rescheduling execution** is follow-up work — the agent must not call `reschedule_appointment` or claim an appointment was rescheduled.
-- **Scheduling hardening** (booking horizon, minimum lead time, Redis-held slot filtering, dynamic schedules) remains follow-up work.
+- **Scheduling availability hardening** is implemented (minimum lead time, booking horizon, Redis-held slot filtering). Dynamic doctor schedules and rolling availability generation remain future work.
 - **Cancellation email notifications** are not implemented yet.
+- **Redis is required** for holds and booking; availability reads may degrade gracefully when Redis hold filtering is unavailable.
 
 ## Follow-up roadmap
 
 1. **Voice rescheduling flow** — selected appointment, new availability, hold, confirmation, safe reschedule execution (introduce as prompt v5).
-2. **Scheduling hardening** — booking horizon, minimum lead time, held-slot filtering, rolling availability.
+2. **Dynamic schedules and rolling availability** — doctor-specific schedule rules, admin schedule management, generated availability beyond seeded demo slots.
 3. **Cancellation email notifications** — optional patient confirmation email after successful cancellation.
 
 ---

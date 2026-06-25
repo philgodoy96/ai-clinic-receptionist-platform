@@ -153,7 +153,7 @@ Recommended agent instructions (also enforced by backend contracts):
 1. **Do not calculate relative dates yourself.** Do not infer "today", "tomorrow", or weekday names from model training data.
 2. **Call `get_clinic_context` first** when the caller asks about today, current date, business hours, or before negotiating relative scheduling language.
 3. **Use structured `date_expression`** (and optional `time_window_expression`) in `check_availability` tool calls. Prefer `next_weekday`, `tomorrow`, or `exact_date` over raw UTC timestamps.
-4. **Backend tools are the source of truth** for availability, holds, booking, cancellation, and rescheduling. Do not confirm an appointment time until a hold or booking tool succeeds.
+4. **Backend tools are the source of truth** for availability, holds, booking, and cancellation. Do not confirm an appointment time until a hold or booking tool succeeds. Availability is advisory; a returned slot is not reserved until a hold succeeds.
 5. **Do not offer unavailable times.** If `check_availability` returns no slots or a scheduling error, ask the caller for another day or time window within business hours.
 6. **Use natural scheduling language** — "appointment time", "opening", "schedule", "that time". Do not say "slot" or read internal IDs aloud.
 7. **Patient identity** — follow existing vs new patient flows in the master prompt; backend enforces lookup (`VOICE_PATIENT_INTAKE_MODE=lookup_only`) or demo auto-create for syntactically valid emails.

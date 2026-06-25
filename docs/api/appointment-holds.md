@@ -68,6 +68,7 @@ Examples:
 - `404` when the availability slot does not exist
 - `409` when the slot is unavailable or already held
 - `400` when the hold request is invalid
+- `503` with `appointment_hold_store_unavailable` when Redis cannot create the hold (fail closed)
 
 The Retell endpoint returns structured tool responses so the voice agent can continue naturally:
 
@@ -76,6 +77,16 @@ The Retell endpoint returns structured tool responses so the voice agent can con
       "error_code": "slot_already_held",
       "message": "The selected slot is already being held."
     }
+
+When Redis is unavailable:
+
+    {
+      "ok": false,
+      "error_code": "appointment_hold_store_unavailable",
+      "message": "The appointment hold service is temporarily unavailable."
+    }
+
+Redis is required for hold creation. Availability lookup may still return candidate slots when Redis hold filtering is unavailable; see [Scheduling Application Services](../architecture/scheduling-services.md#redis-degradation-policy).
 
 ## Current Limitations
 
