@@ -43,6 +43,7 @@ from app.services.appointment_holds import (
     AppointmentHoldNotFoundError,
     AppointmentHoldOwnershipError,
     AppointmentHoldService,
+    AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
 from app.services.clinic_time import ClinicTimeService
@@ -2209,6 +2210,16 @@ class ChatReceptionistService:
                 content=(
                     "That time was just taken or is already being held. "
                     "Please choose another available time."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+        except AppointmentHoldStoreUnavailableError:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_CONFLICT,
+                content=(
+                    "I could not reserve that time right now. "
+                    "Please try again in a moment or choose another available time."
                 ),
                 chat_context_updates=context_updates,
                 hold_created=False,

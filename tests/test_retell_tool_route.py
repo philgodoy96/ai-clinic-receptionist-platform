@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -851,6 +851,18 @@ class RouteAppointmentHoldRepository:
 
         if hold is not None:
             self.holds_by_id.pop(hold.hold_id, None)
+
+    def find_held_availability_slot_ids(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[tuple[UUID, datetime]],
+    ) -> set[UUID]:
+        return {
+            slot_id
+            for slot_id, start_time in slots
+            if (doctor_id, start_time) in self.holds
+        }
 
 
 class RouteVoiceCallRepository:

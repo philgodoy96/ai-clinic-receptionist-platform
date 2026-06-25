@@ -46,6 +46,16 @@ class Settings(BaseSettings):
         default=300,
         alias="APPOINTMENT_HOLD_TTL_SECONDS",
     )
+    scheduling_min_booking_lead_minutes: int = Field(
+        default=60,
+        ge=0,
+        alias="SCHEDULING_MIN_BOOKING_LEAD_MINUTES",
+    )
+    scheduling_booking_horizon_days: int = Field(
+        default=14,
+        ge=1,
+        alias="SCHEDULING_BOOKING_HORIZON_DAYS",
+    )
     patient_resolution_ttl_seconds: int = Field(
         default=300,
         alias="PATIENT_RESOLUTION_TTL_SECONDS",

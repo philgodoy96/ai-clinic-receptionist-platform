@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
 from app.domain.scheduling.enums import AvailabilitySlotStatus
@@ -14,6 +15,13 @@ from app.repositories.scheduling import (
     PatientRepository,
     SpecialtyRepository,
 )
+from app.services.appointment_holds import (
+    AppointmentHoldService,
+    AppointmentHoldStoreUnavailableError,
+)
+from app.services.clinic_time import ClinicTimeService
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulingServiceError(Exception):
@@ -41,6 +49,12 @@ class AvailabilitySlotUnavailableError(SchedulingServiceError):
 
 
 @dataclass(frozen=True, slots=True)
+class SchedulingAvailabilityPolicy:
+    min_booking_lead_minutes: int
+    booking_horizon_days: int
+
+
+@dataclass(frozen=True, slots=True)
 class PatientLookupCriteria:
     full_name: str
     date_of_birth: date
@@ -60,12 +74,18 @@ class SchedulingService:
         patients: PatientRepository,
         availability_slots: AvailabilitySlotRepository,
         appointments: AppointmentRepository,
+        clinic_time_service: ClinicTimeService | None = None,
+        hold_service: AppointmentHoldService | None = None,
+        availability_policy: SchedulingAvailabilityPolicy | None = None,
     ) -> None:
         self.specialties = specialties
         self.doctors = doctors
         self.patients = patients
         self.availability_slots = availability_slots
         self.appointments = appointments
+        self._clinic_time_service = clinic_time_service
+        self._hold_service = hold_service
+        self._availability_policy = availability_policy
 
     def list_specialties(self) -> Sequence[Specialty]:
         return self.specialties.list_active()
@@ -88,11 +108,103 @@ class SchedulingService:
         if doctor is None or not doctor.is_active:
             raise DoctorNotFoundError("doctor was not found or is inactive")
 
-        return self.availability_slots.list_available(
-            doctor_id=doctor_id,
+        query_start, query_end = self._resolve_availability_query_window(
             start_from=start_from,
             start_to=start_to,
         )
+
+        if query_end <= query_start:
+            return []
+
+        slots = self.availability_slots.list_available(
+            doctor_id=doctor_id,
+            start_from=query_start,
+            start_to=query_end,
+        )
+
+        slots = self._apply_availability_policy_filters(slots)
+
+        if self._hold_service is not None and slots:
+            slots = self._exclude_redis_held_slots(
+                doctor_id=doctor_id,
+                slots=slots,
+            )
+
+        return slots
+
+    def _resolve_availability_query_window(
+        self,
+        *,
+        start_from: datetime,
+        start_to: datetime,
+    ) -> tuple[datetime, datetime]:
+        normalized_start = _to_utc(start_from)
+        normalized_end = _to_utc(start_to)
+
+        if self._availability_policy is None or self._clinic_time_service is None:
+            return normalized_start, normalized_end
+
+        clinic_now = self._clinic_time_service.clinic_now()
+        earliest_bookable = clinic_now + timedelta(
+            minutes=self._availability_policy.min_booking_lead_minutes,
+        )
+        latest_bookable = clinic_now + timedelta(
+            days=self._availability_policy.booking_horizon_days,
+        )
+
+        effective_start = max(normalized_start, _to_utc(earliest_bookable))
+        effective_end = min(normalized_end, _to_utc(latest_bookable))
+
+        return effective_start, effective_end
+
+    def _apply_availability_policy_filters(
+        self,
+        slots: Sequence[AvailabilitySlot],
+    ) -> list[AvailabilitySlot]:
+        if self._availability_policy is None or self._clinic_time_service is None:
+            return list(slots)
+
+        clinic_now = self._clinic_time_service.clinic_now()
+        earliest_bookable = _to_utc(
+            clinic_now + timedelta(minutes=self._availability_policy.min_booking_lead_minutes),
+        )
+        latest_bookable = _to_utc(
+            clinic_now + timedelta(days=self._availability_policy.booking_horizon_days),
+        )
+
+        return [
+            slot
+            for slot in slots
+            if earliest_bookable <= _to_utc(slot.start_time) < latest_bookable
+        ]
+
+    def _exclude_redis_held_slots(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[AvailabilitySlot],
+    ) -> list[AvailabilitySlot]:
+        if self._hold_service is None:
+            return list(slots)
+
+        slot_keys = [(slot.id, slot.start_time) for slot in slots]
+
+        try:
+            held_slot_ids = self._hold_service.find_held_availability_slot_ids(
+                doctor_id=doctor_id,
+                slots=slot_keys,
+            )
+        except AppointmentHoldStoreUnavailableError:
+            logger.warning(
+                "Skipping Redis hold filtering during availability lookup",
+                extra={
+                    "doctor_id": str(doctor_id),
+                    "candidate_slot_count": len(slots),
+                },
+            )
+            return list(slots)
+
+        return [slot for slot in slots if slot.id not in held_slot_ids]
 
     def get_available_slot_for_hold(self, availability_slot_id: UUID) -> AvailabilitySlot:
         slot = self.availability_slots.get_by_id(availability_slot_id)
@@ -144,3 +256,10 @@ class SchedulingService:
             doctor_id=doctor_id,
             start_time=start_time,
         )
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+
+    return value.astimezone(UTC)
