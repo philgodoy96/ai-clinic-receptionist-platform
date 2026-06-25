@@ -160,21 +160,87 @@ For each scenario: note the starting condition, caller path, expected tool seque
 
 ---
 
+## Scheduling Availability Hardening Smoke Tests
+
+Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded. These scenarios validate scheduling policy and Redis degradation behavior introduced in the availability hardening slice.
+
+Configuration defaults (override in `.env` if needed):
+
+```env
+SCHEDULING_MIN_BOOKING_LEAD_MINUTES=60
+SCHEDULING_BOOKING_HORIZON_DAYS=14
+```
+
+### A — Redis unavailable during availability lookup
+
+| Step | Detail |
+|------|--------|
+| Setup | Stop Redis (`docker compose stop redis` or equivalent) |
+| Action | Call `GET /api/v1/scheduling/doctors/{doctor_id}/availability` with a valid window, or run Retell `check_availability` |
+| Expected | DB-backed available slots may still be returned when slots exist within policy window |
+| Expected | No internal Redis or degradation details in API or Retell tool response |
+| Expected | Request completes without server error |
+
+### B — Redis unavailable during hold
+
+| Step | Detail |
+|------|--------|
+| Setup | Redis stopped |
+| Action | Attempt `POST /api/v1/scheduling/appointment-holds` or Retell `hold_appointment_slot` for a valid available slot |
+| Expected | Hold fails with `appointment_hold_store_unavailable` (HTTP `503` on scheduling API; structured error on Retell) |
+| Expected | Assistant does not claim the time was held |
+| Expected | No appointment is created |
+
+**Validated (June 2026):** With Redis offline, hold returned `appointment_hold_store_unavailable` and the assistant did not claim the time was held.
+
+### C — Redis available during hold
+
+| Step | Detail |
+|------|--------|
+| Setup | Start Redis |
+| Action | Hold a valid available slot |
+| Expected | Hold succeeds with `hold_id` and `expires_in_seconds` |
+| Expected | Assistant may proceed toward identity and booking steps |
+
+**Validated (June 2026):** With Redis online, hold creation succeeded again.
+
+### D — Held slot exclusion
+
+| Step | Detail |
+|------|--------|
+| Setup | Redis running; note a slot returned by availability |
+| Action | Create a hold for that slot, then call availability again for the same window |
+| Expected | Held slot is not offered while the hold is active |
+| Expected | Other available slots in the window may still appear |
+
+### E — Cancellation release interaction
+
+| Step | Detail |
+|------|--------|
+| Setup | Booked appointment linked to an availability slot within lead/horizon policy |
+| Action | Cancel the appointment with explicit confirmation |
+| Expected | Appointment status becomes `cancelled` |
+| Expected | Linked slot returns to `available` in PostgreSQL |
+| Expected | Slot may appear in availability again if inside lead-time and horizon policy and not Redis-held |
+
+---
+
 ## Known limitations
 
 - **Appointment lookup** is supported via `list_patient_appointments` after patient identity resolution.
 - **Cancellation execution** is supported via `cancel_appointment` after explicit confirmation, `patient_resolution_id`, and `appointment_id` from prior tool results.
 - **Rescheduling execution** is follow-up work — do not call `reschedule_appointment` or claim an appointment was rescheduled.
-- **Scheduling hardening** (booking horizon, minimum lead time, Redis-held slot filtering, dynamic schedule rules) remains follow-up work.
+- **Scheduling availability hardening** is implemented: minimum lead time, booking horizon, durable status filtering, and Redis-held slot exclusion when Redis is available. Dynamic schedule rules and rolling availability generation remain future work.
 - **Cancellation email notifications** are not implemented yet.
-- These docs reflect the **tested booking, lookup, and cancellation flow**, not the full future receptionist experience.
+- **Redis is required** for hold creation and booking; availability reads may degrade gracefully when Redis hold filtering is unavailable.
+- These docs reflect the **tested booking, lookup, cancellation, and availability policy flow**, not the full future receptionist experience.
 
 ---
 
 ## Follow-up roadmap
 
 1. **Voice rescheduling flow** — selected appointment, new availability lookup, hold new time, final reschedule confirmation, safe reschedule execution.
-2. **Scheduling hardening** — booking horizon, minimum lead time, filtering Redis-held slots from availability, rolling or dynamic availability.
+2. **Dynamic schedules and rolling availability** — doctor-specific schedule rules, admin schedule management, generated availability beyond seeded demo slots.
 3. **Cancellation email notifications** — optional patient confirmation email after successful cancellation.
 
 ---
@@ -190,6 +256,7 @@ After prompt or backend changes:
 - [ ] Confirm `book_appointment` outcomes show `status: succeeded` only before spoken booking confirmation.
 - [ ] Confirm `cancel_appointment` outcomes show `status: succeeded` only before spoken cancellation confirmation.
 - [ ] Confirm reschedule intents never call `reschedule_appointment`.
+- [ ] Run [Scheduling Availability Hardening Smoke Tests](#scheduling-availability-hardening-smoke-tests) after Redis or scheduling policy changes.
 - [ ] Log prompt version `retell-receptionist-v4` in deployment notes.
 
 See also: [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) for extended IR and recovery cases.

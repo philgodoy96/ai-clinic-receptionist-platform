@@ -65,6 +65,17 @@ Example:
 
 Returns available slots for a doctor within the requested time window.
 
+Availability results are filtered by scheduling policy:
+
+- Minimum booking lead time (`SCHEDULING_MIN_BOOKING_LEAD_MINUTES`, default 60)
+- Booking horizon (`SCHEDULING_BOOKING_HORIZON_DAYS`, default 14)
+- Durable slot status (`available` only)
+- Active Redis holds when Redis is available
+
+Availability is an advisory read. It does not guarantee a slot can still be held or booked.
+
+See [Scheduling Application Services](../architecture/scheduling-services.md#scheduling-availability-policy).
+
 Validation:
 
 - `start_to` must be greater than `start_from`.

@@ -39,6 +39,26 @@ Voice agents should call `get_clinic_context` before discussing relative dates. 
 
 See also: [Clinic Time Context and Tool Contracts](architecture/clinic-time-context-and-tool-contracts.md).
 
+## Scheduling Availability Policy
+
+Availability lookup applies clinic-local scheduling policy before returning candidate slots. These settings control how far ahead callers may book and how soon the next slot may be offered.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` | `60` | Minimum minutes from clinic-local current time before a slot may appear in availability. Prevents offering times that are too close to "now" for realistic booking. |
+| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Maximum number of days from clinic-local current time that availability lookup will return. Limits how far into the future seeded or generated slots are exposed. |
+
+For local development and CI, the defaults are usually sufficient:
+
+```env
+SCHEDULING_MIN_BOOKING_LEAD_MINUTES=60
+SCHEDULING_BOOKING_HORIZON_DAYS=14
+```
+
+Policy is enforced in `SchedulingService.check_availability` using `ClinicTimeService` for timezone-aware boundaries. Availability is an advisory read model; holds and booking apply separate consistency checks.
+
+See also: [Scheduling Application Services](architecture/scheduling-services.md).
+
 ## Database and Infrastructure
 
 | Variable | Default | Description |
