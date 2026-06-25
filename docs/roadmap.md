@@ -142,6 +142,8 @@ Implemented:
 - LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, offline evaluation runner, metrics grouped by prompt version, and optional provider-run evaluation mode
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
 - LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
+- Chat LLM sanitized context injection for shadow analysis with structured, PII-safe `chat_context` snapshots (see `docs/architecture/chat-llm-reliability.md`)
+- Chat LLM structured output retry/repair boundary with repair-prompt retries after structural failures and deterministic fallback as the final safety net (see `docs/architecture/chat-llm-reliability.md`)
 - Receptionist response generator with `ResponsePlan`, deterministic templates, optional LLM phrasing, output validation, deterministic fallback, chat integration, and optional voice `suggested_response_text` (see `docs/architecture/receptionist-response-generator.md`)
 - Public demo guardrails foundation with Redis-backed per-IP and global quotas, protected chat and Retell tool routes, and standardized `429`/`503` responses
 - Retell webhook security with configuration validation, centralized signature verification, protected callback/tool routes, and standardized rejection for missing or invalid signatures
@@ -166,6 +168,11 @@ Upcoming:
 - Prompt regression reports
 - Voice provider transfer integration
 - Written chat reschedule flow
+- Written chat cancellation flow
+- Chat message/client idempotency for duplicate POST requests
+- Durable action idempotency for duplicate chat scheduling actions
+- Dedicated LLM run persistence table (`llm_runs`)
+- LLM scheduling evaluation harness beyond the current offline dataset
 - Patient-aware hold recovery for authenticated patient sessions
 - Hold renewal with maximum absolute timeout
 - Dynamic doctor schedule rules and per-doctor working hours
