@@ -63,6 +63,10 @@ LLM analysis is stored only as internal assistant message metadata (`llm_shadow_
 
 Internal metadata may include `prompt_version` so analysis can be traced to a registered prompt version. The full prompt text is not stored in conversation metadata.
 
+When useful scheduling context exists, analysis requests include a sanitized snapshot of `chat_context` (structured state only; no raw PII or IDs). Invalid structured model output is retried internally with a repair prompt before deterministic fallback analysis is used. User ambiguity still produces normal clarification questions in the public reply.
+
+See also: [Chat LLM Interpretation Reliability](../architecture/chat-llm-reliability.md).
+
 ## LLM-Assisted Slot Filling (Internal)
 
 When eligible LLM analysis is available, the backend may validate extracted scheduling and patient-identity fields and merge accepted values into internal `chat_context`.

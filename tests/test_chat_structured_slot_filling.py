@@ -18,7 +18,12 @@ from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
-from tests.llm_provider_test_helpers import RaisingLLMProvider, StaticContentLLMProvider
+from tests.llm_provider_test_helpers import (
+    RaisingLLMProvider,
+    StaticContentLLMProvider,
+    build_receptionist_analysis_payload,
+)
+from tests.llm_reliability_test_helpers import SequentialContentProvider
 from tests.test_chat_receptionist_service import (
     TrackingAppointmentBookingService,
     _create_hold_service,
@@ -70,6 +75,51 @@ def test_eligible_llm_analysis_applies_slot_filling() -> None:
     applied_fields = {item["field"] for item in slot_filling["applied_fields"]}
     assert "specialty" in applied_fields
     assert "date" in applied_fields
+
+
+def test_schema_validation_repair_retry_enables_slot_filling() -> None:
+    invalid_payload = json.dumps(
+        {
+            "intent": "made_up_intent",
+            "confidence": 0.9,
+            "urgency": "normal",
+        },
+    )
+    valid_payload = build_receptionist_analysis_payload(
+        intent="appointment_request",
+        confidence=0.9,
+        extracted={
+            "specialty": "Dermatology",
+            "doctor_name": None,
+            "date": "2026-07-02",
+            "time": None,
+            "patient_identity": {
+                "full_name": None,
+                "date_of_birth": None,
+                "phone": None,
+                "email": None,
+            },
+        },
+    )
+    service = create_structured_slot_filling_chat_service(
+        llm_provider=SequentialContentProvider(
+            [invalid_payload, valid_payload],
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need dermatology on 2026-07-02"),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_specialty_name"] == "Dermatology"
+    assert chat_context["requested_date"] == "2026-07-02"
+
+    slot_filling = result.assistant_message.message_metadata["slot_filling"]
+    assert slot_filling["used_llm_analysis"] is True
+    shadow = result.assistant_message.message_metadata["llm_shadow_analysis"]
+    assert shadow["primary_attempt_count"] == 2
+    assert shadow["failure_reason"] == LLMFailureReason.NONE.value
 
 
 def test_low_confidence_analysis_does_not_apply_slot_filling() -> None:

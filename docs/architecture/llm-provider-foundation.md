@@ -58,12 +58,14 @@ Real provider adapters plug into the same validation and fallback layer as `Fake
 
 The LLM analysis flow is bounded:
 
-1. One provider call per chat message.
-2. Local JSON extraction repair is allowed.
-3. A second LLM retry is not enabled by default.
-4. Invalid output falls back to safe fallback analysis.
-5. Safety violations are rejected.
-6. Low confidence is recorded but does not create side effects.
+1. Provider calls are bounded by `LLM_MAX_PRIMARY_ATTEMPTS` (default 2).
+2. Local JSON extraction repair is allowed before parse failure.
+3. Structural output failures may trigger a repair-prompt retry with the same user message and sanitized context snapshot.
+4. Invalid output after exhaustion falls back to safe deterministic analysis.
+5. Safety violations are rejected without blind retry.
+6. Low confidence on valid structured output is recorded but does not create side effects.
+
+See also: [Chat LLM Interpretation Reliability](chat-llm-reliability.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).
 
 ## Observability
 

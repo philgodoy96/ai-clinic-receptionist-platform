@@ -74,4 +74,4 @@ Future implementation phases may add:
 - prompt rollback strategy
 - prompt version telemetry dashboards
 
-See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md).
+See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md), [Chat LLM Interpretation Reliability](chat-llm-reliability.md).
