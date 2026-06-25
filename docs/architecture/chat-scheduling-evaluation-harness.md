@@ -198,7 +198,7 @@ The report intentionally excludes:
 
 ## Current Limitations
 
-- **Booking-focused only** — scenarios cover booking start, availability guidance, identity collection, and LLM failure fallback
+- **Booking-focused only** — scenarios cover booking start, availability guidance, identity collection, a full booking confirmation happy path, and LLM failure fallback
 - **No chat cancellation or rescheduling scenarios yet**
 - **No provider mode yet** — cannot compare live Groq/Bedrock outputs against expectations
 - **In-memory eval fixtures** — not the DB-backed production stack; validates chat orchestration behavior, not deployment integration
