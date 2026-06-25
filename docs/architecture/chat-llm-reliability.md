@@ -225,6 +225,12 @@ Assistant message `llm_shadow_analysis` metadata includes reliability fields suc
 
 Raw prompts, raw provider output, and extracted patient identity are not stored in conversation metadata.
 
+## Offline Evaluation Harness
+
+The chat scheduling evaluation harness (`evals/chat_scheduling.jsonl`, `python -m scripts.evaluate_chat_scheduling`) validates deterministic-first chat behavior across multi-turn scenarios after LLM interpretation, retry/repair, and deterministic-fallback changes.
+
+It checks booking state, semantic reply constraints, and safe public wording. It does not call real providers and does not make the LLM the primary orchestrator. See [Chat Scheduling Evaluation Harness](chat-scheduling-evaluation-harness.md).
+
 ## What Remains Future Work
 
 Intentional production evolution, not missing MVP behavior for the current chat demo:
@@ -232,12 +238,13 @@ Intentional production evolution, not missing MVP behavior for the current chat 
 - chat message / client idempotency for duplicate `POST` requests
 - durable action idempotency for duplicate chat scheduling actions
 - dedicated `llm_runs` persistence table
-- LLM scheduling evaluation harness beyond the current offline dataset
+- provider-mode chat scheduling evaluation against live Groq/Bedrock providers
 - written chat cancellation and rescheduling flows
 - LLM as primary orchestration mode, if ever desired
 
 ## Related Documentation
 
+- [Chat Scheduling Evaluation Harness](chat-scheduling-evaluation-harness.md)
 - [Chat API Foundation](chat-api-foundation.md)
 - [Chat API](../api/chat.md)
 - [LLM Reliability Orchestration](llm-reliability-orchestration.md)
