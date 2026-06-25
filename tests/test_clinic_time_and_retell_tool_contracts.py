@@ -877,7 +877,8 @@ def test_regression_retell_reschedule_tool_still_works() -> None:
 
     response = context["adapter"].execute(
         reschedule_tool_request(
-            original_appointment_id=str(original_appointment.id),
+            appointment_id=str(original_appointment.id),
+            patient_resolution_id=context["patient_resolution_id"],
             hold_id=str(hold.hold_id),
             new_slot_id=str(new_slot.id),
         ),

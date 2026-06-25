@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -31,6 +31,7 @@ from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
 from app.services.conversations import ConversationService
 from app.services.email_jobs import EmailJobService
+from tests.clinic_time_test_support import REFERENCE_CLINIC_NOW_UTC
 from tests.test_appointment_booking_api import FakeAuditLogService
 from tests.test_appointment_booking_service import (
     FakeAppointmentHoldRepository,
@@ -167,7 +168,7 @@ def create_rescheduling_context(
         phone_number="+1-555-0201",
         email="john.miller@example.test",
     )
-    original_start = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    original_start = REFERENCE_CLINIC_NOW_UTC + timedelta(days=7)
     original_slot = AvailabilitySlot(
         id=uuid4(),
         doctor_id=doctor.id,
@@ -175,7 +176,7 @@ def create_rescheduling_context(
         end_time=original_start + timedelta(minutes=30),
         status=AvailabilitySlotStatus.BOOKED,
     )
-    new_start = datetime(2026, 7, 2, 14, 0, tzinfo=UTC)
+    new_start = original_start + timedelta(days=1)
     new_slot = AvailabilitySlot(
         id=uuid4(),
         doctor_id=doctor.id,

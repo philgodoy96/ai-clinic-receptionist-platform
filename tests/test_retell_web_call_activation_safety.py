@@ -301,7 +301,8 @@ def test_reschedule_tool_callback_idempotency_still_works() -> None:
     original_appointment = context["original_appointment"]
     hold = context["hold"]
     request = reschedule_tool_request(
-        original_appointment_id=str(original_appointment.id),
+        appointment_id=str(original_appointment.id),
+        patient_resolution_id=context["patient_resolution_id"],
         hold_id=str(hold.hold_id),
         new_slot_id=str(context["new_slot"].id),
     )

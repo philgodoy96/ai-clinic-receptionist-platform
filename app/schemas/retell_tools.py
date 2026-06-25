@@ -342,7 +342,9 @@ class CancelAppointmentToolArguments(BaseModel):
 class RescheduleAppointmentToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    appointment_id: UUID | str | None = None
     original_appointment_id: UUID | str | None = None
+    patient_resolution_id: str | None = Field(default=None, max_length=120)
     hold_id: str | None = Field(default=None, max_length=120)
     new_slot_id: UUID | str | None = None
     explicit_confirmation: bool
@@ -354,31 +356,32 @@ class RescheduleAppointmentToolArguments(BaseModel):
         default=None,
         max_length=MAX_RESCHEDULE_APPOINTMENT_RESCHEDULE_REASON_LENGTH,
     )
-    patient_name: str | None = Field(default=None, max_length=160)
-    patient_date_of_birth: date | None = None
-    patient_email: str | None = Field(
-        default=None,
-        max_length=255,
-        pattern=_PATIENT_EMAIL_PATTERN,
-    )
 
-    @field_validator("patient_email", mode="before")
+    @field_validator("patient_resolution_id")
     @classmethod
-    def sanitize_patient_email_before_validation(cls, value: object) -> object:
-        if value is None:
-            return None
-
-        return sanitize_spoken_email(str(value))
-
-    @field_validator("patient_name")
-    @classmethod
-    def validate_patient_name_not_blank_if_present(cls, value: str | None) -> str | None:
+    def validate_patient_resolution_id_not_blank_if_present(
+        cls,
+        value: str | None,
+    ) -> str | None:
         if value is None:
             return None
 
         stripped = value.strip()
         if not stripped:
-            msg = "patient_name cannot be blank"
+            msg = "patient_resolution_id cannot be blank"
+            raise ValueError(msg)
+
+        return stripped
+
+    @field_validator("confirmation_text")
+    @classmethod
+    def validate_confirmation_text_not_blank_if_present(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        if not stripped:
+            msg = "confirmation_text cannot be blank"
             raise ValueError(msg)
 
         return stripped
@@ -387,8 +390,11 @@ class RescheduleAppointmentToolArguments(BaseModel):
     def validate_target_reference(self) -> RescheduleAppointmentToolArguments:
         has_hold = self.hold_id is not None and self.hold_id.strip() != ""
         has_slot = self.new_slot_id is not None and str(self.new_slot_id).strip() != ""
-        if not has_hold and not has_slot:
-            msg = "either hold_id or new_slot_id is required"
+        if not has_hold:
+            msg = "hold_id is required"
+            raise ValueError(msg)
+        if not has_slot:
+            msg = "new_slot_id is required"
             raise ValueError(msg)
         return self
 
