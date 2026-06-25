@@ -86,7 +86,7 @@ If this tool fails, apologize briefly and ask the caller for a specific calendar
 ### Dashboard description
 
 ```
-Read-only. Searches the schedule for available appointment times. Prefer date_expression (today, tomorrow, next_weekday, exact_date) and optional time_window_expression (morning, afternoon, evening, exact_time). Returns available_slots with ids for hold_appointment_slot. No side effects.
+Read-only. Searches the schedule for available appointment times. Prefer date_expression (today, tomorrow, next_weekday, exact_date) and optional time_window_expression (morning, afternoon, evening, exact_time). Returns availability_status, available_slots, and voice-safe suggested_response_text. Do not decide the booking horizon in the agent — use backend metadata. No side effects.
 ```
 
 ### Exact name
@@ -135,18 +135,82 @@ Preferred contract:
 
 None. Read-only. Updates voice conversation context with scheduling preferences for later tools.
 
-### Example success result
+### Example success result — slots available
 
 ```json
 {
+  "doctor_id": "7fcf0ca1-7f14-4f45-a8a4-cc77d1a67f4d",
+  "availability_status": "available",
   "available_slots": [
     {
-      "availability_slot_id": "...",
-      "doctor_name": "Dr. Emily Carter",
+      "id": "...",
+      "doctor_id": "...",
       "start_time": "2026-07-02T13:30:00Z",
-      "end_time": "2026-07-02T14:00:00Z"
+      "end_time": "2026-07-02T14:00:00Z",
+      "status": "available"
     }
   ]
+}
+```
+
+### Response metadata
+
+Successful results include voice-safe scheduling metadata. Retell must **not** hardcode the booking horizon (for example a 14-day policy). The backend validates **resolved absolute dates/windows**, not phrases like "next month".
+
+| Field | When present | Meaning |
+|-------|----------------|---------|
+| `availability_status` | Always on success | `available`, `no_matching_slots`, `outside_booking_horizon`, or `needs_date_clarification` |
+| `available_slots` | Always on success | Matching openings; empty when status is not `available` |
+| `booking_window` | `outside_booking_horizon` (and optionally other statuses) | `earliest_bookable_date`, `latest_bookable_date`, `timezone` |
+| `suggested_response_text` | No slots, outside horizon, or needs clarification | Backend-generated phrase Retell may use or paraphrase |
+
+#### `availability_status` values
+
+| Status | Meaning | Use `suggested_response_text` |
+|--------|---------|-------------------------------|
+| `available` | Matching bookable slots exist | Optional — offer times naturally |
+| `no_matching_slots` | Resolved date/window is inside the booking horizon but no slots match | Yes — e.g. ask for another day or time |
+| `outside_booking_horizon` | Resolved date/window is outside the configured horizon | Yes — mention the open-through date from `booking_window` |
+| `needs_date_clarification` | Request too vague to resolve safely | Yes — ask for a specific day |
+
+**Horizon rule:** If today is 2026-06-28 and the horizon is 14 days, a resolved date of 2026-07-01 is **inside** the window even when the caller said "next month". Do not classify horizon from the phrase alone.
+
+### Example success result — no matching slots
+
+```json
+{
+  "doctor_id": "...",
+  "availability_status": "no_matching_slots",
+  "available_slots": [],
+  "suggested_response_text": "I'm not seeing any openings for that day. Would you like me to check another day or time?"
+}
+```
+
+### Example success result — outside booking horizon
+
+```json
+{
+  "doctor_id": "...",
+  "availability_status": "outside_booking_horizon",
+  "available_slots": [],
+  "booking_window": {
+    "earliest_bookable_date": "2026-06-28",
+    "latest_bookable_date": "2026-07-12",
+    "timezone": "America/New_York"
+  },
+  "suggested_response_text": "The clinic schedule is currently open through July 12. I can check dates within that window."
+}
+```
+
+### Example success result — needs date clarification
+
+Unified tool path when no date can be resolved:
+
+```json
+{
+  "availability_status": "needs_date_clarification",
+  "available_slots": [],
+  "suggested_response_text": "Sure. Is there a specific day you'd like me to check?"
 }
 ```
 
@@ -161,8 +225,11 @@ None. Read-only. Updates voice conversation context with scheduling preferences 
 | `clinic_time_unavailable` | Clinic time service not configured |
 | `doctor_not_found` | No matching doctor |
 | `retell_tool_arguments_invalid` | Argument validation failed |
+| `needs_date_clarification` | Returned as `availability_status` on success when the date is too vague — not a failed tool call |
 
-An empty `available_slots` list is not an error — it means no openings match the query.
+Pre-resolution failures (`clinic_closed`, `past_date`, etc.) still return `status: failed` with `error_code`.
+
+An empty `available_slots` list with `availability_status: no_matching_slots` or `outside_booking_horizon` is not a tool failure — use `suggested_response_text` for voice recovery.
 
 ### Receptionist recovery
 
@@ -170,10 +237,12 @@ An empty `available_slots` list is not an error — it means no openings match t
 |----------------|-----|
 | `clinic_closed` | "We're closed that day. Would another weekday work?" |
 | `outside_business_hours` | "We're open nine to five — would an earlier or later time work?" |
-| Empty slots | "I don't see anything open then. Would you like a different day or time of day?" |
+| `availability_status: no_matching_slots` | Prefer `suggested_response_text`; offer another day or time |
+| `availability_status: outside_booking_horizon` | Prefer `suggested_response_text`; do not invent how far the schedule is open |
+| `availability_status: needs_date_clarification` | Prefer `suggested_response_text`; ask for a specific day |
 | `doctor_not_found` | "I don't have that doctor on the schedule. Would you like dermatology, cardiology, or primary care?" |
 
-Never speak error codes or internal field names to the caller.
+Never speak error codes, internal field names, or horizon policy constants (for example "14 days") to the caller.
 
 ---
 
@@ -441,7 +510,15 @@ Confirms or rejects a possible_match patient_resolution_id from resolve_patient_
 ### Dashboard description
 
 ```
-Read-only. Lists upcoming scheduled appointments for a patient already resolved on this call. Requires patient_resolution_id from resolve_patient_identity or confirm_patient_identity. Returns voice-safe appointment summaries. Use for cancel/reschedule requests to identify which appointment the caller wants to change. Does not cancel or reschedule. Never pass raw patient IDs.
+Looks up the caller's upcoming scheduled appointments after patient identity has been resolved.
+
+Use this tool only after resolve_patient_identity or confirm_patient_identity returns a valid patient_resolution_id.
+
+This tool is used when the caller wants to cancel, reschedule, or review an existing appointment. It returns upcoming scheduled appointments that the caller can choose from.
+
+Do not use this tool for new appointment booking.
+
+Do not read raw appointment IDs, patient IDs, or internal identifiers to the caller. Appointment IDs returned by this tool are only for backend follow-up calls such as cancel_appointment or reschedule_appointment.
 ```
 
 ### Exact name
@@ -476,8 +553,8 @@ Read-only. Lists upcoming scheduled appointments for a patient already resolved 
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `patient_resolution_id` | Yes | Opaque token from identity resolution on this call |
-| `limit` | No | Default `5`; max `10` |
+| `patient_resolution_id` | Yes | Patient resolution ID returned by `resolve_patient_identity` or `confirm_patient_identity`. Required before looking up upcoming appointments. |
+| `limit` | No | Maximum number of upcoming appointments to return. Use **5** by default unless there is a specific reason to request fewer or more. Max `10`. |
 
 ### Side effects
 
