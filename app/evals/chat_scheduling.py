@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -38,6 +40,18 @@ _CLARIFICATION_KEYWORDS: tuple[str, ...] = (
     "clarif",
 )
 
+_CHAT_SCHEDULING_EVAL_FIXTURES: frozenset[str] = frozenset(
+    {
+        "availability_guidance",
+        "structured_slot_filling",
+        "llm_failure_fallback",
+    },
+)
+
+
+class ChatSchedulingEvaluationError(Exception):
+    pass
+
 
 @dataclass(frozen=True, slots=True)
 class ChatSchedulingEvaluationStep:
@@ -57,6 +71,8 @@ class ChatSchedulingEvaluationScenario:
     name: str
     description: str
     steps: tuple[ChatSchedulingEvaluationStep, ...]
+    fixture: str = "availability_guidance"
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +338,280 @@ def evaluate_chat_scheduling_step(
         expectations.append(evaluate_clarification_wording(reply=result.reply))
 
     return tuple(expectations)
+
+
+def load_chat_scheduling_eval_scenarios(
+    path: Path,
+) -> tuple[ChatSchedulingEvaluationScenario, ...]:
+    if not path.exists():
+        raise ChatSchedulingEvaluationError(f"Evaluation dataset not found: {path}")
+
+    scenarios: list[ChatSchedulingEvaluationScenario] = []
+    seen_names: set[str] = set()
+
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ChatSchedulingEvaluationError(
+                f"Invalid JSONL at {path}:{line_number}: {exc.msg}",
+            ) from exc
+
+        scenario = _parse_chat_scheduling_eval_scenario(
+            payload=payload,
+            line_number=line_number,
+        )
+        if scenario.name in seen_names:
+            raise ChatSchedulingEvaluationError(
+                f"Duplicate scenario id '{scenario.name}' at line {line_number}",
+            )
+
+        seen_names.add(scenario.name)
+        scenarios.append(scenario)
+
+    return tuple(scenarios)
+
+
+def _parse_chat_scheduling_eval_scenario(
+    *,
+    payload: dict[str, Any],
+    line_number: int,
+) -> ChatSchedulingEvaluationScenario:
+    if not isinstance(payload, dict):
+        raise ChatSchedulingEvaluationError(
+            f"Scenario must be a JSON object at line {line_number}",
+        )
+
+    scenario_id = _required_non_empty_str(payload, "id", line_number)
+    description = _required_non_empty_str(payload, "description", line_number)
+    fixture = _required_non_empty_str(payload, "fixture", line_number)
+    if fixture not in _CHAT_SCHEDULING_EVAL_FIXTURES:
+        allowed = ", ".join(sorted(_CHAT_SCHEDULING_EVAL_FIXTURES))
+        raise ChatSchedulingEvaluationError(
+            f"Invalid fixture '{fixture}' at line {line_number}. Allowed values: {allowed}",
+        )
+
+    tags = _optional_str_list(payload, "tags", line_number)
+    steps_payload = payload.get("steps")
+    if not isinstance(steps_payload, list) or not steps_payload:
+        raise ChatSchedulingEvaluationError(
+            f"Field 'steps' must be a non-empty list at line {line_number}",
+        )
+
+    steps = tuple(
+        _parse_chat_scheduling_eval_step(
+            step_payload=step_payload,
+            scenario_line_number=line_number,
+            step_index=step_index,
+        )
+        for step_index, step_payload in enumerate(steps_payload)
+    )
+
+    return ChatSchedulingEvaluationScenario(
+        name=scenario_id,
+        description=description,
+        steps=steps,
+        fixture=fixture,
+        tags=tags,
+    )
+
+
+def _parse_chat_scheduling_eval_step(
+    *,
+    step_payload: Any,
+    scenario_line_number: int,
+    step_index: int,
+) -> ChatSchedulingEvaluationStep:
+    step_label = f"line {scenario_line_number} step {step_index}"
+
+    if not isinstance(step_payload, dict):
+        raise ChatSchedulingEvaluationError(
+            f"Step at {step_label} must be a JSON object",
+        )
+
+    user_message = _required_non_empty_str(step_payload, "user_message", step_label)
+    expected_intent = _optional_chat_intent(step_payload, "expected_intent", step_label)
+    expected_booking_confirmed = _optional_bool(
+        step_payload,
+        "expected_booking_confirmed",
+        step_label,
+    )
+    expected_appointment_created = _optional_bool(
+        step_payload,
+        "expected_appointment_created",
+        step_label,
+    )
+    expected_reply_contains_any = _optional_str_tuple(
+        step_payload,
+        "expected_reply_contains_any",
+        step_label,
+    )
+    expected_reply_not_contains_any = _optional_str_tuple(
+        step_payload,
+        "expected_reply_not_contains_any",
+        step_label,
+    )
+    expect_no_internal_identifiers = _optional_bool_with_default(
+        step_payload,
+        "expect_no_internal_identifiers",
+        step_label,
+        default=True,
+    )
+    expect_no_invented_email = _optional_bool_with_default(
+        step_payload,
+        "expect_no_invented_email",
+        step_label,
+        default=True,
+    )
+    expect_clarification_wording = _optional_bool_with_default(
+        step_payload,
+        "expect_clarification_wording",
+        step_label,
+        default=False,
+    )
+
+    return ChatSchedulingEvaluationStep(
+        user_message=user_message,
+        expected_intent=expected_intent,
+        expected_booking_confirmed=expected_booking_confirmed,
+        expected_appointment_created=expected_appointment_created,
+        expected_reply_contains_any=expected_reply_contains_any,
+        expected_reply_not_contains_any=expected_reply_not_contains_any,
+        expect_no_internal_identifiers=expect_no_internal_identifiers,
+        expect_no_invented_email=expect_no_invented_email,
+        expect_clarification_wording=expect_clarification_wording,
+    )
+
+
+def _required_non_empty_str(payload: dict[str, Any], field: str, location: int | str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ChatSchedulingEvaluationError(
+            f"Field '{field}' must be a non-empty string at {location}",
+        )
+    return value
+
+
+def _optional_bool(
+    payload: dict[str, Any],
+    field: str,
+    location: int | str,
+) -> bool | None:
+    if field not in payload:
+        return None
+
+    value = payload.get(field)
+    if not isinstance(value, bool):
+        raise ChatSchedulingEvaluationError(
+            f"Field '{field}' must be a boolean at {location}",
+        )
+    return value
+
+
+def _optional_bool_with_default(
+    payload: dict[str, Any],
+    field: str,
+    location: int | str,
+    *,
+    default: bool,
+) -> bool:
+    if field not in payload:
+        return default
+
+    value = payload.get(field)
+    if not isinstance(value, bool):
+        raise ChatSchedulingEvaluationError(
+            f"Field '{field}' must be a boolean at {location}",
+        )
+    return value
+
+
+def _optional_str_list(
+    payload: dict[str, Any],
+    field: str,
+    location: int | str,
+) -> tuple[str, ...]:
+    if field not in payload:
+        return ()
+
+    value = payload.get(field)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ChatSchedulingEvaluationError(
+            f"Field '{field}' must be a list of strings at {location}",
+        )
+    return tuple(value)
+
+
+def _optional_str_tuple(
+    payload: dict[str, Any],
+    field: str,
+    location: int | str,
+) -> tuple[str, ...]:
+    if field not in payload:
+        return ()
+
+    value = payload.get(field)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ChatSchedulingEvaluationError(
+            f"Field '{field}' must be a list of strings at {location}",
+        )
+    return tuple(value)
+
+
+def _optional_chat_intent(
+    payload: dict[str, Any],
+    field: str,
+    location: int | str,
+) -> ChatReceptionistIntent | None:
+    if field not in payload:
+        return None
+
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ChatSchedulingEvaluationError(
+            f"Field '{field}' must be a non-empty string at {location}",
+        )
+
+    try:
+        return ChatReceptionistIntent(value)
+    except ValueError as exc:
+        allowed = ", ".join(intent.value for intent in ChatReceptionistIntent)
+        raise ChatSchedulingEvaluationError(
+            f"Invalid {field} '{value}' at {location}. Allowed values: {allowed}",
+        ) from exc
+
+
+def format_chat_scheduling_scenario_failure(
+    *,
+    scenario_name: str,
+    result: ChatSchedulingScenarioResult,
+) -> str:
+    lines = [f"Scenario '{scenario_name}' failed: {result.failure_reason}"]
+
+    for step in result.step_results:
+        if step.passed:
+            continue
+
+        lines.append(
+            f"  step {step.step_index} ({step.user_message!r}): {step.failure_reason}",
+        )
+        for expectation in step.expectation_results:
+            if expectation.passed:
+                continue
+            lines.append(
+                "    "
+                f"{expectation.field}: expected={expectation.expected!r} "
+                f"actual={expectation.actual!r}",
+            )
+
+    return "\n".join(lines)
 
 
 def run_chat_scheduling_scenario(
