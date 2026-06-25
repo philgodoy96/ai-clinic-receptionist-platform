@@ -13,13 +13,14 @@ from app.api.dependencies import (
     get_retell_scheduling_tool_adapter,
 )
 from app.domain.jobs.enums import EmailJobStatus, EmailJobType
+from app.domain.scheduling.availability import AvailabilityCheckStatus
 from app.main import create_app
 from app.models.email_jobs import EmailJob
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.email_job_metrics import EmailJobOperationalMetrics, EmailJobStatusCounts
 from app.services.email_job_pagination import EmailJobCursor
 from app.services.email_jobs import EmailJobService
-from app.services.scheduling import PatientLookupCriteria
+from app.services.scheduling import AvailabilityCheckResult, PatientLookupCriteria
 from tests.retell_webhook_support import configure_retell_for_tests
 
 
@@ -252,6 +253,18 @@ class EmptySchedulingService:
         start_to: datetime,
     ) -> Sequence[AvailabilitySlot]:
         return []
+
+    def check_availability_with_status(
+        self,
+        *,
+        doctor_id: UUID,
+        start_from: datetime,
+        start_to: datetime,
+    ) -> AvailabilityCheckResult:
+        return AvailabilityCheckResult(
+            status=AvailabilityCheckStatus.NO_MATCHING_SLOTS,
+            available_slots=[],
+        )
 
     def lookup_patient(self, criteria: PatientLookupCriteria) -> Patient | None:
         return None

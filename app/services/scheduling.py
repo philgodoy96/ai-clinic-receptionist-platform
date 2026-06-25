@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
+from app.domain.scheduling.availability import (
+    NO_MATCHING_SLOTS_RESPONSE_TEXT,
+    AvailabilityCheckStatus,
+    BookingWindow,
+    build_outside_booking_horizon_response_text,
+)
 from app.domain.scheduling.enums import AvailabilitySlotStatus
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.repositories.scheduling import (
@@ -55,6 +61,14 @@ class SchedulingAvailabilityPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class AvailabilityCheckResult:
+    status: AvailabilityCheckStatus
+    available_slots: Sequence[AvailabilitySlot]
+    booking_window: BookingWindow | None = None
+    suggested_response_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PatientLookupCriteria:
     full_name: str
     date_of_birth: date
@@ -100,6 +114,19 @@ class SchedulingService:
         start_from: datetime,
         start_to: datetime,
     ) -> Sequence[AvailabilitySlot]:
+        return self.check_availability_with_status(
+            doctor_id=doctor_id,
+            start_from=start_from,
+            start_to=start_to,
+        ).available_slots
+
+    def check_availability_with_status(
+        self,
+        *,
+        doctor_id: UUID,
+        start_from: datetime,
+        start_to: datetime,
+    ) -> AvailabilityCheckResult:
         if start_to <= start_from:
             raise InvalidAvailabilityWindowError("start_to must be greater than start_from")
 
@@ -108,13 +135,44 @@ class SchedulingService:
         if doctor is None or not doctor.is_active:
             raise DoctorNotFoundError("doctor was not found or is inactive")
 
+        booking_window = self.get_booking_window()
+        earliest_bookable, latest_bookable = self._get_booking_bounds()
+
+        normalized_start = _to_utc(start_from)
+        normalized_end = _to_utc(start_to)
+
+        if (
+            self._availability_policy is not None
+            and self._clinic_time_service is not None
+            and not _window_overlaps_booking_horizon(
+                start_from=normalized_start,
+                start_to=normalized_end,
+                earliest_bookable=earliest_bookable,
+                latest_bookable=latest_bookable,
+            )
+        ):
+            assert booking_window is not None
+            return AvailabilityCheckResult(
+                status=AvailabilityCheckStatus.OUTSIDE_BOOKING_HORIZON,
+                available_slots=[],
+                booking_window=booking_window,
+                suggested_response_text=build_outside_booking_horizon_response_text(
+                    booking_window.latest_bookable_date,
+                ),
+            )
+
         query_start, query_end = self._resolve_availability_query_window(
             start_from=start_from,
             start_to=start_to,
         )
 
         if query_end <= query_start:
-            return []
+            return AvailabilityCheckResult(
+                status=AvailabilityCheckStatus.NO_MATCHING_SLOTS,
+                available_slots=[],
+                booking_window=booking_window,
+                suggested_response_text=NO_MATCHING_SLOTS_RESPONSE_TEXT,
+            )
 
         slots = self.availability_slots.list_available(
             doctor_id=doctor_id,
@@ -130,7 +188,49 @@ class SchedulingService:
                 slots=slots,
             )
 
-        return slots
+        if slots:
+            return AvailabilityCheckResult(
+                status=AvailabilityCheckStatus.AVAILABLE,
+                available_slots=slots,
+                booking_window=booking_window,
+            )
+
+        return AvailabilityCheckResult(
+            status=AvailabilityCheckStatus.NO_MATCHING_SLOTS,
+            available_slots=[],
+            booking_window=booking_window,
+            suggested_response_text=NO_MATCHING_SLOTS_RESPONSE_TEXT,
+        )
+
+    def get_booking_window(self) -> BookingWindow | None:
+        if self._availability_policy is None or self._clinic_time_service is None:
+            return None
+
+        earliest_bookable, latest_bookable = self._get_booking_bounds()
+        timezone_name = str(self._clinic_time_service.timezone.key)
+
+        return BookingWindow(
+            earliest_bookable_date=earliest_bookable.astimezone(
+                self._clinic_time_service.timezone,
+            ).date(),
+            latest_bookable_date=latest_bookable.astimezone(
+                self._clinic_time_service.timezone,
+            ).date(),
+            timezone=timezone_name,
+        )
+
+    def _get_booking_bounds(self) -> tuple[datetime, datetime]:
+        if self._availability_policy is None or self._clinic_time_service is None:
+            raise RuntimeError("booking bounds require clinic time and availability policy")
+
+        clinic_now = self._clinic_time_service.clinic_now()
+        earliest_bookable = _to_utc(
+            clinic_now + timedelta(minutes=self._availability_policy.min_booking_lead_minutes),
+        )
+        latest_bookable = _to_utc(
+            clinic_now + timedelta(days=self._availability_policy.booking_horizon_days),
+        )
+        return earliest_bookable, latest_bookable
 
     def _resolve_availability_query_window(
         self,
@@ -263,3 +363,13 @@ def _to_utc(value: datetime) -> datetime:
         return value.replace(tzinfo=UTC)
 
     return value.astimezone(UTC)
+
+
+def _window_overlaps_booking_horizon(
+    *,
+    start_from: datetime,
+    start_to: datetime,
+    earliest_bookable: datetime,
+    latest_bookable: datetime,
+) -> bool:
+    return start_from < latest_bookable and start_to > earliest_bookable

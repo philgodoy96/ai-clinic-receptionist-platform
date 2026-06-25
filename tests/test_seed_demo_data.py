@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
-from scripts.seed_demo_data import (
-    SEED_SLOT_START_TIMES,
+from app.services.demo_availability_generation import (
     clinic_local_slot_to_utc,
     has_future_clinic_slot_on_date,
     parse_clinic_business_weekdays,
     rolling_clinic_business_dates,
 )
+from scripts.seed_demo_data import SEED_SLOT_START_TIMES
 
 
 def test_parse_clinic_business_weekdays_defaults_to_weekdays_only() -> None:

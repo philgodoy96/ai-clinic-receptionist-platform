@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Protocol, cast
 from uuid import UUID
 
+from app.domain.scheduling.availability import build_availability_status_payload
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.schemas.retell_tools import (
     RetellCheckAvailabilityRequest,
@@ -21,6 +22,7 @@ from app.schemas.scheduling import (
     SpecialtyResponse,
 )
 from app.services.scheduling import (
+    AvailabilityCheckResult,
     DoctorNotFoundError,
     InsufficientPatientIdentityError,
     InvalidAvailabilityWindowError,
@@ -42,6 +44,15 @@ class SchedulingServiceForRetell(Protocol):
         start_from: datetime,
         start_to: datetime,
     ) -> Sequence[AvailabilitySlot]:
+        raise NotImplementedError
+
+    def check_availability_with_status(
+        self,
+        *,
+        doctor_id: UUID,
+        start_from: datetime,
+        start_to: datetime,
+    ) -> AvailabilityCheckResult:
         raise NotImplementedError
 
     def lookup_patient(self, criteria: PatientLookupCriteria) -> Patient | None:
@@ -103,7 +114,7 @@ class RetellSchedulingToolAdapter:
             doctor_id = doctor_resolution.id
 
         try:
-            slots = self.service.check_availability(
+            availability_result = self.service.check_availability_with_status(
                 doctor_id=doctor_id,
                 start_from=payload.start_from,
                 start_to=payload.start_to,
@@ -119,12 +130,20 @@ class RetellSchedulingToolAdapter:
                 "No matching active doctor was found.",
             )
 
-        return self._success(
-            {
-                "doctor_id": str(doctor_id),
-                "available_slots": [self._availability_slot_to_result(slot) for slot in slots],
-            },
-        )
+        result_payload: dict[str, Any] = {
+            "doctor_id": str(doctor_id),
+            "available_slots": [
+                self._availability_slot_to_result(slot)
+                for slot in availability_result.available_slots
+            ],
+            **build_availability_status_payload(
+                status=availability_result.status,
+                booking_window=availability_result.booking_window,
+                suggested_response_text=availability_result.suggested_response_text,
+            ),
+        }
+
+        return self._success(result_payload)
 
     def lookup_patient(self, payload: RetellPatientLookupRequest) -> RetellToolResponse:
         criteria = PatientLookupCriteria(

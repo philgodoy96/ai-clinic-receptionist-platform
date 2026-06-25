@@ -56,6 +56,11 @@ from app.domain.retell_tools import (
     serialize_tool_call_outcome,
 )
 from app.domain.scheduling.appointment_holds import AppointmentHold
+from app.domain.scheduling.availability import (
+    NEEDS_DATE_CLARIFICATION_RESPONSE_TEXT,
+    AvailabilityCheckStatus,
+    build_availability_status_payload,
+)
 from app.domain.scheduling.enums import AppointmentStatus
 from app.domain.voice_appointment_lookup import (
     ListPatientAppointmentsRequest,
@@ -139,6 +144,7 @@ from app.services.receptionist_response_planning import build_suggested_retell_r
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
 from app.services.retell_tool_registry import is_side_effecting_retell_tool
 from app.services.scheduling import (
+    AvailabilityCheckResult,
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
     PatientLookupCriteria,
@@ -188,6 +194,15 @@ class SchedulingServiceForRetellToolCalling(Protocol):
         start_from: datetime,
         start_to: datetime,
     ) -> Sequence[AvailabilitySlot]:
+        raise NotImplementedError
+
+    def check_availability_with_status(
+        self,
+        *,
+        doctor_id: UUID,
+        start_from: datetime,
+        start_to: datetime,
+    ) -> AvailabilityCheckResult:
         raise NotImplementedError
 
     def get_available_slot_for_hold(self, availability_slot_id: UUID) -> AvailabilitySlot:
@@ -531,10 +546,26 @@ class RetellToolCallingAdapter:
             voice_context,
         )
         if not availability_window.is_resolved:
+            error_code = availability_window.error_code or "invalid_scheduling_expression"
+            if (
+                error_code == "invalid_scheduling_expression"
+                and availability_window.reason == "missing_date_expression"
+            ):
+                return build_succeeded_tool_call_response(
+                    tool_name=parsed.tool_name.value,
+                    tool_call_id=parsed.tool_call_id,
+                    result={
+                        "available_slots": [],
+                        **build_availability_status_payload(
+                            status=AvailabilityCheckStatus.NEEDS_DATE_CLARIFICATION,
+                            suggested_response_text=NEEDS_DATE_CLARIFICATION_RESPONSE_TEXT,
+                        ),
+                    },
+                )
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code=availability_window.error_code or "invalid_scheduling_expression",
+                error_code=error_code,
             )
 
         resolved_arguments = merge_check_availability_identity_fields(
