@@ -592,6 +592,18 @@ class TrackingAppointmentHoldRepository:
         if hold is not None:
             self.holds_by_id.pop(hold.hold_id, None)
 
+    def find_held_availability_slot_ids(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[tuple[UUID, datetime]],
+    ) -> set[UUID]:
+        return {
+            slot_id
+            for slot_id, start_time in slots
+            if (doctor_id, start_time) in self.holds
+        }
+
 
 class TrackingVoiceCallRepository:
     def __init__(self) -> None:

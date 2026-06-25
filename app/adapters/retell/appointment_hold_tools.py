@@ -9,6 +9,7 @@ from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.models.scheduling import AvailabilitySlot
 from app.schemas.retell_tools import RetellHoldAppointmentSlotRequest, RetellToolResponse
 from app.services.appointment_holds import (
+    AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
     InvalidAppointmentHoldOwnerError,
     InvalidAppointmentHoldWindowError,
@@ -123,6 +124,17 @@ class RetellAppointmentHoldToolAdapter:
                 ok=False,
                 error_code="invalid_appointment_hold",
                 message="The appointment hold request is invalid.",
+            )
+        except AppointmentHoldStoreUnavailableError:
+            self._record_hold_failure(
+                owner_id=owner_id,
+                payload=payload,
+                reason="hold_store_unavailable",
+            )
+            return RetellToolResponse(
+                ok=False,
+                error_code="appointment_hold_store_unavailable",
+                message="The appointment hold service is temporarily unavailable.",
             )
 
         self._commit_audit_best_effort(

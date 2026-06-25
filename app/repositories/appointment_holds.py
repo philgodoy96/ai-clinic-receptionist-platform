@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -16,4 +17,12 @@ class AppointmentHoldRepository(Protocol):
         raise NotImplementedError
 
     def delete(self, *, doctor_id: UUID, start_time: datetime) -> None:
+        raise NotImplementedError
+
+    def find_held_availability_slot_ids(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[tuple[UUID, datetime]],
+    ) -> set[UUID]:
         raise NotImplementedError

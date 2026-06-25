@@ -51,6 +51,7 @@ from app.services.appointment_holds import (
     AppointmentHoldNotFoundError,
     AppointmentHoldOwnershipError,
     AppointmentHoldService,
+    AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
     InvalidAppointmentHoldOwnerError,
     InvalidAppointmentHoldWindowError,
@@ -290,6 +291,25 @@ def hold_appointment_slot(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
+        ) from exc
+    except AppointmentHoldStoreUnavailableError as exc:
+        _commit_audit_best_effort(
+            db,
+            audit_logs,
+            AuditLogCreate(
+                event_type=AuditEventType.APPOINTMENT_HOLD_FAILED,
+                outcome=AuditEventOutcome.FAILURE,
+                actor_type=AuditActorType.API,
+                source=SCHEDULING_API_SOURCE,
+                actor_id=payload.owner_id,
+                availability_slot_id=payload.availability_slot_id,
+                event_metadata={"reason": "hold_store_unavailable"},
+            ),
+        )
+        raise APIError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="appointment_hold_store_unavailable",
+            message="appointment hold store is temporarily unavailable",
         ) from exc
 
     _commit_audit_best_effort(

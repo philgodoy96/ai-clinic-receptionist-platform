@@ -9,13 +9,17 @@ import pytest
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.domain.scheduling.phone import normalize_phone_digits
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
+from app.services.appointment_holds import AppointmentHoldService
+from app.services.clinic_time import ClinicTimeService
 from app.services.scheduling import (
     DoctorNotFoundError,
     InsufficientPatientIdentityError,
     InvalidAvailabilityWindowError,
     PatientLookupCriteria,
+    SchedulingAvailabilityPolicy,
     SchedulingService,
 )
+from tests.clinic_time_test_support import make_test_clinic_time_service
 
 
 def test_list_specialties_returns_active_specialties() -> None:
@@ -68,7 +72,7 @@ def test_check_availability_rejects_missing_doctor() -> None:
 
 def test_check_availability_returns_available_slots() -> None:
     doctor = create_doctor()
-    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    start_time = datetime(2026, 7, 1, 16, 0, tzinfo=UTC)
     available_slot = create_availability_slot(
         doctor_id=doctor.id,
         start_time=start_time,
@@ -574,6 +578,9 @@ def create_service(
     patients: Sequence[Patient] = (),
     availability_slots: Sequence[AvailabilitySlot] = (),
     appointments: Sequence[Appointment] = (),
+    clinic_time_service: ClinicTimeService | None = None,
+    hold_service: AppointmentHoldService | None = None,
+    availability_policy: SchedulingAvailabilityPolicy | None = None,
 ) -> SchedulingService:
     return SchedulingService(
         specialties=FakeSpecialtyRepository(specialties),
@@ -581,6 +588,13 @@ def create_service(
         patients=FakePatientRepository(patients),
         availability_slots=FakeAvailabilitySlotRepository(availability_slots),
         appointments=FakeAppointmentRepository(appointments),
+        clinic_time_service=clinic_time_service or make_test_clinic_time_service(),
+        hold_service=hold_service,
+        availability_policy=availability_policy
+        or SchedulingAvailabilityPolicy(
+            min_booking_lead_minutes=60,
+            booking_horizon_days=14,
+        ),
     )
 
 
