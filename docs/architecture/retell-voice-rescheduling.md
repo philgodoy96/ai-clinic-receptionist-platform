@@ -45,6 +45,21 @@ See also:
 
 The original appointment row is updated to `RESCHEDULED`, not deleted. A new `SCHEDULED` successor appointment is created for the target slot.
 
+## Durable state transition
+
+Rescheduling is historical-preserving, not an overwrite:
+
+```text
+old appointment -> rescheduled
+old slot -> available
+new appointment -> scheduled
+new slot -> booked
+```
+
+The transition is atomic at the `AppointmentReschedulingService` boundary. If validation or persistence fails, no partial durable state should remain.
+
+Manual validation (June 2026): Retell voice rescheduling completed the full flow — identity resolution, appointment selection, new availability check, hold on the new slot, explicit confirmation, and `reschedule_appointment` success. The old slot became available and could be reused for a new booking.
+
 ## Safety Boundary
 
 The Retell adapter does not update `Appointment` directly.
@@ -89,10 +104,9 @@ Written chat reschedule is not wired yet. See [Appointment Rescheduling Foundati
 
 ## Future Work
 
-Future implementation phases may add:
+Intentional product evolution (separate from current voice slice):
 
 - written chat reschedule flow
-- reschedule notification email if supported
-- public demo deployment configuration
-- Retell dashboard setup runbook
-- real Retell smoke test
+- patient-aware hold recovery for authenticated patient sessions
+- reschedule notification email templates where not yet deployed
+- dynamic doctor schedule rules and admin schedule management

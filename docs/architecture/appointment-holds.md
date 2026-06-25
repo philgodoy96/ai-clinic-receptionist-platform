@@ -64,6 +64,16 @@ The value is configured through:
 
     APPOINTMENT_HOLD_TTL_SECONDS
 
+### Backend-owned TTL policy
+
+Appointment holds are intentionally short-lived and backend-owned. Redis holds protect against concurrent booking attempts during an active scheduling flow, but they are not durable reservations. If a call drops or a user abandons the flow, the hold expires automatically and the slot returns to availability. The backend owns the hold TTL policy so the voice agent cannot accidentally extend scheduling capacity locks.
+
+- Retell voice tools do **not** control hold TTL. `expires_in_seconds` in hold responses reflects the configured backend value.
+- Legacy `ttl_seconds` in Retell tool arguments, if present, is ignored.
+- No hold recovery or hold renewal is implemented in the current voice scheduling flow.
+
+For deployments with authenticated patient sessions, the system could introduce patient-aware hold recovery in a future phase. That would require additional identity and ownership rules and is intentionally kept separate from the current temporary coordination model.
+
 ## Availability interaction
 
 When Redis is available, `check_availability` excludes slots that have an active hold for the same doctor and start time. Holds are checked in batch without mutating hold state from the read path.
@@ -125,9 +135,13 @@ See also: [Scheduling Application Services — Redis Degradation Policy](schedul
 
 ## Current Limitations
 
-Not yet implemented:
+Intentionally not implemented in the current voice scheduling flow:
 
+- Patient-aware hold recovery after call drop or page refresh
+- Hold renewal with a maximum absolute timeout
 - Redis dependency health check surfaced on `/health/dependencies` beyond basic connectivity
-- Hold expiration recovery messaging beyond existing chat and voice recovery flows
 
-Voice rescheduling execution and dynamic schedule generation remain separate roadmap items.
+Future work (separate from current coordination model):
+
+- Dynamic doctor schedule rules and rolling availability generation
+- Admin schedule management

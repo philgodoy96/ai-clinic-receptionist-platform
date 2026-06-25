@@ -1,13 +1,14 @@
 # Retell Master Prompt v4
 
 **Prompt version:** `retell-receptionist-v4`  
-**Status:** Active booking, appointment-lookup, and cancellation prompt  
+**Status:** Historical  
 **Supersedes:** [Retell Master Prompt v3](retell-master-prompt-v3.md)  
-**Scope:** New appointment booking, upcoming appointment lookup, and appointment cancellation after explicit confirmation (rescheduling execution deferred)  
+**Superseded by:** [Retell Master Prompt v5](retell-master-prompt-v5.md)  
+**Scope:** New appointment booking, upcoming appointment lookup, and appointment cancellation after explicit confirmation (rescheduling execution deferred in this version)  
 
 **Note:** Repository prompt history starts at v2. Earlier dashboard-only prompt iterations were not preserved as standalone repository artifacts.
 
-Use this document as the canonical system prompt for the Retell voice agent in the public scheduling demo. Copy the **[PASTE-READY RETELL MASTER PROMPT](#paste-ready-retell-master-prompt)** section into the Retell dashboard agent instructions.
+This document is preserved as the historical v4 prompt. For the active agent prompt, use **[Retell Master Prompt v5](retell-master-prompt-v5.md)**. Copy the v5 **[PASTE-READY RETELL MASTER PROMPT](retell-master-prompt-v5.md#paste-ready-retell-master-prompt)** section into the Retell dashboard agent instructions.
 
 Related runbooks:
 
@@ -19,7 +20,7 @@ Related runbooks:
 - [Retell Voice Booking Confirmation](../architecture/retell-voice-booking-confirmation.md)
 - [Retell Voice Cancellation](../architecture/retell-voice-cancellation.md)
 
-v2 and v3 remain in Git as historical documentation. Configure new agents with v4 only.
+v2, v3, and v4 remain in Git as historical documentation. Configure new agents with [v5](retell-master-prompt-v5.md) only.
 
 ---
 
@@ -28,7 +29,7 @@ v2 and v3 remain in Git as historical documentation. Configure new agents with v
 - Minor wording fixes remain within the same prompt version.
 - New production behavior enabled through the voice agent gets a new prompt version.
 - v4 enables cancellation execution.
-- A future rescheduling execution flow should be introduced as v5.
+- A future rescheduling execution flow was introduced as [v5](retell-master-prompt-v5.md).
 
 ---
 
@@ -147,7 +148,7 @@ Never call `end_call` after asking a question, while a hold is active, before id
 | Field | Value |
 |-------|--------|
 | Prompt version | `retell-receptionist-v4` |
-| Status | Active booking, appointment-lookup, and cancellation prompt |
+| Status | Historical booking, appointment-lookup, and cancellation prompt (rescheduling deferred) |
 | Channel | Retell voice (web call demo) |
 | Locale | `en-US` (default) |
 | Stored in | Git (`docs/operations/retell-master-prompt-v4.md`) |
