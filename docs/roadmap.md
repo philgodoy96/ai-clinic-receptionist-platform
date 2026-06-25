@@ -164,7 +164,9 @@ Upcoming:
 - richer response-quality evaluation dataset for receptionist phrasing
 - Prompt regression reports
 - Voice provider transfer integration
-- Voice rescheduling execution (foundation and lookup exist; full voice flow is future work)
+- Written chat reschedule flow
+- Patient-aware hold recovery for authenticated patient sessions
+- Hold renewal with maximum absolute timeout
 - Dynamic doctor schedule rules and rolling availability generation
 - Admin schedule management
 - StaffUser/RBAC
@@ -196,7 +198,8 @@ Implemented:
 - Retell voice appointment rescheduling with explicit confirmation, original appointment and hold/slot validation, and shared `AppointmentReschedulingService` delegation (see `docs/architecture/retell-voice-rescheduling.md`)
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService` and attempt/audit support (see `docs/architecture/appointment-rescheduling-foundation.md`)
 - Retell dashboard setup runbook with UX rules, patient intake, `end_call`, and ngrok guidance (`docs/operations/retell-dashboard-setup.md`)
-- Retell conversation UX pack: master prompt v3, tool descriptions, voice smoke scenarios, conversation playbook (`docs/operations/retell-master-prompt-v3.md`, `retell-tool-descriptions.md`, `retell-voice-smoke-scenarios.md`, `retell-conversation-ux-playbook.md`)
+- Retell master prompt v5 with booking, lookup, cancellation, and rescheduling execution (`docs/operations/retell-master-prompt-v5.md`)
+- Retell conversation UX pack: tool descriptions, tool configuration, voice smoke scenarios, conversation playbook (`docs/operations/retell-tool-descriptions.md`, `retell-tool-configuration.md`, `retell-voice-smoke-scenarios.md`, `retell-conversation-ux-playbook.md`)
 - Voice patient identity resolution with `resolve_patient_identity`, `confirm_patient_identity`, and `patient_resolution_id` on `book_appointment` (see `docs/architecture/voice-patient-identity-resolution.md`)
 - Voice patient intake mode (`VOICE_PATIENT_INTAKE_MODE`: `lookup_only` / `demo_auto_create`) for voice booking identity
 - Softened deterministic `suggested_response_text` templates for Retell voice tool results (see `docs/architecture/receptionist-response-generator.md`)
@@ -205,11 +208,12 @@ Implemented:
 
 Upcoming:
 
-- written chat reschedule flow
 - Tool call recording
+- Written chat reschedule flow
+- Patient-aware hold recovery for authenticated patient sessions
 - Dynamic doctor schedule rules and rolling availability generation
 - Admin schedule management
-- Cancellation and rescheduling email notifications
+- Rescheduling and cancellation email notification templates where not yet deployed
 
 ## Stage 8 — Background Email Jobs
 

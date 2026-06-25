@@ -1,11 +1,12 @@
-# Retell Booking, Lookup, and Cancellation Smoke Tests
+# Retell Booking, Lookup, Cancellation, and Rescheduling Smoke Tests
 
-Manual validation record for the Retell voice flow with booking, upcoming appointment lookup, and cancellation. Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded (`python -m scripts.seed_demo_data`) and [Retell Master Prompt v4](retell-master-prompt-v4.md) (`retell-receptionist-v4`) pasted into the agent.
+Manual validation record for the Retell voice flow with booking, upcoming appointment lookup, cancellation, and rescheduling. Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded (`python -m scripts.seed_demo_data`) and [Retell Master Prompt v5](retell-master-prompt-v5.md) (`retell-receptionist-v5`) pasted into the agent.
 
 Companion docs:
 
-- [Retell Master Prompt v4](retell-master-prompt-v4.md) — active agent prompt
-- [Retell Master Prompt v3](retell-master-prompt-v3.md) — historical booking and lookup foundation
+- [Retell Master Prompt v5](retell-master-prompt-v5.md) — active agent prompt
+- [Retell Master Prompt v4](retell-master-prompt-v4.md) — historical cancellation-only prompt (rescheduling deferred)
+- [Retell Tool Configuration](retell-tool-configuration.md) — tool parameter schemas
 - [Retell Tool Descriptions](retell-tool-descriptions.md) — tool contracts
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) — extended scenario library
 
@@ -20,8 +21,7 @@ Voice flow supports:
 - **New appointment booking** end-to-end
 - **Upcoming appointment lookup** via `list_patient_appointments` after identity resolution
 - **Appointment cancellation** via `cancel_appointment` after explicit confirmation
-
-**Rescheduling execution is not enabled.** The agent may list appointments and acknowledge selection, but must not call `reschedule_appointment`.
+- **Appointment rescheduling** via `reschedule_appointment` after explicit confirmation, identity resolution, appointment selection, new availability check, and hold on the new slot
 
 ---
 
@@ -36,7 +36,7 @@ The following behaviors were manually validated (June 2026):
 | Existing patient lookup uses name + DOB before email | **Validated** |
 | Final booking confirmation waits for caller response before `book_appointment` | **Validated** |
 | `book_appointment` succeeds with `patient_resolution_id` | **Validated** |
-| Reschedule intent lists appointments but does not reschedule | **Validated** |
+| Reschedule intent completes rescheduling after explicit confirmation | **Validated** |
 | Cancel intent completes cancellation after explicit confirmation | **Validated** |
 | Multiple upcoming appointments presented; caller asked to choose | **Validated** |
 | Appointment lookup uses `patient_resolution_id` only | **Validated** |
@@ -95,14 +95,14 @@ For each scenario: note the starting condition, caller path, expected tool seque
 
 ---
 
-### 5 — Reschedule intent (lookup only)
+### 5 — Reschedule intent (full execution)
 
 | Field | Detail |
 |-------|--------|
-| **Starting condition** | Seeded patient with two upcoming scheduled appointments |
-| **Caller path** | "I need to reschedule my appointment" → provide name + DOB → agent lists appointments → caller chooses one (e.g. 2:00 PM) |
-| **Expected tool sequence** | `resolve_patient_identity` → `exact_match` + `patient_resolution_id` → `list_patient_appointments` → no `reschedule_appointment` |
-| **Expected result** | Agent lists two upcoming appointments; caller chooses one; agent acknowledges selection; agent explains this voice flow can look up appointments but cannot reschedule yet |
+| **Starting condition** | Seeded patient with at least one upcoming scheduled appointment and an available target slot |
+| **Caller path** | "I need to reschedule my appointment" → name + DOB → agent lists appointments → caller selects appointment → agent checks new availability → caller selects new time → agent holds new time → agent summarizes move → explicit confirmation → caller says "Yes" |
+| **Expected tool sequence** | `resolve_patient_identity` → `list_patient_appointments` → `check_availability` → `hold_appointment_slot` → no `reschedule_appointment` in confirmation-question turn → `reschedule_appointment` on **next** turn with `patient_resolution_id`, `appointment_id`, `new_slot_id`, `hold_id`, `explicit_confirmation: true`, `confirmation_text` → success |
+| **Expected result** | Old appointment `rescheduled`; old slot `available`; new appointment `scheduled`; new slot `booked`; agent confirms only after tool success; old slot may be reused for a new booking |
 | **Observed status** | Validated |
 
 ---
@@ -131,6 +131,38 @@ For each scenario: note the starting condition, caller path, expected tool seque
 
 ---
 
+## Voice Rescheduling Smoke Tests
+
+### Validated scenario — successful rescheduling
+
+| Step | Detail |
+|------|--------|
+| Caller intent | Requested appointment rescheduling |
+| Identity | Agent collected name and date of birth; `resolve_patient_identity` returned a valid `patient_resolution_id` |
+| Lookup | `list_patient_appointments` returned upcoming appointments |
+| Selection | Caller selected the old appointment to move |
+| New time | Agent called `check_availability` for the requested new time |
+| Hold | Agent called `hold_appointment_slot` for the new slot (`new_slot_id`, `hold_id`) |
+| Confirmation | Agent asked explicit reschedule confirmation; caller confirmed on the next turn |
+| Execution | `reschedule_appointment` succeeded with `patient_resolution_id`, `appointment_id`, `new_slot_id`, `hold_id`, `explicit_confirmation: true`, and `confirmation_text` |
+| Database | Old appointment `rescheduled`; old slot `available`; new appointment `scheduled`; new slot `booked` |
+| Reuse | Old slot could be booked again for a new appointment after rescheduling |
+| Spoken result | Agent confirmed rescheduling only after tool success |
+
+### Manual checklist — rescheduling validation
+
+| # | Scenario | Expected behavior |
+|---|----------|-------------------|
+| R1 | Successful reschedule | Full flow above; historical-preserving state transition |
+| R2 | Missing final confirmation | Agent asks reschedule confirmation but caller does not confirm → no `reschedule_appointment` |
+| R3 | Expired or missing hold | `reschedule_appointment` fails with hold-expired style error; original appointment remains `scheduled`; new slot remains `available` |
+| R4 | Appointment not owned by patient | Safe failure; agent does not claim reschedule succeeded |
+| R5 | Old appointment already cancelled or rescheduled | `appointment_not_reschedulable`; no duplicate successor appointment |
+| R6 | New slot no longer available | Safe failure; original appointment and slot unchanged |
+| R7 | Duplicate Retell tool call | Same `tool_call_id` retry does not create duplicate appointments (`duplicate: true`) |
+
+---
+
 ## Voice Cancellation Smoke Tests
 
 ### Validated scenario — successful cancellation
@@ -156,7 +188,23 @@ For each scenario: note the starting condition, caller path, expected tool seque
 | C4 | Ownership mismatch | `cancel_appointment` returns `appointment_not_owned_by_patient`; agent does not claim cancellation succeeded |
 | C5 | Already cancelled appointment | `cancel_appointment` returns `already_cancelled: true`; agent explains appointment was already cancelled |
 | C6 | Post-cancellation lookup | After successful cancellation, `list_patient_appointments` no longer returns the cancelled appointment |
-| C7 | Reschedule request guardrail | Reschedule intent lists appointments but never calls `reschedule_appointment` |
+| C7 | Reschedule after cancellation | After cancellation, reschedule intent should list remaining appointments only |
+
+---
+
+## Appointment Hold TTL Smoke Tests
+
+Holds are backend-owned and short-lived (default **300** seconds via `APPOINTMENT_HOLD_TTL_SECONDS`).
+
+| # | Scenario | Expected behavior |
+|---|----------|-------------------|
+| H1 | Hold creation | `hold_appointment_slot` returns `expires_in_seconds` equal to backend-configured TTL |
+| H2 | Retell cannot choose TTL | Legacy `ttl_seconds` in tool args, if present, is ignored; response TTL matches backend config |
+| H3 | Hold blocks availability | Held slot excluded from `check_availability` while active |
+| H4 | Expired hold | After expiry or call drop, slot returns to availability; booking/reschedule with expired hold fails safely |
+| H5 | No hold renewal | Unrelated conversation turns (for example `check_availability`) do not extend hold TTL |
+
+Appointment holds are intentionally short-lived coordination records, not durable reservations. No hold recovery is implemented in this slice.
 
 ---
 
@@ -228,20 +276,19 @@ SCHEDULING_BOOKING_HORIZON_DAYS=14
 ## Known limitations
 
 - **Appointment lookup** is supported via `list_patient_appointments` after patient identity resolution.
-- **Cancellation execution** is supported via `cancel_appointment` after explicit confirmation, `patient_resolution_id`, and `appointment_id` from prior tool results.
-- **Rescheduling execution** is follow-up work — do not call `reschedule_appointment` or claim an appointment was rescheduled.
-- **Scheduling availability hardening** is implemented: minimum lead time, booking horizon, durable status filtering, and Redis-held slot exclusion when Redis is available. Dynamic schedule rules and rolling availability generation remain future work.
-- **Cancellation email notifications** are not implemented yet.
-- **Redis is required** for hold creation and booking; availability reads may degrade gracefully when Redis hold filtering is unavailable.
-- These docs reflect the **tested booking, lookup, cancellation, and availability policy flow**, not the full future receptionist experience.
-
----
+- **Cancellation execution** is supported via `cancel_appointment` after explicit confirmation.
+- **Rescheduling execution** is supported via `reschedule_appointment` after explicit confirmation, hold on the new slot, and validated references from prior tool results.
+- **Hold recovery after call drop** is not implemented; holds expire automatically by backend TTL policy.
+- **Scheduling availability hardening** is implemented: minimum lead time, booking horizon, durable status filtering, and Redis-held slot exclusion when Redis is available.
+- **Dynamic schedule rules** and rolling availability generation remain future work.
+- **Rescheduling email notifications** may not be implemented in all deployments.
+- **Redis is required** for hold creation, booking, and rescheduling; availability reads may degrade gracefully when Redis hold filtering is unavailable.
 
 ## Follow-up roadmap
 
-1. **Voice rescheduling flow** — selected appointment, new availability lookup, hold new time, final reschedule confirmation, safe reschedule execution.
-2. **Dynamic schedules and rolling availability** — doctor-specific schedule rules, admin schedule management, generated availability beyond seeded demo slots.
-3. **Cancellation email notifications** — optional patient confirmation email after successful cancellation.
+1. **Patient-aware hold recovery** for authenticated patient sessions (separate from current voice flow).
+2. **Dynamic schedules and rolling availability** — doctor-specific schedule rules, admin schedule management.
+3. **Rescheduling and cancellation notification templates** where not yet deployed.
 
 ---
 
@@ -249,14 +296,12 @@ SCHEDULING_BOOKING_HORIZON_DAYS=14
 
 After prompt or backend changes:
 
-- [ ] Paste latest [v4 paste-ready prompt](retell-master-prompt-v4.md#paste-ready-retell-master-prompt) into Retell dashboard.
-- [ ] Register `list_patient_appointments` in Retell (ten tools total).
-- [ ] Re-run scenarios 1–7 and cancellation checklist C1–C7 above; update **Observed status** if behavior changed.
+- [ ] Paste latest [v5 paste-ready prompt](retell-master-prompt-v5.md#paste-ready-retell-master-prompt) into Retell dashboard.
+- [ ] Register `list_patient_appointments` and `reschedule_appointment` in Retell (ten tools total).
+- [ ] Re-run scenarios 1–7, rescheduling checklist R1–R7, and cancellation checklist C1–C7 above; update **Observed status** if behavior changed.
 - [ ] Review transcript for banned caller-facing terms (slot, UUID, patient not found, hold reference).
-- [ ] Confirm `book_appointment` outcomes show `status: succeeded` only before spoken booking confirmation.
-- [ ] Confirm `cancel_appointment` outcomes show `status: succeeded` only before spoken cancellation confirmation.
-- [ ] Confirm reschedule intents never call `reschedule_appointment`.
+- [ ] Confirm `book_appointment`, `cancel_appointment`, and `reschedule_appointment` outcomes show `status: succeeded` only before spoken confirmation.
 - [ ] Run [Scheduling Availability Hardening Smoke Tests](#scheduling-availability-hardening-smoke-tests) after Redis or scheduling policy changes.
-- [ ] Log prompt version `retell-receptionist-v4` in deployment notes.
+- [ ] Log prompt version `retell-receptionist-v5` in deployment notes.
 
 See also: [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md) for extended IR and recovery cases.

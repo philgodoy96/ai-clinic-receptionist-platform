@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -101,18 +101,26 @@ _BLOCKED_RETELL_DASHBOARD_MARKERS = (
 
 
 def _reschedule_request(
+    context: dict[str, Any],
     *,
+    appointment_id: str | None = None,
     original_appointment_id: str | None = None,
+    patient_resolution_id: str | None = None,
     hold_id: str | None = None,
     new_slot_id: str | None = None,
     explicit_confirmation: bool = True,
+    confirmation_text: str = "Yes, please reschedule it.",
     tool_call_id: str = TOOL_CALL_ID,
 ) -> RetellToolCallRequest:
     return reschedule_tool_request(
-        original_appointment_id=original_appointment_id,
-        hold_id=hold_id,
-        new_slot_id=new_slot_id,
+        appointment_id=appointment_id
+        or original_appointment_id
+        or str(context["original_appointment"].id),
+        patient_resolution_id=patient_resolution_id or context["patient_resolution_id"],
+        hold_id=hold_id or str(context["hold"].hold_id),
+        new_slot_id=new_slot_id or str(context["new_slot"].id),
         explicit_confirmation=explicit_confirmation,
+        confirmation_text=confirmation_text,
         tool_call_id=tool_call_id,
     )
 
@@ -152,13 +160,13 @@ def test_schema_valid_args_parse() -> None:
 
     arguments = RescheduleAppointmentToolArguments.model_validate(
         valid_reschedule_arguments(
-            original_appointment_id=appointment_id,
+            appointment_id=appointment_id,
             hold_id=hold_id,
-            new_slot_id=None,
+            new_slot_id=str(uuid4()),
         ),
     )
 
-    assert str(arguments.original_appointment_id) == appointment_id
+    assert str(arguments.appointment_id) == appointment_id
     assert arguments.hold_id == hold_id
     assert arguments.explicit_confirmation is True
     assert is_reschedule_appointment_executable(arguments) is True
@@ -205,12 +213,26 @@ def test_schema_missing_confirmation_false_is_not_executable() -> None:
     assert is_reschedule_appointment_executable(arguments) is False
 
 
-def test_schema_missing_hold_and_new_slot_rejected() -> None:
-    with pytest.raises(ValidationError, match="either hold_id or new_slot_id is required"):
+def test_schema_missing_hold_rejected() -> None:
+    with pytest.raises(ValidationError, match="hold_id is required"):
         RescheduleAppointmentToolArguments.model_validate(
             {
-                "original_appointment_id": str(uuid4()),
+                "appointment_id": str(uuid4()),
+                "new_slot_id": str(uuid4()),
                 "explicit_confirmation": True,
+                "confirmation_text": "Yes, reschedule it.",
+            },
+        )
+
+
+def test_schema_missing_new_slot_rejected() -> None:
+    with pytest.raises(ValidationError, match="new_slot_id is required"):
+        RescheduleAppointmentToolArguments.model_validate(
+            {
+                "appointment_id": str(uuid4()),
+                "hold_id": str(uuid4()),
+                "explicit_confirmation": True,
+                "confirmation_text": "Yes, reschedule it.",
             },
         )
 
@@ -309,14 +331,10 @@ def test_route_retell_disabled_rejects_reschedule() -> None:
 def test_adapter_valid_verified_reschedule_succeeds() -> None:
     context = create_retell_rescheduling_tool_context()
     original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["hold"]
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=str(original_appointment.id),
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
-        ),
+        _reschedule_request(context),
     )
 
     assert response.status == "succeeded"
@@ -346,7 +364,8 @@ def test_route_verified_reschedule_returns_provider_safe_response() -> None:
                 "tool_call_id": TOOL_CALL_ID,
                 "tool_name": "reschedule_appointment",
                 "arguments": reschedule_arguments(
-                    original_appointment_id=str(original_appointment.id),
+                    appointment_id=str(original_appointment.id),
+                    patient_resolution_id=context["patient_resolution_id"],
                     hold_id=str(hold.hold_id),
                     new_slot_id=str(context["new_slot"].id),
                 ),
@@ -366,21 +385,21 @@ def test_route_verified_reschedule_returns_provider_safe_response() -> None:
 
 def test_adapter_missing_appointment_reference_rejected() -> None:
     context = create_retell_rescheduling_tool_context()
-    conversation = context["conversation"]
-    hold = context["hold"]
-    conversation.appointment_id = None
-    conversation.conversation_metadata = {
-        "voice_context": {
-            "hold_id": str(hold.hold_id),
-            "availability_slot_id": str(context["new_slot"].id),
-        },
-    }
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=None,
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": PROVIDER_CALL_ID,
+                "tool_call_id": "tool-call-reschedule-missing-appointment",
+                "tool_name": "reschedule_appointment",
+                "arguments": {
+                    "patient_resolution_id": context["patient_resolution_id"],
+                    "hold_id": str(context["hold"].hold_id),
+                    "new_slot_id": str(context["new_slot"].id),
+                    "explicit_confirmation": True,
+                    "confirmation_text": "Yes, reschedule it.",
+                },
+            },
         ),
     )
 
@@ -415,32 +434,23 @@ def test_adapter_missing_hold_and_slot_rejected() -> None:
 
 def test_adapter_missing_confirmation_rejected() -> None:
     context = create_retell_rescheduling_tool_context()
-    original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["original_appointment"]
+    context["hold"]
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=str(original_appointment.id),
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
-            explicit_confirmation=False,
-        ),
+        _reschedule_request(context, explicit_confirmation=False),
     )
 
     assert response.status == "failed"
-    assert response.error_code == "reschedule_confirmation_required"
+    assert response.error_code == "missing_explicit_confirmation"
     assert context["tracking_rescheduling"].reschedule_calls == []
 
 
 def test_adapter_duplicate_provider_callback_is_idempotent() -> None:
     context = create_retell_rescheduling_tool_context()
-    original_appointment = context["original_appointment"]
-    hold = context["hold"]
-    request = _reschedule_request(
-        original_appointment_id=str(original_appointment.id),
-        hold_id=str(hold.hold_id),
-        new_slot_id=str(context["new_slot"].id),
-    )
+    context["original_appointment"]
+    context["hold"]
+    request = _reschedule_request(context)
 
     first = context["adapter"].execute(request)
     second = context["adapter"].execute(request)
@@ -477,14 +487,10 @@ def test_adapter_unknown_tool_rejected() -> None:
 def test_service_called_exactly_once_for_valid_non_duplicate_request() -> None:
     context = create_retell_rescheduling_tool_context()
     original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["hold"]
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=str(original_appointment.id),
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
-        ),
+        _reschedule_request(context),
     )
 
     assert response.status == "succeeded"
@@ -517,16 +523,12 @@ def test_adapter_does_not_update_appointment_directly() -> None:
 def test_metadata_latest_appointment_summary_updated() -> None:
     context = create_retell_rescheduling_tool_context()
     original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["hold"]
     conversation = context["conversation"]
     conversation.conversation_metadata["locale"] = "en-US"
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=str(original_appointment.id),
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
-        ),
+        _reschedule_request(context),
     )
 
     stored = context["conversation_repository"].get_by_id(conversation.id)
@@ -544,15 +546,11 @@ def test_metadata_latest_appointment_summary_updated() -> None:
 
 def test_metadata_active_hold_cleared_on_success() -> None:
     context = create_retell_rescheduling_tool_context()
-    original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["original_appointment"]
+    context["hold"]
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=str(original_appointment.id),
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
-        ),
+        _reschedule_request(context),
     )
 
     assert response.status == "succeeded"
@@ -562,14 +560,10 @@ def test_metadata_active_hold_cleared_on_success() -> None:
 
 def test_metadata_duplicate_callback_does_not_corrupt_metadata() -> None:
     context = create_retell_rescheduling_tool_context()
-    original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["original_appointment"]
+    context["hold"]
     conversation = context["conversation"]
-    request = _reschedule_request(
-        original_appointment_id=str(original_appointment.id),
-        hold_id=str(hold.hold_id),
-        new_slot_id=str(context["new_slot"].id),
-    )
+    request = _reschedule_request(context)
 
     context["adapter"].execute(request)
     stored_after_first = context["conversation_repository"].get_by_id(conversation.id)
@@ -595,15 +589,10 @@ def test_metadata_duplicate_callback_does_not_corrupt_metadata() -> None:
 def test_debug_context_returns_safe_reschedule_summary() -> None:
     context = create_retell_rescheduling_tool_context()
     original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["hold"]
 
     response = context["adapter"].execute(
-        _reschedule_request(
-            original_appointment_id=str(original_appointment.id),
-            hold_id=str(hold.hold_id),
-            new_slot_id=str(context["new_slot"].id),
-            tool_call_id="tool-call-reschedule-debug",
-        ),
+        _reschedule_request(context, tool_call_id="tool-call-reschedule-debug"),
     )
 
     debug_context = context["bridge"].get_debug_context_for_voice_call(context["voice_call"].id)
@@ -715,17 +704,11 @@ def test_regression_chat_booking_still_works() -> None:
 
 def test_regression_reschedule_does_not_trigger_llm() -> None:
     context = create_retell_rescheduling_tool_context()
-    original_appointment = context["original_appointment"]
-    hold = context["hold"]
+    context["original_appointment"]
+    context["hold"]
 
     with patch("app.ai.provider_factory.build_llm_provider") as llm_factory_mock:
-        response = context["adapter"].execute(
-            _reschedule_request(
-                original_appointment_id=str(original_appointment.id),
-                hold_id=str(hold.hold_id),
-                new_slot_id=str(context["new_slot"].id),
-            ),
-        )
+        response = context["adapter"].execute(_reschedule_request(context))
 
     assert response.status == "succeeded"
     llm_factory_mock.assert_not_called()
