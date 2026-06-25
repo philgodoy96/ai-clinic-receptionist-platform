@@ -92,7 +92,10 @@ def failure_category_for_reason(reason: LLMFailureReason) -> LLMFailureCategory:
         return LLMFailureCategory.NONE
     if reason == LLMFailureReason.LOW_CONFIDENCE:
         return LLMFailureCategory.NON_RETRYABLE
-    if reason == LLMFailureReason.JSON_PARSE_FAILED:
+    if reason in {
+        LLMFailureReason.JSON_PARSE_FAILED,
+        LLMFailureReason.SCHEMA_VALIDATION_FAILED,
+    }:
         return LLMFailureCategory.REPAIRABLE
     if reason == LLMFailureReason.FALLBACK_EXHAUSTED:
         return LLMFailureCategory.FALLBACK_EXHAUSTED
@@ -122,6 +125,14 @@ def failure_reason_for_typed_provider_error(error: BaseException) -> LLMFailureR
     return None
 
 
+def is_structural_output_failure(reason: LLMFailureReason) -> bool:
+    return reason in {
+        LLMFailureReason.JSON_PARSE_FAILED,
+        LLMFailureReason.JSON_REPAIR_FAILED,
+        LLMFailureReason.SCHEMA_VALIDATION_FAILED,
+    }
+
+
 def is_primary_provider_retryable(reason: LLMFailureReason) -> bool:
     if reason in {
         LLMFailureReason.NONE,
@@ -130,7 +141,6 @@ def is_primary_provider_retryable(reason: LLMFailureReason) -> bool:
         LLMFailureReason.HUMAN_ESCALATION_REQUEST,
         LLMFailureReason.MEDICAL_EMERGENCY,
         LLMFailureReason.POLICY_VIOLATION,
-        LLMFailureReason.SCHEMA_VALIDATION_FAILED,
         LLMFailureReason.FALLBACK_PROVIDER_UNAVAILABLE,
         LLMFailureReason.FALLBACK_EXHAUSTED,
     }:
