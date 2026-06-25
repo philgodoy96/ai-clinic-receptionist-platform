@@ -210,7 +210,10 @@ Optional seed for demo scheduling data:
 
 ```bash
 python -m scripts.seed_demo_data
+python -m app.scripts.generate_demo_availability
 ```
+
+Seed creates the fictional clinic roster and a short rolling slot window. The generator extends availability through `SCHEDULING_BOOKING_HORIZON_DAYS` (default 14) and is idempotent. See [Demo Availability Generation](demo-availability-generation.md).
 
 Do not run migrations automatically on API startup.
 

@@ -30,6 +30,14 @@ Default credentials:
 
 Seeds specialties, doctors, patients, and availability slots. Availability is generated in **clinic local time** (`CLINIC_TIMEZONE`, default `America/New_York`) at 10:00, 11:00, 14:00, and 15:00 on seven rolling business days (today when future slots remain, otherwise starting tomorrow). Timestamps are stored in UTC per the scheduling schema. Re-running the script is idempotent.
 
+## Refresh Demo Availability Through Booking Horizon
+
+After seeding, extend future slots through the configured booking horizon (`SCHEDULING_BOOKING_HORIZON_DAYS`, default 14):
+
+    python -m app.scripts.generate_demo_availability
+
+Safe to run before local or public demo smoke tests. Re-running is idempotent (`slots_created=0` on subsequent runs when slots already exist). See [Demo Availability Generation](demo-availability-generation.md).
+
 ## Run API
 
 Local development with auto-reload:
