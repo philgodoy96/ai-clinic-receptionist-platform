@@ -8,6 +8,8 @@ Provider output is untrusted and must be validated before it can influence chat 
 
 This implementation phase adds an offline evaluation dataset for structured receptionist analysis quality.
 
+For multi-turn chat scheduling behavior, see [Chat Scheduling Evaluation Harness](chat-scheduling-evaluation-harness.md). That harness exercises full `ChatReceptionistService` scenarios across multiple user messages. This document covers single-turn structured analysis evaluation only.
+
 ## Design Principle
 
 Evaluation checks model-analysis quality.
@@ -106,4 +108,4 @@ Future implementation phases may add:
 - prompt regression reports
 - tenant-level quality dashboards
 
-See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Chat Scheduling Evaluation Harness](chat-scheduling-evaluation-harness.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).

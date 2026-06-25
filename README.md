@@ -168,6 +168,7 @@ Architecture docs:
 - `docs/architecture/chat-llm-reliability.md`
 - `docs/architecture/receptionist-response-generator.md`
 - `docs/architecture/llm-evaluation-dataset.md`
+- `docs/architecture/chat-scheduling-evaluation-harness.md`
 - `docs/architecture/provider-run-evaluation-mode.md`
 - `docs/architecture/public-demo-guardrails.md`
 - `docs/architecture/email-dispatch-reliability.md`
