@@ -39,6 +39,7 @@ _SUPPORTED_FIXTURES = frozenset(
 
 _EMILY_JULY_SLOT_1_ID = UUID("11111111-1111-4111-8111-111111111101")
 _EMILY_JULY_SLOT_2_ID = UUID("11111111-1111-4111-8111-111111111102")
+_EVAL_JANE_DOE_PATIENT_ID = UUID("22222222-2222-4222-8222-222222222201")
 _EVAL_CLINIC_NOW_UTC = datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
 
 
@@ -428,6 +429,15 @@ def _create_eval_scheduling_service() -> SchedulingService:
             is_active=True,
         ),
     ]
+    eval_patients = [
+        Patient(
+            id=_EVAL_JANE_DOE_PATIENT_ID,
+            full_name="Jane Doe",
+            date_of_birth=date(1990, 5, 15),
+            phone_number="+1 555-123-4567",
+            email="jane.doe@example.com",
+        ),
+    ]
     availability_slots = [
         AvailabilitySlot(
             id=_EMILY_JULY_SLOT_1_ID,
@@ -448,7 +458,7 @@ def _create_eval_scheduling_service() -> SchedulingService:
     return SchedulingService(
         specialties=_EvalSpecialtyRepository([dermatology, cardiology, primary_care]),
         doctors=_EvalDoctorRepository(doctors),
-        patients=_EvalPatientRepository(()),
+        patients=_EvalPatientRepository(eval_patients),
         availability_slots=_EvalAvailabilitySlotRepository(availability_slots),
         appointments=_EvalAppointmentRepository(()),
         clinic_time_service=_create_eval_clinic_time_service(),
