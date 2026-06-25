@@ -280,5 +280,5 @@ def test_llm_primary_provider_groq_creates_groq_for_receptionist_service(
 def test_invalid_llm_provider_name_raises_validation_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Unsupported LLM provider: openai"):
         load_settings(monkeypatch, LLM_PROVIDER="openai")

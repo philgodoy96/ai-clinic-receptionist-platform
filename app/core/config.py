@@ -165,7 +165,6 @@ class Settings(BaseSettings):
     bedrock_max_retries: int = Field(default=0, alias="BEDROCK_MAX_RETRIES")
     bedrock_temperature: float = Field(default=0.0, alias="BEDROCK_TEMPERATURE")
     bedrock_max_tokens: int = Field(default=800, alias="BEDROCK_MAX_TOKENS")
-    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY", repr=False)
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY", repr=False)
     groq_model: str = Field(default="", alias="GROQ_MODEL")
     groq_base_url: str = Field(
@@ -288,6 +287,31 @@ class Settings(BaseSettings):
     @property
     def is_production_like(self) -> bool:
         return self.app_env.strip().lower() not in _NON_PRODUCTION_ENVS
+
+    @field_validator(
+        "llm_provider",
+        "llm_primary_provider",
+        "llm_fallback_provider",
+        "receptionist_response_llm_provider",
+        mode="before",
+    )
+    @classmethod
+    def validate_llm_provider_selection(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            normalized = stripped.lower()
+            supported = ", ".join(member.value for member in LLMProviderName)
+            if normalized not in {member.value for member in LLMProviderName}:
+                raise ValueError(
+                    f"Unsupported LLM provider: {normalized}. "
+                    f"Supported providers: {supported}",
+                )
+            return normalized
+        return value
 
     @field_validator("clinic_timezone")
     @classmethod
