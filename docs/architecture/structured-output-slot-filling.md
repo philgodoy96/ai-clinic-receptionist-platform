@@ -101,10 +101,14 @@ If LLM analysis is fallback, low-confidence, unsafe, or invalid, no fields are a
 
 The deterministic chat flow continues.
 
+When model output fails structurally, `LLMReceptionistAnalysisService` retries internally with a repair prompt before deterministic fallback analysis is used. Safety violations and low-confidence valid outputs are not blindly retried as model failures.
+
+See also: [Chat LLM Interpretation Reliability](chat-llm-reliability.md).
+
 ## Future Work
 
 Future implementation phases may add:
 
 - human escalation records
 
-See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md).
+See also: [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md), [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [Chat LLM Interpretation Reliability](chat-llm-reliability.md).

@@ -165,6 +165,7 @@ Architecture docs:
 - `docs/architecture/real-llm-provider-adapter.md`
 - `docs/architecture/llm-provider-foundation.md`
 - `docs/architecture/llm-reliability-orchestration.md`
+- `docs/architecture/chat-llm-reliability.md`
 - `docs/architecture/receptionist-response-generator.md`
 - `docs/architecture/llm-evaluation-dataset.md`
 - `docs/architecture/provider-run-evaluation-mode.md`

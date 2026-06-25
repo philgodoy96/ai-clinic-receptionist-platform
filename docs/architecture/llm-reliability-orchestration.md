@@ -42,6 +42,12 @@ Primary provider attempts are bounded by:
 LLM_MAX_PRIMARY_ATTEMPTS=2
 ```
 
+The default is one initial attempt plus one retry.
+
+After a **structural output failure** (`JSON_PARSE_FAILED`, `JSON_REPAIR_FAILED`, or `SCHEMA_VALIDATION_FAILED`), the retry rebuilds the same analysis request with an additional strict repair instruction. Provider exception, timeout, and rate-limit retries do not add the repair prompt.
+
+`used_repair` metadata refers to **local JSON extraction repair** in the structured output parser, not repair-prompt usage.
+
 The system does not retry for:
 
 - medical emergency
@@ -58,7 +64,7 @@ Fallback provider support is optional and disabled by default:
 LLM_FALLBACK_ENABLED=false
 ```
 
-When enabled, fallback provider is only used after fallback-eligible retryable failures.
+When enabled, fallback provider is only used after fallback-eligible retryable failures. Structural failures such as `JSON_PARSE_FAILED` and `SCHEMA_VALIDATION_FAILED` are retryable on the primary provider but are not fallback-provider eligible under the current taxonomy.
 
 Example public demo configuration with Groq primary:
 
@@ -123,4 +129,4 @@ Future implementation phases may add:
 - per-provider cost budgets
 - prompt regression reports
 
-See also: [Groq LLM Provider](groq-llm-provider.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Provider Foundation](llm-provider-foundation.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [Receptionist Response Generator](receptionist-response-generator.md).
+See also: [Groq LLM Provider](groq-llm-provider.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Provider Foundation](llm-provider-foundation.md), [Chat LLM Interpretation Reliability](chat-llm-reliability.md), [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Prompt Versioning and LLM Traceability](prompt-versioning.md), [Receptionist Response Generator](receptionist-response-generator.md).

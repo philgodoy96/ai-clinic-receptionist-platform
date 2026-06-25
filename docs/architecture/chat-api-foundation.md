@@ -143,7 +143,11 @@ The deterministic flow remains the source of behavior:
 - Holds, bookings, identity collection, and confirmation gates are unchanged.
 - LLM analysis does not create holds, create bookings, or bypass identity or confirmation requirements.
 
-Shadow analysis uses `FakeLLMProvider` by default. A real provider such as Bedrock may be selected through configuration, but the same reliability and safety boundaries apply.
+When useful scheduling context exists in `chat_context`, analysis requests include a **sanitized context snapshot** so the model can interpret the latest user message without receiving raw PII, IDs, or full transcript history. The snapshot does not authorize durable actions.
+
+When model output fails structurally, the analysis service retries internally with a repair prompt before falling back to deterministic analysis. User-facing chat behavior remains deterministic-first.
+
+Shadow analysis uses `FakeLLMProvider` by default. A real provider such as Groq or Bedrock may be selected through configuration, but the same reliability and safety boundaries apply.
 
 Results are persisted on the assistant message as internal `llm_shadow_analysis` metadata, including classified intent, confidence, urgency, safety flags, reliability signals, and token/cost fields.
 
@@ -154,6 +158,8 @@ Shadow metadata intentionally excludes:
 - extracted patient identity
 
 This enables observability and comparison between deterministic behavior and LLM classification without changing successful API response semantics.
+
+See also: [Chat LLM Interpretation Reliability](chat-llm-reliability.md).
 
 ## LLM-Assisted Slot Filling Boundary
 
@@ -295,8 +301,12 @@ Planned future implementation phases include:
 - Real provider adapter
 - Clinic timezone settings
 - Voice provider transfer integration
-- LLM reliability and fallbacks
 - Cost tracking aggregation
 - Conversation state machine
 - Hold expiration handling in chat
 - Retell webhook ingestion
+- Chat message/client idempotency
+- Durable action idempotency for duplicate chat POSTs
+- Dedicated LLM run persistence table
+- LLM scheduling evaluation harness
+- Written chat cancellation and rescheduling
