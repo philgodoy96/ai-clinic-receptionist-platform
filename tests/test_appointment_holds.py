@@ -238,6 +238,30 @@ def test_redis_repository_creates_reads_and_deletes_hold() -> None:
     assert repository.get(doctor_id=doctor_id, start_time=start_time) is None
 
 
+def test_redis_repository_sets_ttl_on_slot_and_hold_id_keys() -> None:
+    redis_client = FakeRedisClient()
+    repository = RedisAppointmentHoldRepository(redis_client)
+    doctor_id = uuid4()
+    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    hold = AppointmentHold.create(
+        availability_slot_id=uuid4(),
+        doctor_id=doctor_id,
+        start_time=start_time,
+        end_time=start_time + timedelta(minutes=30),
+        owner_id="call-123",
+    )
+
+    repository.create(hold, ttl_seconds=300)
+
+    slot_key = f"appointment_hold:{doctor_id}:{start_time.astimezone(UTC).isoformat()}"
+    hold_id_key = f"appointment_hold:id:{hold.hold_id}"
+
+    assert redis_client.set_calls == [
+        (slot_key, 300),
+        (hold_id_key, 300),
+    ]
+
+
 class FakeAppointmentHoldRepository:
     def __init__(self) -> None:
         self.holds: dict[tuple[UUID, datetime], AppointmentHold] = {}
@@ -281,8 +305,11 @@ class FakeAppointmentHoldRepository:
 class FakeRedisClient:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.set_calls: list[tuple[str, int]] = []
 
     def set(self, name: str, value: str, ex: int, nx: bool = False) -> bool:
+        self.set_calls.append((name, ex))
+
         if nx and name in self.values:
             return False
 
