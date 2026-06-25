@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.ai.llm_provider import LLMProviderError, provider_failure_reason
 from app.ai.llm_reliability import (
     LLMFailureCategory,
@@ -8,6 +10,7 @@ from app.ai.llm_reliability import (
     is_fallback_eligible,
     is_fallback_provider_eligible,
     is_non_retryable_failure,
+    is_primary_provider_retryable,
     is_retryable_failure,
 )
 from app.ai.structured_output import StructuredOutputParseError
@@ -108,14 +111,15 @@ def test_json_repair_failure_is_retryable_and_fallback_eligible() -> None:
     assert failure_category_for_reason(reason) == LLMFailureCategory.RETRYABLE
 
 
-def test_schema_validation_failure_is_non_retryable_and_fallback_eligible() -> None:
+def test_schema_validation_failure_is_repairable_for_primary_retry() -> None:
     reason = LLMFailureReason.SCHEMA_VALIDATION_FAILED
 
     assert is_retryable_failure(reason) is False
     assert is_non_retryable_failure(reason) is True
     assert is_fallback_eligible(reason) is True
     assert is_fallback_provider_eligible(reason) is False
-    assert failure_category_for_reason(reason) == LLMFailureCategory.NON_RETRYABLE
+    assert is_primary_provider_retryable(reason) is True
+    assert failure_category_for_reason(reason) == LLMFailureCategory.REPAIRABLE
 
 
 def test_fallback_provider_eligible_for_retryable_provider_exception() -> None:
@@ -174,6 +178,31 @@ def test_analysis_service_records_json_repair_failure_reason() -> None:
 
     assert result.failure_reason == LLMFailureReason.JSON_REPAIR_FAILED
     assert result.failure_category == LLMFailureCategory.RETRYABLE
+    assert_result_reliability_metadata(result)
+
+
+def test_analysis_service_records_schema_validation_failure_category() -> None:
+    invalid_payload = json.dumps(
+        {
+            "intent": "made_up_intent",
+            "confidence": 0.9,
+            "urgency": "normal",
+        },
+    )
+    service = LLMReceptionistAnalysisService(
+        provider=StaticContentLLMProvider(invalid_payload),
+    )
+
+    result = service.analyze_message(
+        ReceptionistAnalysisRequest(
+            user_message="Hello",
+            conversation_context={},
+        ),
+    )
+
+    assert result.failure_reason == LLMFailureReason.SCHEMA_VALIDATION_FAILED
+    assert result.failure_category == LLMFailureCategory.REPAIRABLE
+    assert result.primary_attempt_count == 2
     assert_result_reliability_metadata(result)
 
 
