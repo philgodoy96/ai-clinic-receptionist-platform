@@ -62,6 +62,19 @@ See also:
 - The previous availability slot may be released when the original appointment referenced one.
 - Duplicate requests with the same idempotency key return the prior result without duplicating appointments, audit side effects, or confirmation email jobs.
 
+### Atomic transition guarantee
+
+The service performs the full transition in one logical operation:
+
+```text
+old appointment -> rescheduled
+old slot -> available
+new appointment -> scheduled
+new slot -> booked
+```
+
+If any validation step fails, the service does not leave partial reschedule state. Channel adapters must not claim success before the service returns a successful result.
+
 ## Safety Boundary
 
 Channel adapters must call `AppointmentReschedulingService`.
@@ -98,13 +111,12 @@ They resolve channel context, build `AppointmentReschedulingRequest`, and delega
 
 Voice and chat may update `voice_context` or `chat_context` only through the existing safe conversation metadata merge rules after the service succeeds.
 
-The Retell voice channel is wired through `reschedule_appointment` and delegates to `AppointmentReschedulingService`. See [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md).
+The Retell voice channel is wired through `reschedule_appointment` and delegates to `AppointmentReschedulingService`. Manual validation confirmed the full voice rescheduling flow. See [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md) and [Retell Master Prompt v5](../operations/retell-master-prompt-v5.md).
 
 ## Future Work
 
-Future implementation phases may add:
+Intentional product evolution:
 
 - written chat reschedule flow
-- reschedule notification email if supported
-- public demo deployment configuration
-- Retell dashboard setup runbook
+- patient-aware hold recovery for authenticated patient sessions
+- reschedule notification email templates where not yet deployed

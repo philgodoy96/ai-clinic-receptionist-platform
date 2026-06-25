@@ -1,14 +1,15 @@
 # Retell Dashboard Tool Descriptions
 
-Canonical descriptions for the ten Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v4](retell-master-prompt-v4.md) (paste-ready block, `retell-receptionist-v4`).
+Canonical descriptions for the ten Retell custom functions in the public scheduling demo. Paste each **Dashboard description** into the Retell console. Pair the agent with [Retell Master Prompt v5](retell-master-prompt-v5.md) (paste-ready block, `retell-receptionist-v5`).
 
-**Voice slice scope:** This runbook covers **new appointment booking**, **upcoming appointment lookup** (`list_patient_appointments`) after identity resolution, and **appointment cancellation** (`cancel_appointment`) after explicit confirmation. Rescheduling **execution** remains deferred; the active master prompt must not call `reschedule_appointment`.
+**Voice slice scope:** This runbook covers **new appointment booking**, **upcoming appointment lookup** (`list_patient_appointments`) after identity resolution, **appointment cancellation** (`cancel_appointment`), and **appointment rescheduling** (`reschedule_appointment`) after explicit confirmation.
 
 Related docs:
 
 - [Retell Dashboard Setup](retell-dashboard-setup.md)
-- [Retell Master Prompt v4](retell-master-prompt-v4.md) — active agent prompt
-- [Retell Master Prompt v3](retell-master-prompt-v3.md) — historical booking and lookup foundation
+- [Retell Tool Configuration](retell-tool-configuration.md)
+- [Retell Master Prompt v5](retell-master-prompt-v5.md) — active agent prompt
+- [Retell Master Prompt v4](retell-master-prompt-v4.md) — historical (rescheduling deferred)
 - [Retell Conversation UX Playbook](retell-conversation-ux-playbook.md)
 - [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)
 - [Clinic Time Context and Tool Contracts](../architecture/clinic-time-context-and-tool-contracts.md)
@@ -211,7 +212,8 @@ Side effect: temporarily reserves one appointment time for this call while you c
 |-------|----------|-------|
 | `availability_slot_id` | Yes | UUID from `check_availability` result |
 | `owner_id` | No | Defaults to provider call id |
-| `ttl_seconds` | No | 60–900; default from server hold TTL |
+
+**Hold TTL:** Retell voice tools do **not** control hold TTL. The backend applies `APPOINTMENT_HOLD_TTL_SECONDS` (default **300** seconds). Successful responses include `expires_in_seconds` equal to the configured TTL. Legacy `ttl_seconds` in tool arguments, if sent by an older agent, is ignored.
 
 ### Side effects
 
@@ -759,28 +761,29 @@ Side effect: moves an existing appointment to a new time after explicit confirma
 
 ### Expected arguments
 
+See [Retell Tool Configuration — reschedule_appointment](retell-tool-configuration.md#reschedule_appointment) for the canonical JSON schema.
+
 ```json
 {
-  "original_appointment_id": "4c71ec24-892b-4ab1-b4f4-cf5e42e88e91",
+  "patient_resolution_id": "pr_abc123",
+  "appointment_id": "4c71ec24-892b-4ab1-b4f4-cf5e42e88e91",
+  "new_slot_id": "7fcf0ca1-7f14-4f45-a8a4-cc77d1a67f4d",
   "hold_id": "2d85f2c2-5d2e-4c2a-ae2f-09e32011ce37",
   "explicit_confirmation": true,
-  "confirmation_text": "Yes, move it to the new time.",
-  "reschedule_reason": "Conflict with work",
-  "patient_name": "John Miller",
-  "patient_date_of_birth": "1985-04-12",
-  "patient_email": "john.miller@example.test"
+  "confirmation_text": "Yes, please reschedule it.",
+  "reschedule_reason": "Caller requested a different time"
 }
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `original_appointment_id` | Context* | May resolve from voice context |
-| `hold_id` | Yes* | New time hold; *or `new_slot_id` |
-| `new_slot_id` | Alt | Target slot UUID |
-| `explicit_confirmation` | Yes | Must be `true` |
-| `confirmation_text` | No | Caller confirmation phrase |
-| `reschedule_reason` | No | Brief reason |
-| Patient identity fields | No | Cross-check when required |
+| `patient_resolution_id` | Yes | From `resolve_patient_identity` or `confirm_patient_identity` |
+| `appointment_id` | Yes | From `list_patient_appointments` for the selected appointment |
+| `new_slot_id` | Yes | From `check_availability` for the new time |
+| `hold_id` | Yes | From `hold_appointment_slot` for the new time |
+| `explicit_confirmation` | Yes | Must be `true` after caller confirms on a separate turn |
+| `confirmation_text` | Yes | Caller's actual latest confirmation message |
+| `reschedule_reason` | No | Brief optional reason |
 
 ### Side effects
 
@@ -847,5 +850,5 @@ Side-effecting tools without `tool_call_id` do not get cross-retry deduplication
 - [ ] Tool names match exactly (snake_case)
 - [ ] Dashboard descriptions pasted from this document
 - [ ] **Payload: args only** is **OFF** (Retell default envelope)
-- [ ] Agent prompt uses [Retell Master Prompt v4](retell-master-prompt-v4.md) (paste-ready block)
+- [ ] Agent prompt uses [Retell Master Prompt v5](retell-master-prompt-v5.md) (paste-ready block)
 - [ ] Smoke tests follow [Retell Voice Smoke Scenarios](retell-voice-smoke-scenarios.md)

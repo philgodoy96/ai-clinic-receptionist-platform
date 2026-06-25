@@ -83,11 +83,23 @@ Use this framing when reasoning about scheduling correctness:
     check_availability        = advisory read
     hold_appointment_slot     = temporary coordination boundary
     book_appointment          = durable consistency boundary
+    reschedule_appointment    = durable state transition
     database constraints      = final safety net
 
 - **Advisory read** — `check_availability` reflects current candidates but can be stale by the time a caller selects a time.
 - **Temporary coordination** — `hold_appointment_slot` creates an exclusive Redis reservation for a short TTL. Redis is not the durable source of truth.
 - **Durable consistency** — `book_appointment` validates an active hold, re-checks slot availability in PostgreSQL, and creates the appointment.
+- **Durable reschedule** — `reschedule_appointment` validates identity, original appointment eligibility, hold validity, and new slot availability, then performs an atomic historical-preserving transition:
+
+```text
+old appointment -> rescheduled
+old slot -> available
+new appointment -> scheduled
+new slot -> booked
+```
+
+If rescheduling fails, no partial durable state should remain at the service boundary.
+
 - **Final safety net** — PostgreSQL constraints and slot status transitions protect against duplicate scheduled appointments even if earlier layers race.
 
 Postgres remains the durable source of truth for slot status and appointments. Redis holds are ephemeral coordination state.
@@ -154,12 +166,15 @@ When an appointment is cancelled, the linked availability slot is released back 
 
 ## Current Limitations
 
-Not yet implemented:
+Intentional future evolution (not missing MVP requirements):
 
-- Voice rescheduling execution (lookup and foundation exist; full voice reschedule flow is future work)
+- Written chat reschedule flow
+- Patient-aware hold recovery for authenticated patient sessions
+- Hold renewal with maximum absolute timeout
 - Dynamic doctor schedule rules
 - Rolling availability generation beyond seeded demo slots
 - Admin schedule management UI
+- Rescheduling and cancellation email notification templates where not yet deployed
 
 ## Testing Strategy
 

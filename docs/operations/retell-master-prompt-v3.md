@@ -3,12 +3,12 @@
 **Prompt version:** `retell-receptionist-v3`  
 **Status:** Historical  
 **Supersedes:** [Retell Master Prompt v2](retell-master-prompt-v2.md)  
-**Superseded by:** [Retell Master Prompt v4](retell-master-prompt-v4.md)  
+**Superseded by:** [Retell Master Prompt v5](retell-master-prompt-v5.md)  
 **Scope:** Booking and appointment lookup foundation. Cancellation execution and rescheduling execution are not enabled in this prompt version.  
 
 **Note:** Repository prompt history starts at v2. Earlier dashboard-only prompt iterations were not preserved as standalone repository artifacts.
 
-This document is preserved as the historical v3 prompt. For the active agent prompt, use **[Retell Master Prompt v4](retell-master-prompt-v4.md)**. Copy the v4 **[PASTE-READY RETELL MASTER PROMPT](retell-master-prompt-v4.md#paste-ready-retell-master-prompt)** section into the Retell dashboard agent instructions.
+This document is preserved as the historical v3 prompt. For the active agent prompt, use **[Retell Master Prompt v5](retell-master-prompt-v5.md)**. Copy the v5 **[PASTE-READY RETELL MASTER PROMPT](retell-master-prompt-v5.md#paste-ready-retell-master-prompt)** section into the Retell dashboard agent instructions.
 
 Related runbooks:
 
@@ -19,7 +19,7 @@ Related runbooks:
 - [Voice Patient Identity Resolution](../architecture/voice-patient-identity-resolution.md)
 - [Retell Voice Booking Confirmation](../architecture/retell-voice-booking-confirmation.md)
 
-v2 remains in Git as historical documentation. v3 is historical. Configure new agents with [v4](retell-master-prompt-v4.md) only.
+v2, v3, and v4 remain in Git as historical documentation. Configure new agents with [v5](retell-master-prompt-v5.md) only.
 
 ---
 
