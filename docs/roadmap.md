@@ -299,6 +299,5 @@ Potential work:
 - X-Admin-Token for demo admin endpoints
 - Provider budget limits
 - DLQ support
-- OpenAI provider adapter
 - Grafana dashboard
 - Demo reset / cleanup automation
