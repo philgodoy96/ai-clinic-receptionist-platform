@@ -13,7 +13,9 @@ The current implementation includes:
 - `LLMProvider` protocol
 - `LLMRequest`
 - `LLMResponse`
-- `FakeLLMProvider`
+- `FakeLLMProvider` (default for local development and CI)
+- `GroqLLMProvider` (hosted public demo real-provider path)
+- `BedrockLLMProvider` (optional AWS enterprise-style adapter)
 - `ReceptionistLLMAnalysis` structured output schema
 - structured output parser
 - local JSON object extraction repair
@@ -23,11 +25,13 @@ The current implementation includes:
 - optional chat shadow analysis metadata
 - validated LLM-assisted slot filling into `chat_context`
 - configurable provider selection with `FakeLLMProvider` as default
-- `BedrockLLMProvider` adapter for optional real provider use
+- optional `GroqLLMProvider` and `BedrockLLMProvider` adapters
 
 By default, no real LLM provider is called.
 
-No API key is required for local development or CI when `LLM_PROVIDER=fake`.
+No API key is required for local development or CI when `LLM_PROVIDER=fake` (or `LLM_PRIMARY_PROVIDER=fake`).
+
+OpenAI is not a supported provider in this version.
 
 ## Design Principle
 

@@ -84,9 +84,9 @@ Planned stack:
 - Docker
 - Docker Compose
 - Retell Web Calls
-- FakeLLMProvider by default
-- Optional Groq LLM provider adapter for hosted public demo
-- Optional Bedrock LLM provider adapter
+- `fake` LLM provider for local development and CI
+- `groq` LLM provider for real-provider demo validation
+- `bedrock` LLM provider as an optional AWS enterprise-style adapter
 - FakeEmailProvider by default
 - Optional Resend email provider
 - Prometheus
@@ -209,7 +209,9 @@ The API handles chat, scheduling, and Retell routes. The worker consumes RabbitM
 
 ### Optional providers
 
-- **Groq** — optional real LLM for analysis and phrasing; fake provider remains valid for smoke tests
+- **fake** — default LLM for local development and CI (no API key)
+- **groq** — optional real LLM for hosted demo analysis and phrasing
+- **bedrock** — optional AWS enterprise-style LLM adapter (`BEDROCK_MODEL_ID`, `AWS_REGION`, standard AWS credentials)
 - **Resend** — optional real confirmation email delivery; fake provider records jobs in memory
 - **Retell** — voice tool routes, webhooks, server-side web calls, and call lifecycle; agent and webhook setup: [`docs/operations/retell-dashboard-setup.md`](docs/operations/retell-dashboard-setup.md)
 

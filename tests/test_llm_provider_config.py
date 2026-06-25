@@ -109,3 +109,29 @@ def test_llm_max_fallback_attempts_rejects_values_above_two(
             LLM_FALLBACK_PROVIDER="fake",
             LLM_MAX_FALLBACK_ATTEMPTS="3",
         )
+
+
+def test_unsupported_llm_provider_rejects_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="Unsupported LLM provider: openai"):
+        load_settings(monkeypatch, LLM_PROVIDER="openai")
+
+
+def test_unsupported_llm_primary_provider_rejects_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError, match="Unsupported LLM provider: openai"):
+        load_settings(monkeypatch, LLM_PRIMARY_PROVIDER="openai")
+
+
+def test_unsupported_llm_fallback_provider_rejects_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError, match="Unsupported LLM provider: openai"):
+        load_settings(
+            monkeypatch,
+            LLM_FALLBACK_ENABLED="true",
+            LLM_FALLBACK_PROVIDER="openai",
+            GROQ_API_KEY="gsk_test",
+            GROQ_MODEL="llama-3.3-70b-versatile",
+            LLM_PRIMARY_PROVIDER="groq",
+        )

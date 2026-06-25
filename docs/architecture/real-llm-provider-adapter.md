@@ -18,10 +18,10 @@ The backend reliability boundary remains the source of trust.
 
 The implementation supports:
 
-- fake provider by default
-- configurable provider selection
-- Groq provider adapter for hosted public demo
-- Bedrock provider adapter for optional enterprise/fallback use
+- `fake` provider by default for local development and CI
+- `groq` provider adapter for hosted public demo validation
+- `bedrock` provider adapter as an optional AWS enterprise-style path
+- configurable primary and optional fallback provider selection
 - structured output prompting
 - provider timeout/retry configuration
 - validation and fallback through the reliability orchestration layer
@@ -98,7 +98,9 @@ Groq API keys are not stored in the repository. Provide `GROQ_API_KEY` through e
 
 AWS credentials are not stored in the repository.
 
-Runtime credentials should come from standard AWS environment, profile, or role mechanisms.
+Runtime credentials should come from standard AWS environment, profile, or role mechanisms (for example `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, shared credentials file, or an IAM instance/task role). No Bedrock-specific credential variables are required beyond `BEDROCK_MODEL_ID` and `AWS_REGION`.
+
+OpenAI is intentionally not implemented in this version.
 
 ## Testing Boundary
 

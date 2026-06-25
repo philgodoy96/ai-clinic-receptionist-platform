@@ -5,7 +5,7 @@ import logging
 from app.ai.bedrock_llm_provider import BedrockLLMProvider
 from app.ai.fake_llm_provider import FakeLLMProvider
 from app.ai.groq_provider import GroqLLMProvider
-from app.ai.llm_provider import LLMProvider, LLMProviderName
+from app.ai.llm_provider import LLMProvider, LLMProviderName, supported_llm_provider_names
 from app.core.config import Settings
 
 logger = logging.getLogger("app.llm_provider")
@@ -52,7 +52,8 @@ def create_llm_provider_from_settings(
         )
 
     raise LLMProviderConfigurationError(
-        f"Unsupported LLM provider: {provider_name.value}",
+        f"Unsupported LLM provider: {provider_name.value}. "
+        f"Supported providers: {supported_llm_provider_names()}",
     )
 
 
