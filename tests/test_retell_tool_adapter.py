@@ -416,6 +416,80 @@ def test_hold_appointment_slot_creates_only_hold_not_appointment(
     assert adapter_bundle.scheduling_service.appointments == []
 
 
+def test_hold_appointment_slot_response_uses_backend_configured_ttl(
+    adapter_bundle: AdapterBundle,
+) -> None:
+    response = adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-456",
+                "tool_name": "hold_appointment_slot",
+                "arguments": {
+                    "availability_slot_id": str(adapter_bundle.availability_slot.id),
+                },
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["expires_in_seconds"] == adapter_bundle.hold_service.ttl_seconds
+
+
+def test_hold_appointment_slot_ignores_legacy_ttl_seconds_in_response(
+    adapter_bundle: AdapterBundle,
+) -> None:
+    response = adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-456",
+                "tool_name": "hold_appointment_slot",
+                "arguments": {
+                    "availability_slot_id": str(adapter_bundle.availability_slot.id),
+                    "ttl_seconds": 900,
+                },
+            },
+        ),
+    )
+
+    assert response.status == "succeeded"
+    assert response.result["expires_in_seconds"] == adapter_bundle.hold_service.ttl_seconds
+    assert response.result["expires_in_seconds"] != 900
+
+
+def test_check_availability_does_not_refresh_hold_ttl(
+    adapter_bundle: AdapterBundle,
+) -> None:
+    hold_response = adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-456",
+                "tool_name": "hold_appointment_slot",
+                "arguments": {
+                    "availability_slot_id": str(adapter_bundle.availability_slot.id),
+                },
+            },
+        ),
+    )
+    assert hold_response.status == "succeeded"
+
+    availability_response = adapter_bundle.adapter.execute(
+        RetellToolCallRequest.model_validate(
+            {
+                "provider_call_id": "retell-call-456",
+                "tool_name": "check_availability",
+                "arguments": {
+                    "doctor_id": str(adapter_bundle.doctor_id),
+                    "start_from": "2026-07-01T09:00:00Z",
+                    "start_to": "2026-07-01T18:00:00Z",
+                },
+            },
+        ),
+    )
+
+    assert availability_response.status == "succeeded"
+    assert len(adapter_bundle.hold_repository.create_calls) == 1
+
+
 def test_release_appointment_hold_does_not_cancel_appointment(
     adapter_bundle: AdapterBundle,
 ) -> None:

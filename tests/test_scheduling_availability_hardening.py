@@ -229,6 +229,48 @@ def test_redis_held_slot_is_excluded_from_availability() -> None:
     assert slots == []
 
 
+def test_expired_hold_no_longer_blocks_availability() -> None:
+    doctor = create_doctor()
+    slot = create_availability_slot(
+        doctor_id=doctor.id,
+        start_time=_earliest_bookable_utc() + timedelta(hours=1),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+    hold_repository = FakeAppointmentHoldRepository()
+    hold_service = AppointmentHoldService(repository=hold_repository, ttl_seconds=300)
+    hold = hold_service.create_hold(
+        availability_slot_id=slot.id,
+        doctor_id=doctor.id,
+        start_time=slot.start_time,
+        end_time=slot.end_time,
+        owner_id="other-call",
+    )
+    service = _build_scheduling_service(
+        doctor=doctor,
+        availability_slots=[slot],
+        hold_service=hold_service,
+    )
+
+    blocked_slots = service.check_availability(
+        doctor_id=doctor.id,
+        start_from=_query_window()[0],
+        start_to=_query_window()[1],
+    )
+    assert blocked_slots == []
+
+    hold_repository.delete(
+        doctor_id=hold.doctor_id,
+        start_time=hold.start_time,
+    )
+
+    available_slots = service.check_availability(
+        doctor_id=doctor.id,
+        start_from=_query_window()[0],
+        start_to=_query_window()[1],
+    )
+    assert [available_slot.id for available_slot in available_slots] == [slot.id]
+
+
 def test_redis_unavailable_during_check_availability_degrades_gracefully(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -15,8 +15,6 @@ from app.schemas.scheduling_expressions import (
 
 MIN_CHECK_AVAILABILITY_LIMIT = 1
 MAX_CHECK_AVAILABILITY_LIMIT = 50
-MIN_HOLD_TTL_SECONDS = 60
-MAX_HOLD_TTL_SECONDS = 900
 MAX_BOOK_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
 MAX_BOOK_APPOINTMENT_NOTES_LENGTH = 500
 MAX_CANCEL_APPOINTMENT_CONFIRMATION_TEXT_LENGTH = 500
@@ -188,15 +186,10 @@ class CheckAvailabilityToolArguments(BaseModel):
 
 
 class HoldAppointmentSlotToolArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     availability_slot_id: UUID
     owner_id: str | None = Field(default=None, max_length=120)
-    ttl_seconds: int | None = Field(
-        default=None,
-        ge=MIN_HOLD_TTL_SECONDS,
-        le=MAX_HOLD_TTL_SECONDS,
-    )
 
 
 class ReleaseAppointmentHoldToolArguments(BaseModel):

@@ -684,7 +684,7 @@ class RetellToolCallingAdapter:
                     "doctor_id": str(hold.doctor_id),
                     "start_time": hold.start_time.isoformat(),
                     "end_time": hold.end_time.isoformat(),
-                    "expires_in_seconds": self._resolve_hold_ttl_seconds(arguments.ttl_seconds),
+                    "expires_in_seconds": self.hold_service.ttl_seconds,
                 },
                 template_type=ReceptionistTemplateType.SLOT_HOLD_CREATED,
                 facts={},
@@ -2004,13 +2004,6 @@ class RetellToolCallingAdapter:
             return str(conversation_id)
 
         return None
-
-    def _resolve_hold_ttl_seconds(self, requested_ttl_seconds: int | None) -> int:
-        if requested_ttl_seconds is not None:
-            return requested_ttl_seconds
-
-        return self.hold_service.ttl_seconds
-
 
 def _as_check_availability_arguments(
     arguments: Any,

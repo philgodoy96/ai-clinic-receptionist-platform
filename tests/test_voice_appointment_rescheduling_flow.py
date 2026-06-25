@@ -277,6 +277,36 @@ def test_new_slot_unavailable_rejects_reschedule() -> None:
     assert context["original_appointment"].status == AppointmentStatus.SCHEDULED
 
 
+def test_expired_hold_rejects_voice_reschedule() -> None:
+    context = create_retell_rescheduling_tool_context()
+    original_appointment = context["original_appointment"]
+    original_slot = context["original_slot"]
+    new_slot = context["new_slot"]
+    hold = context["hold"]
+    hold_repository = context["rescheduling_context"].hold_repository
+    appointment_count_before = len(context["appointment_repository"].appointments)
+
+    hold_repository.delete(
+        doctor_id=hold.doctor_id,
+        start_time=hold.start_time,
+    )
+
+    response = context["adapter"].execute(_reschedule_request(context))
+
+    assert response.status == "failed"
+    assert response.error_code == "appointment_hold_expired"
+    assert original_appointment.status == AppointmentStatus.SCHEDULED
+    assert original_slot.status == AvailabilitySlotStatus.BOOKED
+    assert new_slot.status == AvailabilitySlotStatus.AVAILABLE
+    assert len(context["appointment_repository"].appointments) == appointment_count_before
+    scheduled = _scheduled_appointments_for_patient(
+        context["appointment_repository"],
+        patient_id=context["patient"].id,
+    )
+    assert len(scheduled) == 1
+    assert scheduled[0].id == original_appointment.id
+
+
 def test_duplicate_retell_tool_call_is_idempotent() -> None:
     context = create_retell_rescheduling_tool_context()
     request = _reschedule_request(context, tool_call_id="duplicate-reschedule")
