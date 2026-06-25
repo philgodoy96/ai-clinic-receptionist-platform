@@ -20,9 +20,7 @@ This is operational reservation state, not durable conversation memory.
 8. Backend removes hold.
 9. Backend enqueues confirmation email job.
 
-The current implementation supports hold creation, validation, release, and API/tool exposure.
-
-Final booking is implemented separately.
+Hold creation, validation, release, booking, and cancellation are implemented.
 
 ## Redis Key
 
@@ -31,6 +29,8 @@ The Redis key uses the doctor and slot start time:
     appointment_hold:{doctor_id}:{start_time}
 
 The start time is normalized to UTC when timezone-aware.
+
+A secondary index key stores holds by `hold_id` for lookup and release.
 
 ## Hold Data
 
@@ -64,6 +64,12 @@ The value is configured through:
 
     APPOINTMENT_HOLD_TTL_SECONDS
 
+## Availability interaction
+
+When Redis is available, `check_availability` excludes slots that have an active hold for the same doctor and start time. Holds are checked in batch without mutating hold state from the read path.
+
+When Redis hold lookup is unavailable, availability lookup may still return PostgreSQL-backed candidate slots (see **Redis Degradation Policy** below). A returned slot is not reserved until a hold succeeds.
+
 ## Important Invariants
 
 - A slot can only have one active hold for a doctor/start_time pair.
@@ -72,6 +78,7 @@ The value is configured through:
 - An expired hold cannot be used for booking.
 - Redis expiration releases abandoned holds automatically.
 - PostgreSQL remains the final protection against double booking.
+- Redis is required for hold creation; holds cannot be created when Redis is unavailable.
 
 ## Why Redis
 
@@ -97,15 +104,30 @@ Redis does not guarantee final booking correctness by itself.
 
 The final booking flow must still validate availability and rely on PostgreSQL constraints.
 
+## Redis Degradation Policy
+
+Redis is a temporary coordination layer, not the durable source of truth.
+
+| Flow | Behavior when Redis is unavailable |
+|------|-------------------------------------|
+| Availability lookup (hold filtering) | Graceful degrade — DB-filtered slots may still be returned; internal warning logged |
+| Hold creation | Fail closed — `appointment_hold_store_unavailable`; no hold claimed |
+| Booking | Fail closed — requires valid hold in Redis |
+
+Policy:
+
+    Fail open for advisory availability reads.
+    Fail closed for reservation, identity validation, booking, and cancellation safety boundaries.
+
+Redis is **not optional** for holds or booking. Operators should treat Redis availability as required for reservation and booking flows.
+
+See also: [Scheduling Application Services — Redis Degradation Policy](scheduling-services.md#redis-degradation-policy), [ADR-003](../adr/003-redis-appointment-holds.md).
+
 ## Current Limitations
 
-This implementation does not yet include:
+Not yet implemented:
 
-- Final appointment booking
-- Appointment rescheduling
-- Appointment cancellation
-- Audit logs
-- Email jobs
-- Redis dependency health check
+- Redis dependency health check surfaced on `/health/dependencies` beyond basic connectivity
+- Hold expiration recovery messaging beyond existing chat and voice recovery flows
 
-Those capabilities are planned for later implementation phases.
+Voice rescheduling execution and dynamic schedule generation remain separate roadmap items.

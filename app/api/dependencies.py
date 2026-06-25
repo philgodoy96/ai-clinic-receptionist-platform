@@ -73,7 +73,7 @@ from app.services.retell_web_call import (
     RetellWebCallService,
     create_retell_web_call_service_from_settings,
 )
-from app.services.scheduling import SchedulingService
+from app.services.scheduling import SchedulingAvailabilityPolicy, SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
 from app.services.voice_appointment_cancellation import VoiceAppointmentCancellationService
@@ -81,18 +81,6 @@ from app.services.voice_booking_confirmation import VoiceBookingConfirmationServ
 from app.services.voice_calls import VoiceCallInspectionService
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 from app.services.voice_patient_appointment_lookup import VoicePatientAppointmentLookupService
-
-
-def get_scheduling_service(
-    db: Annotated[Session, Depends(get_db)],
-) -> SchedulingService:
-    return SchedulingService(
-        specialties=SQLAlchemySpecialtyRepository(db),
-        doctors=SQLAlchemyDoctorRepository(db),
-        patients=SQLAlchemyPatientRepository(db),
-        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
-        appointments=SQLAlchemyAppointmentRepository(db),
-    )
 
 
 def get_demo_guardrail_service(
@@ -114,6 +102,33 @@ def get_appointment_hold_service(
     return AppointmentHoldService(
         repository=RedisAppointmentHoldRepository(redis_client),
         ttl_seconds=settings.appointment_hold_ttl_seconds,
+    )
+
+
+def get_clinic_time_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ClinicTimeService:
+    return ClinicTimeService.from_settings(settings, clock=SystemClock())
+
+
+def get_scheduling_service(
+    db: Annotated[Session, Depends(get_db)],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SchedulingService:
+    return SchedulingService(
+        specialties=SQLAlchemySpecialtyRepository(db),
+        doctors=SQLAlchemyDoctorRepository(db),
+        patients=SQLAlchemyPatientRepository(db),
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+        appointments=SQLAlchemyAppointmentRepository(db),
+        clinic_time_service=clinic_time_service,
+        hold_service=hold_service,
+        availability_policy=SchedulingAvailabilityPolicy(
+            min_booking_lead_minutes=settings.scheduling_min_booking_lead_minutes,
+            booking_horizon_days=settings.scheduling_booking_horizon_days,
+        ),
     )
 
 
@@ -215,12 +230,6 @@ def get_receptionist_response_generator(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ReceptionistResponseGenerator:
     return build_receptionist_response_generator_from_settings(settings)
-
-
-def get_clinic_time_service(
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> ClinicTimeService:
-    return ClinicTimeService.from_settings(settings, clock=SystemClock())
 
 
 def get_chat_receptionist_service(

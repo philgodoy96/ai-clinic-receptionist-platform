@@ -123,6 +123,7 @@ from app.schemas.retell_tools import (
 from app.schemas.scheduling import AppointmentResponse
 from app.services.appointment_holds import (
     AppointmentHoldOwnershipError,
+    AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
     InvalidAppointmentHoldOwnerError,
     InvalidAppointmentHoldWindowError,
@@ -635,6 +636,12 @@ class RetellToolCallingAdapter:
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
                 error_code="invalid_appointment_hold",
+            )
+        except AppointmentHoldStoreUnavailableError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_hold_store_unavailable",
             )
         except AppointmentHoldOwnershipError:
             return build_failed_tool_call_response(

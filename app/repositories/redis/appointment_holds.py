@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -70,6 +71,27 @@ class RedisAppointmentHoldRepository:
 
         if hold is not None:
             self.redis_client.delete(self._hold_id_key(hold.hold_id))
+
+    def find_held_availability_slot_ids(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[tuple[UUID, datetime]],
+    ) -> set[UUID]:
+        if not slots:
+            return set()
+
+        keys = [
+            self._key(doctor_id=doctor_id, start_time=start_time)
+            for _, start_time in slots
+        ]
+        values = self.redis_client.mget(keys)
+
+        return {
+            slot_id
+            for (slot_id, _), value in zip(slots, values, strict=True)
+            if value is not None
+        }
 
     def _key(self, *, doctor_id: UUID, start_time: datetime) -> str:
         return f"{self.key_prefix}:{doctor_id}:{self._datetime_to_string(start_time)}"
