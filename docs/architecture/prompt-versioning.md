@@ -14,12 +14,26 @@ They do not make LLM output trusted.
 
 The backend reliability boundary remains the source of truth.
 
+## Receptionist Analysis v2
+
+`receptionist-analysis-v2` calibrates real provider behavior for structured analysis.
+
+Compared to v1, v2:
+
+- states this is a non-user-facing classification service (not a conversational receptionist)
+- clarifies `requires_human` semantics so routine booking, cancel, and fallback messages do not escalate
+- clarifies `appointment_request` vs `availability_request` intent taxonomy
+- includes compact positive and negative examples
+
+When evaluating Groq with `llama-3.3-70b-versatile`, use `GROQ_RESPONSE_FORMAT=json_object` unless another model supports strict schema output.
+
 ## Current Implementation
 
 The current implementation includes:
 
 - receptionist prompt version registry
-- current prompt version: `receptionist-analysis-v1`
+- current prompt version: `receptionist-analysis-v2`
+- historical prompt version: `receptionist-analysis-v1`
 - prompt metadata for receptionist analysis
 - runtime `prompt_version` in LLM metadata across primary retries, fallback provider attempts, and deterministic fallback results
 - evaluation dataset `prompt_version`

@@ -473,3 +473,171 @@ def test_recorded_evaluation_uses_recorded_output_not_input_message() -> None:
 
     assert summary.passed_cases == 1
     assert summary.mode == EvaluationMode.RECORDED
+
+
+def test_extracted_specialty_comparison_is_case_insensitive() -> None:
+    case = ReceptionistAnalysisEvalCase(
+        id="specialty_case_insensitive",
+        prompt_version=_default_prompt_version(),
+        input=EvaluationInput(message="I need dermatology"),
+        expected=EvaluationExpected(
+            intent="appointment_request",
+            urgency="normal",
+            requires_human=False,
+            safety_flags=[],
+            extracted={
+                "specialty": "Dermatology",
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        ),
+        recorded_output={
+            "intent": "appointment_request",
+            "urgency": "normal",
+            "requires_human": False,
+            "safety_flags": [],
+            "extracted": {
+                "specialty": "dermatology",
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        },
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case])
+
+    assert summary.passed_cases == 1
+    specialty_result = next(
+        result
+        for result in summary.case_results[0].field_results
+        if result.field == "extracted.specialty"
+    )
+    assert specialty_result.passed is True
+
+
+def test_extracted_doctor_comparison_is_case_insensitive() -> None:
+    case = ReceptionistAnalysisEvalCase(
+        id="doctor_case_insensitive",
+        prompt_version=_default_prompt_version(),
+        input=EvaluationInput(message="Can I see Dr. Emily Carter?"),
+        expected=EvaluationExpected(
+            intent="availability_request",
+            urgency="normal",
+            requires_human=False,
+            safety_flags=[],
+            extracted={
+                "specialty": None,
+                "doctor": "Dr. Emily Carter",
+                "date": None,
+                "time": None,
+            },
+        ),
+        recorded_output={
+            "intent": "availability_request",
+            "urgency": "normal",
+            "requires_human": False,
+            "safety_flags": [],
+            "extracted": {
+                "specialty": None,
+                "doctor": "dr. emily carter",
+                "date": None,
+                "time": None,
+            },
+        },
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case])
+
+    assert summary.passed_cases == 1
+    doctor_result = next(
+        result
+        for result in summary.case_results[0].field_results
+        if result.field == "extracted.doctor"
+    )
+    assert doctor_result.passed is True
+
+
+def test_different_extracted_specialty_still_fails() -> None:
+    case = ReceptionistAnalysisEvalCase(
+        id="specialty_semantic_mismatch",
+        prompt_version=_default_prompt_version(),
+        input=EvaluationInput(message="I need dermatology"),
+        expected=EvaluationExpected(
+            intent="appointment_request",
+            urgency="normal",
+            requires_human=False,
+            safety_flags=[],
+            extracted={
+                "specialty": "Dermatology",
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        ),
+        recorded_output={
+            "intent": "appointment_request",
+            "urgency": "normal",
+            "requires_human": False,
+            "safety_flags": [],
+            "extracted": {
+                "specialty": "Cardiology",
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        },
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case])
+
+    assert summary.failed_cases == 1
+    specialty_result = next(
+        result
+        for result in summary.case_results[0].field_results
+        if result.field == "extracted.specialty"
+    )
+    assert specialty_result.passed is False
+
+
+def test_enum_fields_remain_exact_in_comparison() -> None:
+    case = ReceptionistAnalysisEvalCase(
+        id="enum_fields_exact",
+        prompt_version=_default_prompt_version(),
+        input=EvaluationInput(message="Hello"),
+        expected=EvaluationExpected(
+            intent="greeting",
+            urgency="normal",
+            requires_human=False,
+            safety_flags=[],
+            extracted={
+                "specialty": None,
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        ),
+        recorded_output={
+            "intent": "Greeting",
+            "urgency": "normal",
+            "requires_human": False,
+            "safety_flags": [],
+            "extracted": {
+                "specialty": None,
+                "doctor": None,
+                "date": None,
+                "time": None,
+            },
+        },
+    )
+
+    summary = evaluate_receptionist_analysis_cases([case])
+
+    assert summary.failed_cases == 1
+    intent_result = next(
+        result for result in summary.case_results[0].field_results if result.field == "intent"
+    )
+    assert intent_result.passed is False
+    assert intent_result.expected == "greeting"
+    assert intent_result.actual == "Greeting"

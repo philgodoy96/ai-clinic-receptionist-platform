@@ -332,8 +332,8 @@ def _compare_extracted_fields(
 
     results: list[EvaluationFieldResult] = []
     for field_name, expected_value in expected.items():
-        actual_value = _normalize_scalar(extracted.get(field_name))
-        normalized_expected = _normalize_scalar(expected_value)
+        actual_value = _normalize_extracted_scalar(extracted.get(field_name))
+        normalized_expected = _normalize_extracted_scalar(expected_value)
         results.append(
             EvaluationFieldResult(
                 field=f"extracted.{field_name}",
@@ -349,6 +349,14 @@ def _compare_extracted_fields(
 def _normalize_scalar(value: Any) -> Any:
     if value is None:
         return None
+    return value
+
+
+def _normalize_extracted_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip().casefold()
     return value
 
 
