@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -39,6 +41,198 @@ from app.ai.structured_output import (
 from app.core.config import Settings
 
 logger = logging.getLogger("app.llm_receptionist")
+
+_CONTEXT_SNAPSHOT_PREFIX = (
+    "Backend-provided conversation context snapshot. "
+    "Use this only to interpret the user's latest message. "
+    "Do not invent missing patient details. "
+    "Do not assume a durable action has happened unless explicitly stated."
+)
+_ISO_TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+_ISO_DATETIME_TIME_PATTERN = re.compile(r"[T ](\d{1,2}):(\d{2})")
+
+
+def _coerce_non_empty_str(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+
+    return stripped
+
+
+def _coerce_display_time(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+
+    match = _ISO_DATETIME_TIME_PATTERN.search(stripped)
+    if match is None:
+        match = _ISO_TIME_PATTERN.search(stripped)
+    if match is None:
+        return None
+
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _extract_patient_identity_flags(
+    conversation_context: dict[str, object],
+) -> dict[str, object]:
+    identity_raw = conversation_context.get("patient_identity")
+    identity = identity_raw if isinstance(identity_raw, dict) else {}
+
+    has_patient_name = bool(
+        _coerce_non_empty_str(identity.get("full_name"))
+        or _coerce_non_empty_str(conversation_context.get("patient_name")),
+    )
+    has_patient_date_of_birth = bool(
+        _coerce_non_empty_str(identity.get("date_of_birth"))
+        or _coerce_non_empty_str(conversation_context.get("patient_date_of_birth")),
+    )
+    has_confirmed_email = bool(
+        _coerce_non_empty_str(identity.get("email"))
+        or _coerce_non_empty_str(conversation_context.get("patient_email")),
+    )
+
+    if has_patient_name and has_patient_date_of_birth and has_confirmed_email:
+        patient_identity_status = "complete"
+    elif has_patient_name or has_patient_date_of_birth or has_confirmed_email:
+        patient_identity_status = "partial"
+    else:
+        patient_identity_status = "missing"
+
+    return {
+        "patient_identity_status": patient_identity_status,
+        "has_patient_name": has_patient_name,
+        "has_patient_date_of_birth": has_patient_date_of_birth,
+        "has_confirmed_email": has_confirmed_email,
+    }
+
+
+def _has_identity_source(conversation_context: dict[str, object]) -> bool:
+    if "patient_identity" in conversation_context:
+        return True
+
+    return any(
+        key in conversation_context
+        for key in (
+            "patient_name",
+            "patient_email",
+            "patient_date_of_birth",
+            "patient_phone",
+            "full_name",
+            "date_of_birth",
+            "phone",
+            "email",
+        )
+    )
+
+
+def _has_active_hold(conversation_context: dict[str, object]) -> bool:
+    hold_id = conversation_context.get("hold_id")
+    appointment_id = conversation_context.get("appointment_id")
+    return bool(hold_id) and not appointment_id
+
+
+def _should_include_identity_flags(conversation_context: dict[str, object]) -> bool:
+    if _has_identity_source(conversation_context):
+        return True
+
+    return _has_active_hold(conversation_context)
+
+
+def _extract_explicit_availability_status(
+    conversation_context: dict[str, object],
+) -> str | None:
+    for key in ("last_availability_status", "availability_status"):
+        status = _coerce_non_empty_str(conversation_context.get(key))
+        if status is not None:
+            return status
+
+    return None
+
+
+def sanitize_conversation_context_for_llm(
+    conversation_context: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(conversation_context, dict):
+        return {}
+
+    snapshot: dict[str, object] = {}
+
+    selected_specialty = _coerce_non_empty_str(
+        conversation_context.get("selected_specialty_name"),
+    )
+    if selected_specialty is not None:
+        snapshot["selected_specialty"] = selected_specialty
+
+    selected_doctor = _coerce_non_empty_str(
+        conversation_context.get("selected_doctor_name"),
+    )
+    if selected_doctor is not None:
+        snapshot["selected_doctor"] = selected_doctor
+
+    requested_date = _coerce_non_empty_str(conversation_context.get("requested_date"))
+    if requested_date is not None:
+        snapshot["requested_date"] = requested_date
+
+    requested_time_window = conversation_context.get("requested_time_window")
+    if isinstance(requested_time_window, dict):
+        time_window_label = _coerce_non_empty_str(requested_time_window.get("label"))
+        if time_window_label is not None:
+            snapshot["requested_time_window"] = time_window_label
+
+    selected_time = _coerce_display_time(conversation_context.get("selected_start_time"))
+    if selected_time is not None:
+        snapshot["selected_time"] = selected_time
+
+    explicit_availability_status = _extract_explicit_availability_status(
+        conversation_context,
+    )
+    offered_slots = conversation_context.get("offered_slots")
+    if isinstance(offered_slots, list):
+        has_offered_slots = len(offered_slots) > 0
+        snapshot["has_offered_slots"] = has_offered_slots
+        if explicit_availability_status is not None:
+            snapshot["last_availability_status"] = explicit_availability_status
+        elif has_offered_slots:
+            snapshot["last_availability_status"] = "available"
+    elif explicit_availability_status is not None:
+        snapshot["last_availability_status"] = explicit_availability_status
+
+    has_active_hold = _has_active_hold(conversation_context)
+    if has_active_hold:
+        snapshot["has_active_hold"] = True
+
+    appointment_id = conversation_context.get("appointment_id")
+    booking_confirmed = bool(appointment_id) or bool(
+        conversation_context.get("booking_confirmed_at"),
+    )
+    if booking_confirmed:
+        snapshot["booking_confirmed"] = True
+
+    if _should_include_identity_flags(conversation_context):
+        identity_flags = _extract_patient_identity_flags(conversation_context)
+        snapshot.update(identity_flags)
+    else:
+        identity_flags = {"patient_identity_status": "missing"}
+
+    if has_active_hold and not booking_confirmed:
+        snapshot["awaiting_confirmation"] = (
+            identity_flags["patient_identity_status"] == "complete"
+        )
+
+    return snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,17 +475,41 @@ class LLMReceptionistAnalysisService:
         request: ReceptionistAnalysisRequest,
         prompt_version: str,
     ) -> LLMRequest:
-        return LLMRequest(
-            messages=[
+        messages = [
+            LLMMessage(
+                role="system",
+                content=build_receptionist_system_prompt(),
+            ),
+        ]
+
+        context_snapshot = sanitize_conversation_context_for_llm(
+            request.conversation_context,
+        )
+        if context_snapshot:
+            snapshot_json = json.dumps(
+                context_snapshot,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            messages.append(
                 LLMMessage(
                     role="system",
-                    content=build_receptionist_system_prompt(),
+                    content=(
+                        f"{_CONTEXT_SNAPSHOT_PREFIX}\n"
+                        f"Conversation context snapshot:\n{snapshot_json}"
+                    ),
                 ),
-                LLMMessage(
-                    role="user",
-                    content=request.user_message,
-                ),
-            ],
+            )
+
+        messages.append(
+            LLMMessage(
+                role="user",
+                content=request.user_message,
+            ),
+        )
+
+        return LLMRequest(
+            messages=messages,
             response_format="json",
             temperature=0.0,
             metadata={
