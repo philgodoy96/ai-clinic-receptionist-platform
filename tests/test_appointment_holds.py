@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -264,6 +265,18 @@ class FakeAppointmentHoldRepository:
     def delete(self, *, doctor_id: UUID, start_time: datetime) -> None:
         self.holds.pop((doctor_id, start_time), None)
 
+    def find_held_availability_slot_ids(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[tuple[UUID, datetime]],
+    ) -> set[UUID]:
+        return {
+            slot_id
+            for slot_id, start_time in slots
+            if (doctor_id, start_time) in self.holds
+        }
+
 
 class FakeRedisClient:
     def __init__(self) -> None:
@@ -279,6 +292,9 @@ class FakeRedisClient:
 
     def get(self, name: str) -> str | None:
         return self.values.get(name)
+
+    def mget(self, names: list[str]) -> list[str | None]:
+        return [self.values.get(name) for name in names]
 
     def delete(self, name: str) -> None:
         self.values.pop(name, None)

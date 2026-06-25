@@ -1,5 +1,8 @@
+from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
+
+from redis.exceptions import RedisError
 
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.repositories.appointment_holds import AppointmentHoldRepository
@@ -31,6 +34,10 @@ class AppointmentHoldMismatchError(AppointmentHoldServiceError):
 
 class AppointmentHoldOwnershipError(AppointmentHoldServiceError):
     """Raised when a hold belongs to another owner."""
+
+
+class AppointmentHoldStoreUnavailableError(AppointmentHoldServiceError):
+    """Raised when the hold store cannot be reached for a correctness-critical operation."""
 
 
 class AppointmentHoldService:
@@ -71,7 +78,12 @@ class AppointmentHoldService:
             owner_id=normalized_owner_id,
         )
 
-        created = self.repository.create(hold, ttl_seconds=self.ttl_seconds)
+        try:
+            created = self.repository.create(hold, ttl_seconds=self.ttl_seconds)
+        except RedisError as exc:
+            raise AppointmentHoldStoreUnavailableError(
+                "appointment hold store is unavailable",
+            ) from exc
 
         if not created:
             raise AppointmentSlotAlreadyHeldError("slot already has an active hold")
@@ -130,3 +142,19 @@ class AppointmentHoldService:
             raise AppointmentHoldOwnershipError("appointment hold belongs to another owner")
 
         self.repository.delete(doctor_id=doctor_id, start_time=start_time)
+
+    def find_held_availability_slot_ids(
+        self,
+        *,
+        doctor_id: UUID,
+        slots: Sequence[tuple[UUID, datetime]],
+    ) -> set[UUID]:
+        try:
+            return self.repository.find_held_availability_slot_ids(
+                doctor_id=doctor_id,
+                slots=slots,
+            )
+        except RedisError as exc:
+            raise AppointmentHoldStoreUnavailableError(
+                "appointment hold store is unavailable",
+            ) from exc
