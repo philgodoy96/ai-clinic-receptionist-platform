@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION = "receptionist-analysis-v1"
+CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION = "receptionist-analysis-v2"
 CURRENT_RECEPTIONIST_RESPONSE_PROMPT_VERSION = "receptionist-response-v1"
 
 
@@ -38,6 +38,16 @@ PROMPT_REGISTRY: dict[str, PromptMetadata] = {
         schema_name="ReceptionistLLMAnalysis",
         created_for="chat_receptionist_assistive_analysis",
         prompt_module="app.ai.prompts.receptionist_analysis_v1",
+    ),
+    "receptionist-analysis-v2": PromptMetadata(
+        name="receptionist-analysis",
+        version="receptionist-analysis-v2",
+        description=(
+            "Calibrated receptionist analysis with explicit requires_human and intent taxonomy."
+        ),
+        schema_name="ReceptionistLLMAnalysis",
+        created_for="chat_receptionist_assistive_analysis",
+        prompt_module="app.ai.prompts.receptionist_analysis_v2",
     ),
     "receptionist-response-v1": PromptMetadata(
         name="receptionist-response",

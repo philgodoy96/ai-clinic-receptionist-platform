@@ -37,13 +37,15 @@ Provider mode runs the dataset against the configured LLM provider through the s
 
 With Groq configured as the primary provider, provider mode calls Groq only when both `--mode provider` and `--allow-provider-calls` are set and `GROQ_API_KEY` / `GROQ_MODEL` are present in the environment.
 
+For `llama-3.3-70b-versatile`, prefer `GROQ_RESPONSE_FORMAT=json_object` unless another model supports strict schema output. Provider eval reports record the live `prompt_version` (currently `receptionist-analysis-v2`).
+
 Example Groq configuration for a manual provider-run check:
 
 ```env
 LLM_PRIMARY_PROVIDER=groq
 GROQ_API_KEY=gsk_...
 GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_RESPONSE_FORMAT=json_schema
+GROQ_RESPONSE_FORMAT=json_object
 LLM_MAX_PRIMARY_ATTEMPTS=2
 LLM_FALLBACK_ENABLED=false
 ```

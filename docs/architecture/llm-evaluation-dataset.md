@@ -70,7 +70,7 @@ The evaluator checks:
 - urgency
 - requires_human
 - safety flags
-- extracted fields
+- extracted fields (free-text extracted strings are compared case-insensitively)
 
 It does not create holds, create appointments, send emails, notify staff, or call a real LLM provider in recorded mode.
 
