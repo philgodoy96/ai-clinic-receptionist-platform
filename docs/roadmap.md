@@ -140,6 +140,7 @@ Implemented:
 - Natural-language date parsing with deterministic `NaturalLanguageDateParser` for chat availability guidance and LLM slot filling
 - Time-of-day preference parsing with deterministic `TimePreferenceParser` for chat availability filtering and LLM slot filling
 - LLM evaluation dataset with synthetic JSONL fixtures, recorded-output comparison, offline evaluation runner, metrics grouped by prompt version, and optional provider-run evaluation mode
+- Chat scheduling evaluation harness with multi-turn JSONL scenarios, semantic expectation checks, in-memory eval fixtures, offline CLI (`python -m scripts.evaluate_chat_scheduling`), and JSON report output (see `docs/architecture/chat-scheduling-evaluation-harness.md`)
 - Prompt versioning with receptionist prompt registry, runtime `prompt_version` metadata, and evaluation traceability
 - LLM reliability orchestration with explicit failure taxonomy, local repair, bounded primary retries, optional fallback provider, deterministic fallback, and rich reliability metadata
 - Chat LLM sanitized context injection for shadow analysis with structured, PII-safe `chat_context` snapshots (see `docs/architecture/chat-llm-reliability.md`)
@@ -172,7 +173,7 @@ Upcoming:
 - Chat message/client idempotency for duplicate POST requests
 - Durable action idempotency for duplicate chat scheduling actions
 - Dedicated LLM run persistence table (`llm_runs`)
-- LLM scheduling evaluation harness beyond the current offline dataset
+- Provider-mode chat scheduling evaluation against live Groq/Bedrock providers
 - Patient-aware hold recovery for authenticated patient sessions
 - Hold renewal with maximum absolute timeout
 - Dynamic doctor schedule rules and per-doctor working hours
