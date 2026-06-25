@@ -69,7 +69,7 @@ def _create_shadow_chat_service() -> ChatReceptionistService:
 
 
 def test_current_receptionist_prompt_version_is_stable() -> None:
-    assert CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION == "receptionist-analysis-v1"
+    assert CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION == "receptionist-analysis-v2"
     assert (
         get_receptionist_analysis_prompt_version() == CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION
     )
