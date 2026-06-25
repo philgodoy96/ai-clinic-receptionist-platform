@@ -23,6 +23,7 @@ from app.ai.llm_reliability import (
     failure_category_for_reason,
     is_fallback_provider_eligible,
     is_primary_provider_retryable,
+    is_structural_output_failure,
     parse_failure_reason_from_parse_error,
 )
 from app.ai.prompt_versions import get_current_receptionist_analysis_prompt_metadata
@@ -47,6 +48,13 @@ _CONTEXT_SNAPSHOT_PREFIX = (
     "Use this only to interpret the user's latest message. "
     "Do not invent missing patient details. "
     "Do not assume a durable action has happened unless explicitly stated."
+)
+_STRUCTURAL_OUTPUT_REPAIR_INSTRUCTION = (
+    "Previous output could not be parsed or failed schema validation. "
+    "Return only a valid JSON object matching the required schema. "
+    "Do not include markdown, code fences, comments, explanations, or extra fields. "
+    "If the user's message is ambiguous, represent that through the allowed schema "
+    "fields rather than inventing information."
 )
 _ISO_TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 _ISO_DATETIME_TIME_PATTERN = re.compile(r"[T ](\d{1,2}):(\d{2})")
@@ -318,19 +326,21 @@ class LLMReceptionistAnalysisService:
     ) -> ReceptionistAnalysisResult:
         started_at = perf_counter()
         prompt_version = get_current_receptionist_analysis_prompt_metadata().version
-        llm_request = self._build_llm_request(
-            request=request,
-            prompt_version=prompt_version,
-        )
 
         primary_attempt_count = 0
         fallback_attempt_count = 0
         used_repair = False
+        include_repair_prompt = False
         last_failure_reason = LLMFailureReason.NONE
         last_error: str | None = None
 
         while primary_attempt_count < self.max_primary_attempts:
             primary_attempt_count += 1
+            llm_request = self._build_llm_request(
+                request=request,
+                prompt_version=prompt_version,
+                include_repair_prompt=include_repair_prompt,
+            )
             attempt = self._attempt_provider(
                 provider=self.primary_provider,
                 llm_request=llm_request,
@@ -356,6 +366,9 @@ class LLMReceptionistAnalysisService:
             if not attempt.retryable:
                 break
 
+            if is_structural_output_failure(last_failure_reason):
+                include_repair_prompt = True
+
         if (
             self.fallback_provider is not None
             and self.max_fallback_attempts > 0
@@ -363,6 +376,11 @@ class LLMReceptionistAnalysisService:
         ):
             while fallback_attempt_count < self.max_fallback_attempts:
                 fallback_attempt_count += 1
+                llm_request = self._build_llm_request(
+                    request=request,
+                    prompt_version=prompt_version,
+                    include_repair_prompt=include_repair_prompt,
+                )
                 attempt = self._attempt_provider(
                     provider=self.fallback_provider,
                     llm_request=llm_request,
@@ -389,6 +407,9 @@ class LLMReceptionistAnalysisService:
                 last_error = attempt.error
                 if not is_fallback_provider_eligible(last_failure_reason):
                     break
+
+                if is_structural_output_failure(last_failure_reason):
+                    include_repair_prompt = True
 
         return self._deterministic_fallback_result(
             started_at=started_at,
@@ -442,11 +463,12 @@ class LLMReceptionistAnalysisService:
                 retryable=is_primary_provider_retryable(failure_reason),
             )
         except StructuredOutputValidationError as exc:
+            failure_reason = LLMFailureReason.SCHEMA_VALIDATION_FAILED
             return _ProviderAttemptFailure(
-                failure_reason=LLMFailureReason.SCHEMA_VALIDATION_FAILED,
+                failure_reason=failure_reason,
                 error=str(exc),
                 used_repair=used_repair,
-                retryable=False,
+                retryable=is_primary_provider_retryable(failure_reason),
             )
         except LLMOutputSafetyViolation as exc:
             return _ProviderAttemptFailure(
@@ -474,6 +496,7 @@ class LLMReceptionistAnalysisService:
         *,
         request: ReceptionistAnalysisRequest,
         prompt_version: str,
+        include_repair_prompt: bool = False,
     ) -> LLMRequest:
         messages = [
             LLMMessage(
@@ -498,6 +521,14 @@ class LLMReceptionistAnalysisService:
                         f"{_CONTEXT_SNAPSHOT_PREFIX}\n"
                         f"Conversation context snapshot:\n{snapshot_json}"
                     ),
+                ),
+            )
+
+        if include_repair_prompt:
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=_STRUCTURAL_OUTPUT_REPAIR_INSTRUCTION,
                 ),
             )
 

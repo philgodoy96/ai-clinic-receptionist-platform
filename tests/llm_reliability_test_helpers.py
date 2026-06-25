@@ -74,12 +74,52 @@ class FailOnceThenSucceedProvider:
         )
 
 
+class FailOnceThenSucceedCapturingProvider:
+    def __init__(self, *, success_content: str) -> None:
+        self.success_content = success_content
+        self.call_count = 0
+        self.requests: list[LLMRequest] = []
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        self.call_count += 1
+        if self.call_count == 1:
+            raise LLMProviderError("simulated provider failure")
+        return LLMResponse(
+            content=self.success_content,
+            model="test-model",
+            input_tokens=12,
+            output_tokens=8,
+            estimated_cost_micros=42,
+        )
+
+
 class SequentialContentProvider:
     def __init__(self, contents: list[str]) -> None:
         self.contents = contents
         self.call_count = 0
 
     def complete(self, request: LLMRequest) -> LLMResponse:
+        index = min(self.call_count, len(self.contents) - 1)
+        content = self.contents[index]
+        self.call_count += 1
+        return LLMResponse(
+            content=content,
+            model="test-model",
+            input_tokens=12,
+            output_tokens=8,
+            estimated_cost_micros=42,
+        )
+
+
+class SequentialCapturingContentProvider:
+    def __init__(self, contents: list[str]) -> None:
+        self.contents = contents
+        self.call_count = 0
+        self.requests: list[LLMRequest] = []
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
         index = min(self.call_count, len(self.contents) - 1)
         content = self.contents[index]
         self.call_count += 1
@@ -113,7 +153,9 @@ def build_orchestration_service(
     *,
     primary_provider: CountingLLMProvider
     | FailOnceThenSucceedProvider
+    | FailOnceThenSucceedCapturingProvider
     | SequentialContentProvider
+    | SequentialCapturingContentProvider
     | AlwaysFailingLLMProvider,
     fallback_provider: CountingLLMProvider | AlwaysFailingLLMProvider | None = None,
     max_primary_attempts: int = 2,
@@ -151,3 +193,19 @@ def assert_shadow_reliability_metadata(shadow: dict[str, object]) -> None:
         assert field_name in shadow, field_name
 
     assert shadow["prompt_version"] == expected_prompt_version()
+
+
+REPAIR_PROMPT_MARKER = (
+    "Previous output could not be parsed or failed schema validation"
+)
+
+
+def request_includes_repair_prompt(request: LLMRequest) -> bool:
+    return any(REPAIR_PROMPT_MARKER in message.content for message in request.messages)
+
+
+def last_user_message(request: LLMRequest) -> str:
+    for message in reversed(request.messages):
+        if message.role == "user":
+            return message.content
+    return ""

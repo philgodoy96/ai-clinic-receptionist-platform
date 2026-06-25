@@ -12,11 +12,15 @@ from app.services.llm_receptionist import (
 from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
 from tests.llm_reliability_test_helpers import (
     CountingLLMProvider,
+    FailOnceThenSucceedCapturingProvider,
     FailOnceThenSucceedProvider,
+    SequentialCapturingContentProvider,
     SequentialContentProvider,
     analysis_request,
     assert_result_reliability_metadata,
     build_orchestration_service,
+    last_user_message,
+    request_includes_repair_prompt,
 )
 from tests.test_groq_llm_provider import (
     SequentialStubGroqHttpClient,
@@ -377,3 +381,127 @@ def test_groq_safety_violation_does_not_retry_or_call_fallback() -> None:
     assert fallback.call_count == 0
     assert result.used_fallback is True
     assert result.failure_reason == LLMFailureReason.SAFETY_VIOLATION
+
+
+def test_json_parse_failure_uses_repair_prompt_on_retry() -> None:
+    user_message = "I need a cardiologist tomorrow morning."
+    primary = SequentialCapturingContentProvider(
+        [
+            "this is not valid json",
+            build_receptionist_analysis_payload(),
+        ],
+    )
+    service = build_orchestration_service(primary_provider=primary)
+
+    result = service.analyze_message(
+        ReceptionistAnalysisRequest(
+            user_message=user_message,
+            conversation_context={},
+        ),
+    )
+
+    assert primary.call_count == 2
+    assert result.used_fallback is False
+    assert result.primary_attempt_count == 2
+    assert request_includes_repair_prompt(primary.requests[0]) is False
+    assert request_includes_repair_prompt(primary.requests[1]) is True
+    assert last_user_message(primary.requests[0]) == user_message
+    assert last_user_message(primary.requests[1]) == user_message
+    assert_result_reliability_metadata(result)
+
+
+def test_schema_validation_failure_retries_with_repair_prompt_and_succeeds() -> None:
+    invalid_payload = json.dumps(
+        {
+            "intent": "made_up_intent",
+            "confidence": 0.9,
+            "urgency": "normal",
+        },
+    )
+    primary = SequentialCapturingContentProvider(
+        [
+            invalid_payload,
+            build_receptionist_analysis_payload(
+                intent="appointment_request",
+                confidence=0.9,
+            ),
+        ],
+    )
+    service = build_orchestration_service(primary_provider=primary)
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary.call_count == 2
+    assert result.used_fallback is False
+    assert result.failure_reason == LLMFailureReason.NONE
+    assert request_includes_repair_prompt(primary.requests[1]) is True
+    assert_result_reliability_metadata(result)
+
+
+def test_schema_validation_failure_after_max_attempts_uses_deterministic_fallback() -> None:
+    invalid_payload = json.dumps(
+        {
+            "intent": "made_up_intent",
+            "confidence": 0.9,
+            "urgency": "normal",
+        },
+    )
+    primary = SequentialCapturingContentProvider([invalid_payload, invalid_payload])
+    service = build_orchestration_service(primary_provider=primary)
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary.call_count == 2
+    assert result.used_fallback is True
+    assert result.failure_reason == LLMFailureReason.SCHEMA_VALIDATION_FAILED
+    assert request_includes_repair_prompt(primary.requests[1]) is True
+    assert_result_reliability_metadata(result)
+
+
+def test_context_snapshot_preserved_across_repair_retry_without_pii() -> None:
+    user_message = "tomorrow morning"
+    context: dict[str, object] = {
+        "selected_specialty_name": "Cardiology",
+        "selected_doctor_name": "Dr. Emily Carter",
+        "hold_id": "hold-uuid-1",
+        "patient_email": "real@example.com",
+    }
+    primary = SequentialCapturingContentProvider(
+        [
+            "this is not valid json",
+            build_receptionist_analysis_payload(),
+        ],
+    )
+    service = build_orchestration_service(primary_provider=primary)
+
+    result = service.analyze_message(
+        ReceptionistAnalysisRequest(
+            user_message=user_message,
+            conversation_context=context,
+        ),
+    )
+
+    assert result.used_fallback is False
+    assert primary.call_count == 2
+    for request in primary.requests:
+        contents = "\n".join(message.content for message in request.messages)
+        assert "Conversation context snapshot:" in contents
+        assert '"selected_specialty":"Cardiology"' in contents
+        assert last_user_message(request) == user_message
+        assert "hold-uuid-1" not in contents
+        assert "real@example.com" not in contents
+    assert request_includes_repair_prompt(primary.requests[1]) is True
+
+
+def test_provider_exception_retry_does_not_add_repair_prompt() -> None:
+    primary = FailOnceThenSucceedCapturingProvider(
+        success_content=build_receptionist_analysis_payload(),
+    )
+    service = build_orchestration_service(primary_provider=primary)
+
+    result = service.analyze_message(analysis_request())
+
+    assert primary.call_count == 2
+    assert result.used_fallback is False
+    assert all(request_includes_repair_prompt(request) is False for request in primary.requests)
+    assert_result_reliability_metadata(result)
