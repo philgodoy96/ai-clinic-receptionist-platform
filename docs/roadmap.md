@@ -153,7 +153,8 @@ Implemented:
 - Retell voice appointment rescheduling with explicit reschedule confirmation, original appointment and hold/slot validation, idempotent provider callback handling, and delegation to `AppointmentReschedulingService` (see `docs/architecture/retell-voice-rescheduling.md`)
 - Appointment rescheduling foundation with shared `AppointmentReschedulingService`, original appointment validation, target slot/hold validation, explicit confirmation, idempotency, safe audit logging, and safe conversation metadata updates (see `docs/architecture/appointment-rescheduling-foundation.md`)
 - Clinic time configuration with validated `CLINIC_*` settings, `ClinicTimeService`, structured date/time expressions, business-day and business-hours enforcement on scheduling tools, and `get_clinic_context` Retell tool (see `docs/architecture/clinic-time-context-and-tool-contracts.md`)
-- Scheduling availability policy with `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` and `SCHEDULING_BOOKING_HORIZON_DAYS`, hardened `check_availability`, and Redis degradation policy (see `docs/architecture/scheduling-services.md`)
+- Scheduling availability policy with `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` and `SCHEDULING_BOOKING_HORIZON_DAYS`, hardened `check_availability`, horizon-aware response metadata, and Redis degradation policy (see `docs/architecture/scheduling-services.md`)
+- Rolling demo availability generation CLI (`python -m app.scripts.generate_demo_availability`) using `SCHEDULING_BOOKING_HORIZON_DAYS` as the single horizon source of truth (see `docs/operations/demo-availability-generation.md`)
 - Resend email dispatch foundation with durable EmailJob retry policy, appointment confirmation idempotency, RabbitMQ wake-up messages, and fake provider default
 - Public demo deployment runbook, `.env.demo.example`, production configuration validation, and deployment safety tests
 - Public web demo shell in `web/` (Next.js landing, backend-powered chat panel, Retell Web SDK voice demo behind feature flag, safe API error handling)
@@ -167,8 +168,9 @@ Upcoming:
 - Written chat reschedule flow
 - Patient-aware hold recovery for authenticated patient sessions
 - Hold renewal with maximum absolute timeout
-- Dynamic doctor schedule rules and rolling availability generation
+- Dynamic doctor schedule rules and per-doctor working hours
 - Admin schedule management
+- Background availability generation job for production rolling schedules
 - StaffUser/RBAC
 - Assignment notification job
 - Staff notification provider adapter
@@ -211,7 +213,7 @@ Upcoming:
 - Tool call recording
 - Written chat reschedule flow
 - Patient-aware hold recovery for authenticated patient sessions
-- Dynamic doctor schedule rules and rolling availability generation
+- Dynamic doctor schedule engine, production rolling schedule rules, and background availability generation jobs
 - Admin schedule management
 - Rescheduling and cancellation email notification templates where not yet deployed
 

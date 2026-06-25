@@ -46,7 +46,7 @@ Availability lookup applies clinic-local scheduling policy before returning cand
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` | `60` | Minimum minutes from clinic-local current time before a slot may appear in availability. Prevents offering times that are too close to "now" for realistic booking. |
-| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Maximum number of days from clinic-local current time that availability lookup will return. Limits how far into the future seeded or generated slots are exposed. |
+| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Maximum number of days from clinic-local current time that availability lookup will return. **Single source of truth** for both availability visibility and demo availability generation (`python -m app.scripts.generate_demo_availability`). |
 
 For local development and CI, the defaults are usually sufficient:
 
@@ -56,6 +56,8 @@ SCHEDULING_BOOKING_HORIZON_DAYS=14
 ```
 
 Policy is enforced in `SchedulingService.check_availability` using `ClinicTimeService` for timezone-aware boundaries. Availability is an advisory read model; holds and booking apply separate consistency checks.
+
+Demo operators refresh future slots through the booking horizon with `python -m app.scripts.generate_demo_availability`. See [Demo Availability Generation](operations/demo-availability-generation.md).
 
 See also: [Scheduling Application Services](architecture/scheduling-services.md).
 

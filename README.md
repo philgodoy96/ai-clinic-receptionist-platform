@@ -192,7 +192,7 @@ This repo supports two deployment profiles:
 | **Guardrails** | Disabled | Redis-backed rate limits and quotas |
 | **Patient data** | Fictional demo clinic only | Fictional demo clinic only — no real PHI |
 
-**Local mode** needs no external API keys. Use Docker Compose for PostgreSQL, Redis, and RabbitMQ. See [`docs/operations/local-development.md`](docs/operations/local-development.md).
+**Local mode** needs no external API keys. Use Docker Compose for PostgreSQL, Redis, and RabbitMQ. After migrations and `python -m scripts.seed_demo_data`, refresh demo availability through the booking horizon with `python -m app.scripts.generate_demo_availability`. See [`docs/operations/local-development.md`](docs/operations/local-development.md) and [`docs/operations/demo-availability-generation.md`](docs/operations/demo-availability-generation.md).
 
 **Public demo mode** enables bounded internet-facing access with `PUBLIC_DEMO_MODE=true` and guardrails enabled. Startup validation rejects unsafe production configuration (for example missing managed Postgres/Redis URLs, disabled guardrails, or insecure Retell webhooks).
 

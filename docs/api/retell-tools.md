@@ -74,6 +74,8 @@ Example request:
       "start_to": "2026-07-01T12:00:00Z"
     }
 
+Successful results include `availability_status` (`available`, `no_matching_slots`, `outside_booking_horizon`, or `needs_date_clarification`), `available_slots`, optional `booking_window`, and optional `suggested_response_text`. The backend classifies horizon from resolved absolute dates — not phrases like "next month". Retell must not hardcode booking horizon policy.
+
 ### lookup_patient
 
     POST /api/v1/retell/tools/lookup-patient
