@@ -9,10 +9,12 @@ from fastapi.testclient import TestClient
 
 from app.adapters.retell.scheduling_tools import RetellSchedulingToolAdapter
 from app.api.dependencies import get_retell_scheduling_tool_adapter
+from app.domain.scheduling.availability import AvailabilityCheckStatus
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.main import create_app
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.services.scheduling import (
+    AvailabilityCheckResult,
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
     DoctorNotFoundError,
@@ -291,6 +293,25 @@ class FakeSchedulingService:
             and slot.start_time >= start_from
             and slot.start_time < start_to
         ]
+
+    def check_availability_with_status(
+        self,
+        *,
+        doctor_id: UUID,
+        start_from: datetime,
+        start_to: datetime,
+    ) -> AvailabilityCheckResult:
+        slots = self.check_availability(
+            doctor_id=doctor_id,
+            start_from=start_from,
+            start_to=start_to,
+        )
+        status = (
+            AvailabilityCheckStatus.AVAILABLE
+            if slots
+            else AvailabilityCheckStatus.NO_MATCHING_SLOTS
+        )
+        return AvailabilityCheckResult(status=status, available_slots=list(slots))
 
     def get_available_slot_for_hold(self, availability_slot_id: UUID) -> AvailabilitySlot:
         for slot in self.availability_slots:

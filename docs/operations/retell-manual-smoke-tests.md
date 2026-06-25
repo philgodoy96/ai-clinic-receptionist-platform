@@ -1,8 +1,10 @@
 # Retell Booking, Lookup, Cancellation, and Rescheduling Smoke Tests
 
-Manual validation record for the Retell voice flow with booking, upcoming appointment lookup, cancellation, and rescheduling. Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded (`python -m scripts.seed_demo_data`) and [Retell Master Prompt v5](retell-master-prompt-v5.md) (`retell-receptionist-v5`) pasted into the agent.
+Manual validation record for the Retell voice flow with booking, upcoming appointment lookup, cancellation, and rescheduling. Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded (`python -m scripts.seed_demo_data`) and availability extended through the booking horizon (`python -m app.scripts.generate_demo_availability`). Use [Retell Master Prompt v5](retell-master-prompt-v5.md) (`retell-receptionist-v5`) pasted into the agent.
 
 Companion docs:
+
+- [Demo Availability Generation](demo-availability-generation.md) — CLI generator and idempotency
 
 - [Retell Master Prompt v5](retell-master-prompt-v5.md) — active agent prompt
 - [Retell Master Prompt v4](retell-master-prompt-v4.md) — historical cancellation-only prompt (rescheduling deferred)
@@ -208,9 +210,71 @@ Appointment holds are intentionally short-lived coordination records, not durabl
 
 ---
 
+## Demo Availability Generation Smoke Tests
+
+Run after migrations and base seed. See [Demo Availability Generation](demo-availability-generation.md).
+
+### DA — Generate availability after seed
+
+```powershell
+python -m scripts.seed_demo_data
+python -m app.scripts.generate_demo_availability
+```
+
+| Expected | Detail |
+|----------|--------|
+| `slots_created` | `>= 0` |
+| `slots_existing` | `>= 0` |
+| `horizon_days` | Matches configured `SCHEDULING_BOOKING_HORIZON_DAYS` (default 14) |
+| `start_date` / `end_date` | Clinic-local range covering current date through horizon |
+
+### DB — Re-run generator (idempotency)
+
+```powershell
+python -m app.scripts.generate_demo_availability
+```
+
+| Expected | Detail |
+|----------|--------|
+| `slots_created` | `0` |
+| `slots_existing` | `> 0` when the first run created slots |
+
+### DC — Check availability inside horizon with slots
+
+| Action | Retell `check_availability` or REST availability for a date inside horizon with seeded/generated slots |
+| Expected | `availability_status: available` and non-empty `available_slots` |
+
+### DD — Check availability inside horizon without slots
+
+| Action | Request a business day inside horizon where no slots exist for the doctor/window |
+| Expected | `availability_status: no_matching_slots` |
+| Expected | `suggested_response_text` is voice-safe (no internal codes or Redis details) |
+
+### DE — Check availability beyond horizon
+
+| Action | Request a resolved date/window beyond `latest_bookable_date` |
+| Expected | `availability_status: outside_booking_horizon` |
+| Expected | `booking_window` present with `latest_bookable_date` |
+| Expected | `suggested_response_text` mentions the open-through date |
+
+### DF — Check vague or missing date
+
+| Action | Unified `check_availability` with specialty/doctor but no `date_expression` |
+| Expected | `availability_status: needs_date_clarification` |
+| Expected | `suggested_response_text` asks for a specific day |
+
+### DG — End-of-month edge case
+
+| Setup | Clinic date near end of month (for example 2026-06-28) with 14-day horizon |
+| Action | Resolve caller intent to a date in the next calendar month but still inside horizon (for example 2026-07-01) |
+| Expected | **Not** `outside_booking_horizon` — backend uses resolved date, not the phrase "next month" |
+| Expected | Normal availability check (`available` or `no_matching_slots`) |
+
+---
+
 ## Scheduling Availability Hardening Smoke Tests
 
-Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded. These scenarios validate scheduling policy and Redis degradation behavior introduced in the availability hardening slice.
+Run after [Retell Dashboard Setup](retell-dashboard-setup.md) with demo data seeded and availability generated. These scenarios validate scheduling policy and Redis degradation behavior.
 
 Configuration defaults (override in `.env` if needed):
 
@@ -279,15 +343,16 @@ SCHEDULING_BOOKING_HORIZON_DAYS=14
 - **Cancellation execution** is supported via `cancel_appointment` after explicit confirmation.
 - **Rescheduling execution** is supported via `reschedule_appointment` after explicit confirmation, hold on the new slot, and validated references from prior tool results.
 - **Hold recovery after call drop** is not implemented; holds expire automatically by backend TTL policy.
-- **Scheduling availability hardening** is implemented: minimum lead time, booking horizon, durable status filtering, and Redis-held slot exclusion when Redis is available.
-- **Dynamic schedule rules** and rolling availability generation remain future work.
+- **Scheduling availability hardening** is implemented: minimum lead time, booking horizon, durable status filtering, Redis-held slot exclusion, and horizon-aware `availability_status` metadata.
+- **Demo availability generation** is implemented via CLI (`python -m app.scripts.generate_demo_availability`) — not a production schedule engine or background worker.
+- **Dynamic doctor schedule rules**, **admin schedule management**, and **background availability generation jobs** remain intentional future evolution.
 - **Rescheduling email notifications** may not be implemented in all deployments.
 - **Redis is required** for hold creation, booking, and rescheduling; availability reads may degrade gracefully when Redis hold filtering is unavailable.
 
 ## Follow-up roadmap
 
 1. **Patient-aware hold recovery** for authenticated patient sessions (separate from current voice flow).
-2. **Dynamic schedules and rolling availability** — doctor-specific schedule rules, admin schedule management.
+2. **Dynamic doctor schedule engine** — per-doctor rules, admin schedule management, automated background generation.
 3. **Rescheduling and cancellation notification templates** where not yet deployed.
 
 ---
@@ -301,6 +366,7 @@ After prompt or backend changes:
 - [ ] Re-run scenarios 1–7, rescheduling checklist R1–R7, and cancellation checklist C1–C7 above; update **Observed status** if behavior changed.
 - [ ] Review transcript for banned caller-facing terms (slot, UUID, patient not found, hold reference).
 - [ ] Confirm `book_appointment`, `cancel_appointment`, and `reschedule_appointment` outcomes show `status: succeeded` only before spoken confirmation.
+- [ ] Run [Demo Availability Generation Smoke Tests](#demo-availability-generation-smoke-tests) before voice demos when the horizon may have rolled forward.
 - [ ] Run [Scheduling Availability Hardening Smoke Tests](#scheduling-availability-hardening-smoke-tests) after Redis or scheduling policy changes.
 - [ ] Log prompt version `retell-receptionist-v5` in deployment notes.
 

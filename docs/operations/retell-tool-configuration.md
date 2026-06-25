@@ -147,15 +147,29 @@ Parameter schemas and dashboard descriptions for the remaining tools (`get_clini
 | Setting | Default | Effect |
 |---------|---------|--------|
 | `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` | `60` | Excludes slots before clinic now + lead time |
-| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Excludes slots beyond the horizon |
+| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Excludes slots beyond the horizon; **single source of truth** for availability visibility and demo slot generation |
 
-Same-day scheduling is allowed when returned by backend policy. Retell must not decide what is bookable. Production deployments may increase lead time (for example 120 minutes) based on clinic operations.
+Same-day scheduling is allowed when returned by backend policy. Retell must **not** decide what is bookable or hardcode horizon length. The backend classifies horizon using **resolved absolute dates/windows**, not phrases like "next month".
+
+### Horizon-aware response metadata
+
+Successful `check_availability` results may include:
+
+| Field | Purpose |
+|-------|---------|
+| `availability_status` | `available`, `no_matching_slots`, `outside_booking_horizon`, `needs_date_clarification` |
+| `available_slots` | Matching openings (empty when not `available`) |
+| `booking_window` | `earliest_bookable_date`, `latest_bookable_date`, `timezone` when relevant |
+| `suggested_response_text` | Voice-safe recovery phrase — prefer over improvising when no slots or clarification is needed |
+
+See [Retell Tool Descriptions — check_availability](retell-tool-descriptions.md#2-check_availability).
 
 Consistency model:
 
 ```text
 check_availability        = advisory read
 hold_appointment_slot     = temporary coordination boundary
+book_appointment          = durable state transition
 reschedule_appointment    = durable state transition
 database constraints      = final safety net
 ```

@@ -26,7 +26,7 @@ The current scheduling service supports:
 
 - Listing active specialties
 - Listing active doctors
-- Checking doctor availability with scheduling policy enforcement
+- Checking doctor availability with scheduling policy enforcement and horizon-aware response metadata
 - Looking up patients with sufficient identity
 - Listing upcoming patient appointments
 - Finding scheduled appointment conflicts
@@ -60,9 +60,24 @@ Availability is filtered using clinic-local time (`ClinicTimeService`) and confi
 | Setting | Default | Effect |
 |---------|---------|--------|
 | `SCHEDULING_MIN_BOOKING_LEAD_MINUTES` | `60` | Excludes past slots and slots starting before `clinic_now + lead` |
-| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Excludes slots starting at or after `clinic_now + horizon` |
+| `SCHEDULING_BOOKING_HORIZON_DAYS` | `14` | Excludes slots starting at or after `clinic_now + horizon`. **Single source of truth** for availability visibility and demo availability generation. |
 
 Requested query windows are clamped to this policy range before the database is queried.
+
+Horizon classification uses **resolved absolute dates or windows**, not natural-language phrases. For example, if today is 2026-06-28 and the horizon is 14 days, a resolved request for 2026-07-01 is inside the window even when the caller said "next month".
+
+### Availability response status
+
+`check_availability_with_status` (and Retell `check_availability` results) expose voice-safe metadata:
+
+| `availability_status` | Meaning |
+|-----------------------|---------|
+| `available` | Matching bookable slots exist in the resolved window |
+| `no_matching_slots` | Resolved window overlaps the booking horizon but no slots match |
+| `outside_booking_horizon` | Resolved window does not overlap the booking horizon |
+| `needs_date_clarification` | Request too vague to resolve safely (Retell unified tool path) |
+
+When relevant, responses include `booking_window` (`earliest_bookable_date`, `latest_bookable_date`, `timezone`) and `suggested_response_text` for natural voice recovery. Retell must not hardcode horizon policy or classify phrases like "next month" without backend resolution.
 
 ### Excluded slots
 
@@ -103,6 +118,26 @@ If rescheduling fails, no partial durable state should remain at the service bou
 - **Final safety net** — PostgreSQL constraints and slot status transitions protect against duplicate scheduled appointments even if earlier layers race.
 
 Postgres remains the durable source of truth for slot status and appointments. Redis holds are ephemeral coordination state.
+
+Past or out-of-policy slots may remain in the database from earlier demo runs. Availability queries must not return them when they fall outside lead time, horizon, or status filters.
+
+## Demo availability generation
+
+For local and public demo environments, future slots can be maintained with:
+
+```powershell
+python -m app.scripts.generate_demo_availability
+```
+
+| Property | Detail |
+|----------|--------|
+| Scope | Idempotent local/demo data maintenance — not production scheduling |
+| Horizon | Uses `SCHEDULING_BOOKING_HORIZON_DAYS` (same setting as availability policy) |
+| Idempotency | Lookup before insert on `(doctor_id, start_time)`; does not overwrite booked slots |
+| Side effects | Does not modify appointments or delete past slots |
+| Execution | Manual CLI only — no background worker in this slice |
+
+See [Demo Availability Generation](../operations/demo-availability-generation.md).
 
 See also: [Configuration — Scheduling Availability Policy](../configuration.md#scheduling-availability-policy), [Appointment Slot Holds](appointment-holds.md), [Appointment Booking](appointment-booking.md).
 
@@ -171,10 +206,16 @@ Intentional future evolution (not missing MVP requirements):
 - Written chat reschedule flow
 - Patient-aware hold recovery for authenticated patient sessions
 - Hold renewal with maximum absolute timeout
-- Dynamic doctor schedule rules
-- Rolling availability generation beyond seeded demo slots
+- Dynamic doctor schedule rules and per-doctor working hours
 - Admin schedule management UI
+- Background availability generation job (production rolling schedule maintenance)
+- Production rolling schedule rules beyond demo slot templates
 - Rescheduling and cancellation email notification templates where not yet deployed
+
+Implemented in the demo availability slice (not production schedule engine):
+
+- Rolling demo availability generation CLI (`python -m app.scripts.generate_demo_availability`)
+- Horizon-aware availability response metadata for Retell and scheduling services
 
 ## Testing Strategy
 

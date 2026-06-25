@@ -141,7 +141,10 @@ Intentionally not implemented in the current voice scheduling flow:
 - Hold renewal with a maximum absolute timeout
 - Redis dependency health check surfaced on `/health/dependencies` beyond basic connectivity
 
-Future work (separate from current coordination model):
+Future work (separate from current coordination model and demo CLI generation):
 
-- Dynamic doctor schedule rules and rolling availability generation
+- Dynamic doctor schedule engine and production rolling schedule rules
 - Admin schedule management
+- Background availability generation job
+
+Demo operators use `python -m app.scripts.generate_demo_availability` for idempotent local/demo slot maintenance. See [Demo Availability Generation](../operations/demo-availability-generation.md).
