@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from app.domain.appointment_rescheduling import build_reschedule_success_context_updates
+from app.domain.scheduling.enums import AppointmentStatus
 from app.domain.voice_conversation import read_voice_context
 
 if TYPE_CHECKING:
@@ -21,6 +23,84 @@ _BLOCKED_RESCHEDULE_ARGUMENT_KEYS = frozenset(
 )
 
 VOICE_RESCHEDULING_SOURCE = "voice_rescheduling"
+
+_APPOINTMENT_NOT_OWNED_MESSAGE = (
+    "I could not verify that appointment for your profile."
+)
+_ALREADY_RESCHEDULED_MESSAGE = (
+    "That appointment has already been rescheduled."
+)
+_MISSING_CONFIRMATION_MESSAGE = (
+    "Please confirm that you want to reschedule that appointment."
+)
+_NOT_RESCHEDULABLE_MESSAGE = (
+    "I can only reschedule upcoming scheduled appointments through this voice flow."
+)
+_HOLD_UNAVAILABLE_MESSAGE = (
+    "That new time may no longer be available. Let me check the latest schedule again."
+)
+_NEW_SLOT_UNAVAILABLE_MESSAGE = (
+    "That time is no longer available. Let me check another opening."
+)
+_PATIENT_RESOLUTION_RETRY_MESSAGE = (
+    "I need to verify your profile again before I can reschedule that appointment."
+)
+
+
+class VoiceReschedulingError(Exception):
+    """Base exception for voice appointment rescheduling errors."""
+
+
+class VoiceReschedulingMissingConfirmationError(VoiceReschedulingError):
+    """Raised when explicit confirmation or confirmation text is missing."""
+
+
+class PatientResolutionRequiredForReschedulingError(VoiceReschedulingError):
+    """Raised when rescheduling lacks a valid scoped patient resolution token."""
+
+
+class AppointmentNotOwnedByPatientForReschedulingError(VoiceReschedulingError):
+    """Raised when the appointment does not belong to the resolved patient."""
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceAppointmentReschedulingRequest:
+    patient_resolution_id: str
+    appointment_id: UUID
+    new_slot_id: UUID
+    hold_id: UUID
+    explicit_confirmation: bool
+    confirmation_text: str | None
+    provider_call_id: str
+    conversation_id: UUID | None = None
+    idempotency_key: str = ""
+    rescheduling_reason: str | None = None
+    call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceAppointmentReschedulingResult:
+    original_appointment_id: UUID
+    new_appointment_id: UUID
+    status: str
+    human_readable_summary: str | None
+    suggested_response_text: str
+    already_rescheduled: bool = False
+    duplicate: bool = False
+    confirmation_email_created: bool = False
+
+    def to_tool_result(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "original_appointment_id": str(self.original_appointment_id),
+            "new_appointment_id": str(self.new_appointment_id),
+            "appointment_id": str(self.new_appointment_id),
+            "status": self.status,
+            "already_rescheduled": self.already_rescheduled,
+            "suggested_response_text": self.suggested_response_text,
+        }
+        if self.human_readable_summary is not None:
+            payload["human_readable_summary"] = self.human_readable_summary
+        return payload
 
 
 def reschedule_patient_phone_required() -> bool:
@@ -60,13 +140,23 @@ def collect_conversation_appointment_reference_candidates(
     return candidates
 
 
+def _resolve_reschedule_appointment_id_from_arguments(
+    arguments: RescheduleAppointmentToolArguments,
+) -> UUID | None:
+    argument_appointment_id = _parse_appointment_uuid(arguments.appointment_id)
+    if argument_appointment_id is not None:
+        return argument_appointment_id
+
+    return _parse_appointment_uuid(arguments.original_appointment_id)
+
+
 def resolve_reschedule_original_appointment_id(
     arguments: RescheduleAppointmentToolArguments,
     voice_context: dict[str, Any],
     *,
     conversation_appointment_id: UUID | None = None,
 ) -> UUID | None:
-    argument_appointment_id = _parse_appointment_uuid(arguments.original_appointment_id)
+    argument_appointment_id = _resolve_reschedule_appointment_id_from_arguments(arguments)
     if argument_appointment_id is not None:
         return argument_appointment_id
 
@@ -86,7 +176,7 @@ def is_reschedule_appointment_reference_ambiguous(
     *,
     conversation_appointment_id: UUID | None = None,
 ) -> bool:
-    if _parse_appointment_uuid(arguments.original_appointment_id) is not None:
+    if _resolve_reschedule_appointment_id_from_arguments(arguments) is not None:
         return False
 
     return (
@@ -107,7 +197,7 @@ def validate_reschedule_appointment_conversation_context(
     voice_context: dict[str, Any],
     conversation_appointment_id: UUID | None = None,
 ) -> bool:
-    argument_appointment_id = _parse_appointment_uuid(arguments.original_appointment_id)
+    argument_appointment_id = _resolve_reschedule_appointment_id_from_arguments(arguments)
     context_candidates = collect_conversation_appointment_reference_candidates(
         voice_context=voice_context,
         conversation_appointment_id=conversation_appointment_id,
@@ -272,3 +362,16 @@ def resolve_reschedule_original_appointment_id_for_conversation(
         voice_context,
         conversation_appointment_id=conversation.appointment_id,
     )
+
+
+def build_patient_resolution_retry_response_for_rescheduling() -> dict[str, str]:
+    return {"suggested_response_text": _PATIENT_RESOLUTION_RETRY_MESSAGE}
+
+
+def should_skip_reschedule_slot_precheck_for_appointment(
+    appointment: Any | None,
+) -> bool:
+    if appointment is None:
+        return False
+
+    return getattr(appointment, "status", None) is AppointmentStatus.RESCHEDULED

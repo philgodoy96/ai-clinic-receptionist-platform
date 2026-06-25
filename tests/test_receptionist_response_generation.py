@@ -5,7 +5,7 @@ from collections.abc import Generator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from app.ai.llm_provider import LLMProviderTimeoutError, LLMRequest
 from app.ai.response_output_validator import ResponseOutputValidationError, ResponseOutputValidator
 from app.core.config import get_settings
-from app.domain.appointment_rescheduling import AppointmentReschedulingResult
 from app.domain.appointments import AppointmentCancellationResult
 from app.domain.conversations.enums import ConversationChannel, ConversationStatus
 from app.domain.receptionist.enums import (
@@ -27,6 +26,7 @@ from app.domain.receptionist.response_planning import (
     build_response_plan,
     validate_response_plan,
 )
+from app.domain.voice_rescheduling import VoiceAppointmentReschedulingResult
 from app.models.conversations import Conversation
 from app.schemas.receptionist_response_planning import ResponsePlanSchema
 from app.services.appointment_booking import AppointmentBookingService
@@ -465,16 +465,18 @@ def test_voice_tool_response_includes_safe_suggested_response_text(
         )
     else:
         payload = adapter._build_reschedule_appointment_result(
-            cast(
-                AppointmentReschedulingResult,
-                SimpleNamespace(
-                    original_appointment_id="apt-original",
-                    new_appointment_id="apt-reschedule-123",
-                    patient_id="patient-1",
-                    duplicate=False,
-                    already_rescheduled=False,
-                    confirmation_email_created=False,
+            VoiceAppointmentReschedulingResult(
+                original_appointment_id=UUID("00000000-0000-4000-8000-000000000001"),
+                new_appointment_id=UUID("00000000-0000-4000-8000-000000000002"),
+                status="scheduled",
+                human_readable_summary=None,
+                suggested_response_text=(
+                    "Your appointment has been rescheduled. "
+                    "You'll receive a confirmation email shortly."
                 ),
+                duplicate=False,
+                already_rescheduled=False,
+                confirmation_email_created=False,
             ),
         )
 

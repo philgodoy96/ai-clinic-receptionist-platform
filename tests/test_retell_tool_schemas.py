@@ -63,7 +63,6 @@ def test_valid_hold_payload_parses() -> None:
             "arguments": {
                 "availability_slot_id": str(slot_id),
                 "owner_id": "retell-call-456",
-                "ttl_seconds": 300,
             },
         },
     )
@@ -73,7 +72,28 @@ def test_valid_hold_payload_parses() -> None:
     assert parsed.tool_name is RetellSupportedToolName.HOLD_APPOINTMENT_SLOT
     assert isinstance(parsed.arguments, HoldAppointmentSlotToolArguments)
     assert parsed.arguments.availability_slot_id == slot_id
-    assert parsed.arguments.ttl_seconds == 300
+    assert parsed.arguments.owner_id == "retell-call-456"
+
+
+def test_hold_payload_ignores_legacy_ttl_seconds() -> None:
+    slot_id = uuid4()
+
+    request = RetellProviderToolCallRequest.model_validate(
+        {
+            "provider_call_id": "retell-call-456",
+            "tool_name": "hold_appointment_slot",
+            "arguments": {
+                "availability_slot_id": str(slot_id),
+                "owner_id": "retell-call-456",
+                "ttl_seconds": 900,
+            },
+        },
+    )
+
+    parsed = parse_retell_tool_call(request)
+
+    assert isinstance(parsed.arguments, HoldAppointmentSlotToolArguments)
+    assert "ttl_seconds" not in HoldAppointmentSlotToolArguments.model_fields
 
 
 def test_valid_release_payload_parses() -> None:
@@ -146,17 +166,6 @@ def test_invalid_check_availability_limit_rejected(limit: int) -> None:
                 "start_from": "2026-07-01T09:00:00Z",
                 "start_to": "2026-07-01T12:00:00Z",
                 "limit": limit,
-            },
-        )
-
-
-@pytest.mark.parametrize("ttl_seconds", [30, 901])
-def test_invalid_hold_ttl_rejected(ttl_seconds: int) -> None:
-    with pytest.raises(ValidationError):
-        HoldAppointmentSlotToolArguments.model_validate(
-            {
-                "availability_slot_id": str(uuid4()),
-                "ttl_seconds": ttl_seconds,
             },
         )
 

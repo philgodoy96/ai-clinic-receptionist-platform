@@ -20,7 +20,6 @@ from app.core.request_context import get_correlation_id, get_request_id
 from app.domain.appointment_rescheduling import (
     AppointmentReschedulingError,
     AppointmentReschedulingHoldExpiredError,
-    AppointmentReschedulingMissingConfirmationError,
     AppointmentReschedulingNotFoundError,
     AppointmentReschedulingNotReschedulableError,
     AppointmentReschedulingRequest,
@@ -36,7 +35,6 @@ from app.domain.appointments import (
     AppointmentNotCancelableError,
     AppointmentNotFoundError,
 )
-from app.domain.audit.enums import AuditActorType
 from app.domain.patient_identity_resolution import (
     PatientIdentityResolutionRequest,
     PatientIdentityResolutionResult,
@@ -95,12 +93,14 @@ from app.domain.voice_conversation import (
     read_voice_context,
 )
 from app.domain.voice_rescheduling import (
-    VOICE_RESCHEDULING_SOURCE,
-    is_reschedule_appointment_executable,
-    is_reschedule_appointment_reference_ambiguous,
-    resolve_reschedule_original_appointment_id,
+    AppointmentNotOwnedByPatientForReschedulingError,
+    PatientResolutionRequiredForReschedulingError,
+    VoiceAppointmentReschedulingRequest,
+    VoiceAppointmentReschedulingResult,
+    VoiceReschedulingMissingConfirmationError,
+    build_patient_resolution_retry_response_for_rescheduling,
     resolve_reschedule_target_reference,
-    validate_reschedule_appointment_conversation_context,
+    should_skip_reschedule_slot_precheck_for_appointment,
 )
 from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
@@ -144,6 +144,11 @@ from app.services.scheduling import (
     PatientLookupCriteria,
 )
 from app.services.scheduling_availability import SchedulingAvailabilityResolver
+from app.services.voice_appointment_rescheduling import (
+    voice_rescheduling_hold_unavailable_message,
+    voice_rescheduling_new_slot_unavailable_message,
+    voice_rescheduling_not_reschedulable_message,
+)
 from app.services.voice_conversation_bridge import VoiceConversationBridgeService
 from app.services.voice_patient_appointment_lookup import (
     build_patient_resolution_retry_response,
@@ -336,6 +341,17 @@ class VoiceAppointmentCancellationServiceForRetellToolCalling(Protocol):
 VoiceAppointmentCancellationForRetell = VoiceAppointmentCancellationServiceForRetellToolCalling
 
 
+class VoiceAppointmentReschedulingServiceForRetellToolCalling(Protocol):
+    def reschedule_appointment(
+        self,
+        request: VoiceAppointmentReschedulingRequest,
+    ) -> Any:
+        raise NotImplementedError
+
+
+VoiceAppointmentReschedulingForRetell = VoiceAppointmentReschedulingServiceForRetellToolCalling
+
+
 @dataclass(frozen=True, slots=True)
 class _VoiceConversationSession:
     conversation: Conversation
@@ -360,6 +376,7 @@ class RetellToolCallingAdapter:
         patient_identity_resolution: PatientIdentityResolutionService | None = None,
         voice_patient_appointment_lookup: VoicePatientAppointmentLookupForRetell | None = None,
         voice_appointment_cancellation: VoiceAppointmentCancellationForRetell | None = None,
+        voice_appointment_rescheduling: VoiceAppointmentReschedulingForRetell | None = None,
         db: Session | None = None,
         provider: str = DEFAULT_RETELL_PROVIDER,
     ) -> None:
@@ -379,6 +396,7 @@ class RetellToolCallingAdapter:
         self.patient_identity_resolution = patient_identity_resolution
         self.voice_patient_appointment_lookup = voice_patient_appointment_lookup
         self.voice_appointment_cancellation = voice_appointment_cancellation
+        self.voice_appointment_rescheduling = voice_appointment_rescheduling
         self.db = db
         self.provider = provider
 
@@ -666,7 +684,7 @@ class RetellToolCallingAdapter:
                     "doctor_id": str(hold.doctor_id),
                     "start_time": hold.start_time.isoformat(),
                     "end_time": hold.end_time.isoformat(),
-                    "expires_in_seconds": self._resolve_hold_ttl_seconds(arguments.ttl_seconds),
+                    "expires_in_seconds": self.hold_service.ttl_seconds,
                 },
                 template_type=ReceptionistTemplateType.SLOT_HOLD_CREATED,
                 facts={},
@@ -997,7 +1015,7 @@ class RetellToolCallingAdapter:
         self,
         parsed: ParsedRetellToolCall,
     ) -> RetellToolCallResponse:
-        if self.appointment_rescheduling is None:
+        if self.voice_appointment_rescheduling is None:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
@@ -1006,36 +1024,28 @@ class RetellToolCallingAdapter:
 
         arguments = _as_reschedule_appointment_arguments(parsed.arguments)
 
-        if not arguments.explicit_confirmation:
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="reschedule_confirmation_required",
-            )
-
-        voice_session = self._ensure_voice_conversation(parsed)
-        if voice_session is None:
-            return self._missing_voice_conversation_context_response(parsed)
-
-        conversation = voice_session.conversation
-        voice_context = voice_session.voice_context
-
-        if is_reschedule_appointment_reference_ambiguous(
-            arguments,
-            voice_context,
-            conversation_appointment_id=conversation.appointment_id,
+        if not arguments.explicit_confirmation or not _has_non_empty_confirmation_text(
+            arguments.confirmation_text,
         ):
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="appointment_reference_required",
+                error_code="missing_explicit_confirmation",
+                result={
+                    "suggested_response_text": (
+                        "Please confirm that you want to reschedule that appointment."
+                    ),
+                },
             )
 
-        appointment_id = resolve_reschedule_original_appointment_id(
-            arguments,
-            voice_context,
-            conversation_appointment_id=conversation.appointment_id,
-        )
+        if not _has_non_empty_patient_resolution_id(arguments.patient_resolution_id):
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="patient_resolution_id_required",
+            )
+
+        appointment_id = _parse_reschedule_appointment_uuid(arguments)
         if appointment_id is None:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
@@ -1043,51 +1053,55 @@ class RetellToolCallingAdapter:
                 error_code="appointment_reference_required",
             )
 
-        if not validate_reschedule_appointment_conversation_context(
-            appointment_id,
-            arguments=arguments,
-            voice_context=voice_context,
-            conversation_appointment_id=conversation.appointment_id,
-        ):
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="appointment_context_mismatch",
-            )
-
-        if not is_reschedule_appointment_executable(
-            arguments,
-            voice_context=voice_context,
-            conversation_appointment_id=conversation.appointment_id,
-        ):
-            return build_failed_tool_call_response(
-                tool_name=parsed.tool_name.value,
-                tool_call_id=parsed.tool_call_id,
-                error_code="appointment_reference_required",
-            )
-
         hold_id, new_slot_id, target_error = resolve_reschedule_target_reference(arguments)
-        if target_error is not None:
+        if target_error is not None or hold_id is None or new_slot_id is None:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code=target_error,
+                error_code=target_error or "appointment_hold_not_found",
             )
 
-        if new_slot_id is not None and self.clinic_time_service is not None:
+        voice_session = self._ensure_voice_conversation(parsed)
+        if voice_session is None:
+            return self._missing_voice_conversation_context_response(parsed)
+
+        conversation = voice_session.conversation
+
+        skip_slot_precheck = False
+        if self.appointments is not None:
+            existing_appointment = self.appointments.get_by_id(appointment_id)
+            skip_slot_precheck = should_skip_reschedule_slot_precheck_for_appointment(
+                existing_appointment,
+            )
+
+        if (
+            not skip_slot_precheck
+            and new_slot_id is not None
+            and self.clinic_time_service is not None
+        ):
             try:
                 slot = self.scheduling_service.get_available_slot_for_hold(new_slot_id)
             except AvailabilitySlotNotFoundError:
                 return build_failed_tool_call_response(
                     tool_name=parsed.tool_name.value,
                     tool_call_id=parsed.tool_call_id,
-                    error_code="availability_slot_not_found",
+                    error_code="new_slot_not_available",
+                    result={
+                        "suggested_response_text": (
+                            voice_rescheduling_new_slot_unavailable_message()
+                        ),
+                    },
                 )
             except AvailabilitySlotUnavailableError:
                 return build_failed_tool_call_response(
                     tool_name=parsed.tool_name.value,
                     tool_call_id=parsed.tool_call_id,
-                    error_code="availability_slot_unavailable",
+                    error_code="new_slot_not_available",
+                    result={
+                        "suggested_response_text": (
+                            voice_rescheduling_new_slot_unavailable_message()
+                        ),
+                    },
                 )
 
             slot_validation = SchedulingAvailabilityResolver(
@@ -1100,40 +1114,56 @@ class RetellToolCallingAdapter:
                     error_code=slot_validation.error_code or "invalid_scheduling_expression",
                 )
 
-        owner_id: str | None = None
-        if hold_id is not None:
-            owner_id = self._resolve_hold_owner_id(
-                provider_call_id=parsed.provider_call_id,
-                owner_id=None,
-                conversation_id=conversation.id,
-            )
+        assert arguments.patient_resolution_id is not None
 
         idempotency_key = self._build_reschedule_appointment_idempotency_key(parsed)
 
         try:
-            reschedule_result = self.appointment_rescheduling.reschedule_appointment(
-                AppointmentReschedulingRequest(
+            reschedule_result = self.voice_appointment_rescheduling.reschedule_appointment(
+                VoiceAppointmentReschedulingRequest(
+                    patient_resolution_id=arguments.patient_resolution_id,
                     appointment_id=appointment_id,
-                    hold_id=hold_id,
                     new_slot_id=new_slot_id,
+                    hold_id=hold_id,
                     explicit_confirmation=arguments.explicit_confirmation,
+                    confirmation_text=arguments.confirmation_text,
+                    provider_call_id=parsed.provider_call_id,
+                    conversation_id=conversation.id,
                     idempotency_key=idempotency_key,
-                    owner_id=owner_id,
                     rescheduling_reason=normalize_rescheduling_reason(
                         arguments.reschedule_reason,
                     ),
-                    source=VOICE_RESCHEDULING_SOURCE,
-                    actor_type=AuditActorType.RETELL,
-                    actor_id=parsed.provider_call_id,
                     call_id=parsed.provider_call_id,
-                    conversation_id=str(conversation.id),
                 ),
             )
-        except AppointmentReschedulingMissingConfirmationError:
+        except VoiceReschedulingMissingConfirmationError:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="reschedule_confirmation_required",
+                error_code="missing_explicit_confirmation",
+                result={
+                    "suggested_response_text": (
+                        "Please confirm that you want to reschedule that appointment."
+                    ),
+                },
+            )
+        except PatientResolutionRequiredForReschedulingError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="patient_resolution_not_found",
+                result=build_patient_resolution_retry_response_for_rescheduling(),
+            )
+        except AppointmentNotOwnedByPatientForReschedulingError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code="appointment_not_owned_by_patient",
+                result={
+                    "suggested_response_text": (
+                        "I could not verify that appointment for your profile."
+                    ),
+                },
             )
         except AppointmentReschedulingNotFoundError:
             return build_failed_tool_call_response(
@@ -1146,30 +1176,54 @@ class RetellToolCallingAdapter:
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
                 error_code="appointment_not_reschedulable",
+                result={
+                    "suggested_response_text": voice_rescheduling_not_reschedulable_message(),
+                },
             )
-        except AppointmentReschedulingHoldExpiredError:
+        except AppointmentReschedulingHoldExpiredError as exc:
+            error_code = (
+                "appointment_hold_slot_mismatch"
+                if "does not match" in str(exc).lower()
+                else "appointment_hold_expired"
+            )
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="active_hold_required",
+                error_code=error_code,
+                result={
+                    "suggested_response_text": voice_rescheduling_hold_unavailable_message(),
+                },
             )
         except AppointmentReschedulingSlotNotFoundError:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="new_slot_required",
+                error_code="appointment_hold_not_found",
+                result={
+                    "suggested_response_text": voice_rescheduling_hold_unavailable_message(),
+                },
             )
         except AppointmentReschedulingSlotUnavailableError:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="slot_unavailable",
+                error_code="new_slot_not_available",
+                result={
+                    "suggested_response_text": (
+                        voice_rescheduling_new_slot_unavailable_message()
+                    ),
+                },
             )
         except AppointmentReschedulingSlotAlreadyBookedError:
             return build_failed_tool_call_response(
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
-                error_code="slot_already_booked",
+                error_code="appointment_reschedule_conflict",
+                result={
+                    "suggested_response_text": (
+                        voice_rescheduling_new_slot_unavailable_message()
+                    ),
+                },
             )
         except AppointmentReschedulingError as exc:
             return build_failed_tool_call_response(
@@ -1182,6 +1236,7 @@ class RetellToolCallingAdapter:
             conversation_id=conversation.id,
             reschedule_result=reschedule_result,
         )
+        self._commit_reschedule_durable_state()
 
         return build_succeeded_tool_call_response(
             tool_name=parsed.tool_name.value,
@@ -1194,7 +1249,7 @@ class RetellToolCallingAdapter:
         self,
         *,
         conversation_id: UUID,
-        reschedule_result: AppointmentReschedulingResult,
+        reschedule_result: VoiceAppointmentReschedulingResult,
     ) -> None:
         if self.voice_conversation_bridge is None or self.appointments is None:
             return
@@ -1243,36 +1298,31 @@ class RetellToolCallingAdapter:
 
     def _build_reschedule_appointment_result(
         self,
-        reschedule_result: AppointmentReschedulingResult,
+        reschedule_result: VoiceAppointmentReschedulingResult,
     ) -> dict[str, Any]:
         appointment_summary: dict[str, Any] = {
             "appointment_id": str(reschedule_result.new_appointment_id),
-            "patient_id": str(reschedule_result.patient_id),
             "status": AppointmentStatus.SCHEDULED.value,
         }
 
         if self.appointments is not None:
             appointment = self.appointments.get_by_id(reschedule_result.new_appointment_id)
             if appointment is not None:
-                appointment_summary = AppointmentResponse.model_validate(
-                    appointment,
-                ).model_dump(mode="json")
+                appointment_summary = _sanitize_voice_appointment_summary(
+                    AppointmentResponse.model_validate(appointment).model_dump(mode="json"),
+                )
 
+        tool_result = reschedule_result.to_tool_result()
         return self._with_suggested_response_text(
             {
-                "original_appointment_id": str(reschedule_result.original_appointment_id),
-                "new_appointment_id": str(reschedule_result.new_appointment_id),
-                "status": AppointmentStatus.SCHEDULED.value,
+                **tool_result,
                 "already_rescheduled": reschedule_result.already_rescheduled,
                 "appointment": appointment_summary,
                 "email_confirmation_queued": reschedule_result.confirmation_email_created,
             },
             template_type=ReceptionistTemplateType.RESCHEDULE_SUCCEEDED,
             facts=self._build_appointment_response_facts(appointment_summary),
-            fallback_text=(
-                "Your appointment has been rescheduled. "
-                "You'll receive a confirmation email shortly."
-            ),
+            fallback_text=reschedule_result.suggested_response_text,
             response_type=ReceptionistResponseType.CONFIRMATION,
         )
 
@@ -1437,6 +1487,16 @@ class RetellToolCallingAdapter:
             raise
 
     def _commit_cancellation_durable_state(self) -> None:
+        if self.db is None:
+            return
+
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def _commit_reschedule_durable_state(self) -> None:
         if self.db is None:
             return
 
@@ -1945,13 +2005,6 @@ class RetellToolCallingAdapter:
 
         return None
 
-    def _resolve_hold_ttl_seconds(self, requested_ttl_seconds: int | None) -> int:
-        if requested_ttl_seconds is not None:
-            return requested_ttl_seconds
-
-        return self.hold_service.ttl_seconds
-
-
 def _as_check_availability_arguments(
     arguments: Any,
 ) -> CheckAvailabilityToolArguments:
@@ -2014,6 +2067,18 @@ def _parse_cancel_appointment_uuid(value: object | None) -> UUID | None:
         return UUID(normalized)
     except ValueError:
         return None
+
+
+def _parse_reschedule_appointment_uuid(
+    arguments: RescheduleAppointmentToolArguments,
+) -> UUID | None:
+    return _parse_cancel_appointment_uuid(arguments.appointment_id) or (
+        _parse_cancel_appointment_uuid(arguments.original_appointment_id)
+    )
+
+
+def _sanitize_voice_appointment_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in summary.items() if key != "patient_id"}
 
 
 def _has_non_empty_confirmation_text(value: str | None) -> bool:
