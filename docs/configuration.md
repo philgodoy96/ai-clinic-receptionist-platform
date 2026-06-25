@@ -110,6 +110,20 @@ See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.m
 
 ## LLM Provider
 
+Supported providers in this version:
+
+- `fake` — local development, CI, and deterministic tests (default)
+- `groq` — real-provider validation path for hosted public demo
+- `bedrock` — optional AWS enterprise-style adapter
+
+OpenAI is intentionally not implemented in this version. There is no `OPENAI_API_KEY` setting or OpenAI provider adapter.
+
+Provider selection:
+
+- `LLM_PRIMARY_PROVIDER=fake|groq|bedrock` (preferred)
+- `LLM_PROVIDER=fake|groq|bedrock` (backward compatible; used when `LLM_PRIMARY_PROVIDER` is unset)
+- `LLM_FALLBACK_PROVIDER` — leave unset when `LLM_FALLBACK_ENABLED=false`; when fallback is enabled, set to `fake`, `groq`, or `bedrock`
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_PROVIDER` | `fake` | LLM provider selection: `fake`, `groq`, or `bedrock`. Kept for backward compatibility; see `LLM_PRIMARY_PROVIDER`. |
@@ -134,6 +148,8 @@ See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.m
 | `BEDROCK_MAX_TOKENS` | `800` | Default Bedrock max output tokens |
 
 Groq and AWS credentials are not stored in the repository. When using Groq or Bedrock, provide credentials through environment variables, shared config/profile, or your deployment secret manager at runtime.
+
+For Bedrock, configure `BEDROCK_MODEL_ID` and `AWS_REGION`. AWS access uses the standard boto3 credential chain (for example `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, shared credentials file, or an IAM instance/task role). No additional Bedrock-specific credential variables are required beyond the model and region settings above.
 
 For local development and CI, keep:
 

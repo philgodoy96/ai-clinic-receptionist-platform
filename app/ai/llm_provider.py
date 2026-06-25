@@ -38,6 +38,10 @@ class LLMProviderName(StrEnum):
     GROQ = "groq"
 
 
+def supported_llm_provider_names() -> str:
+    return ", ".join(member.value for member in LLMProviderName)
+
+
 class GroqResponseFormat(StrEnum):
     JSON_SCHEMA = "json_schema"
     JSON_OBJECT = "json_object"
