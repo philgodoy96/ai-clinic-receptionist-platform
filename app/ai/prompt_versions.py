@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 CURRENT_RECEPTIONIST_ANALYSIS_PROMPT_VERSION = "receptionist-analysis-v2"
 CURRENT_RECEPTIONIST_RESPONSE_PROMPT_VERSION = "receptionist-response-v1"
+CURRENT_CHAT_TURN_UNDERSTANDING_PROMPT_VERSION = "chat-turn-understanding-v1"
 
 
 class PromptVersionNotFoundError(ValueError):
@@ -57,6 +58,14 @@ PROMPT_REGISTRY: dict[str, PromptMetadata] = {
         created_for="receptionist_response_generation",
         prompt_module="app.ai.prompts.receptionist_response_v1",
     ),
+    "chat-turn-understanding-v1": PromptMetadata(
+        name="chat-turn-understanding",
+        version="chat-turn-understanding-v1",
+        description="State-aware chat turn interpretation for structured turn understanding.",
+        schema_name="ChatTurnUnderstandingResult",
+        created_for="chat_turn_understanding",
+        prompt_module="app.ai.prompts.chat_turn_understanding_v1",
+    ),
 }
 
 
@@ -75,6 +84,10 @@ def get_current_receptionist_analysis_prompt_metadata() -> PromptMetadata:
 
 def get_current_receptionist_response_prompt_metadata() -> PromptMetadata:
     return get_prompt_metadata(CURRENT_RECEPTIONIST_RESPONSE_PROMPT_VERSION)
+
+
+def get_current_chat_turn_understanding_prompt_metadata() -> PromptMetadata:
+    return get_prompt_metadata(CURRENT_CHAT_TURN_UNDERSTANDING_PROMPT_VERSION)
 
 
 def list_prompt_versions() -> list[str]:
