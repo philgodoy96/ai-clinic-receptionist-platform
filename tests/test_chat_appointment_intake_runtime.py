@@ -840,3 +840,94 @@ def test_afternoon_follow_up_reenters_availability_with_existing_provider_and_da
     assert chat_context["requested_time_window"]["label"] == "afternoon"
     assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
     assert chat_context["requested_date"] == "2026-07-02"
+
+
+def _scheduling_with_emily_afternoon_15_00() -> object:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.domain.scheduling.enums import AvailabilitySlotStatus
+    from app.models.scheduling import Doctor
+    from tests.test_scheduling_services import create_specialty
+
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    return create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=slots,
+    )
+
+
+def test_3pm_reply_creates_hold_end_to_end_with_fake_ctu() -> None:
+    service = _create_runtime_service_with_scheduling(
+        FakeChatTurnUnderstandingInterpreter(),
+        _scheduling_with_emily_afternoon_15_00(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="3PM",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "15:00" in result.reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-02T15:00:00+00:00"
+    assert chat_context.get("hold_id")
+
+
+def test_unclear_message_after_specialty_selection_reprompts_for_date_or_time() -> None:
+    service = _create_runtime_service(None)
+
+    first = service.handle_message(ChatMessageInput(message="I need a dermatologist"))
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=first.conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "day or time" in result.reply.lower()
+    assert "Dr. Emily Carter" in result.reply
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+
+
+def test_unclear_message_after_availability_results_asks_for_slot_selection() -> None:
+    service = _create_runtime_service(None)
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=availability.conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "choose one of the offered times" in result.reply.lower()
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+    for slot in availability.conversation.conversation_metadata["chat_context"]["offered_slots"]:
+        assert str(slot["availability_slot_id"]) not in result.reply

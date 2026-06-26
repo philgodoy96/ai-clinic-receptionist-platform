@@ -22,12 +22,16 @@ from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.chat_booking_identity import ChatBookingIdentityStep
 from app.services.chat_receptionist import (
+    _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
     ChatMessageInput,
     ChatReceptionistIntent,
     ChatReceptionistReply,
     ChatReceptionistService,
     DeterministicChatResponder,
+    _build_contextual_fallback_reply,
+    _resolve_contextual_fallback_reply,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
@@ -1316,6 +1320,126 @@ def test_hold_unknown_time_returns_hold_slot_not_found(
     assert hold_service.create_hold_calls == []
 
 
+def _afternoon_dermatology_scheduling() -> SchedulingService:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    return create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=availability_slots,
+    )
+
+
+@pytest.mark.parametrize("selection_message", ["3PM", "3 PM", "15"])
+def test_hold_pm_and_bare_hour_select_offered_15_00_slot(selection_message: str) -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _afternoon_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    offered_slots = availability.conversation.conversation_metadata["chat_context"][
+        "offered_slots"
+    ]
+    assert any(slot["display_time"] == "15:00" for slot in offered_slots)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=selection_message,
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "15:00" in result.reply
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-02T15:00:00+00:00"
+
+
+def test_hold_2pm_selects_offered_14_00_slot() -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _afternoon_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="2PM",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "14:00" in result.reply
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-02T14:00:00+00:00"
+
+
+def test_hold_unoffered_pm_time_does_not_create_hold() -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _afternoon_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="9AM",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND
+    assert hold_service.create_hold_calls == []
+
+
+def test_bare_ambiguous_number_3_does_not_create_hold() -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _afternoon_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="3",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent != ChatReceptionistIntent.HOLD_CREATED
+    assert hold_service.create_hold_calls == []
+
+
 def test_hold_generic_request_returns_hold_request(
     availability_guidance_service: tuple[
         ChatReceptionistService,
@@ -1800,3 +1924,209 @@ class SpyDeterministicChatResponder(DeterministicChatResponder):
         self.call_count += 1
 
         return super().generate_reply(message=message)
+
+
+def test_contextual_fallback_reprompts_for_date_or_time_preference() -> None:
+    reply = _build_contextual_fallback_reply(
+        {"appointment_intake_awaiting": "date_or_time_preference"},
+    )
+
+    assert reply == "What day or time would you like me to check?"
+    assert "book, cancel, or reschedule" not in reply.lower()
+
+
+def test_contextual_fallback_reprompt_mentions_selected_doctor() -> None:
+    reply = _build_contextual_fallback_reply(
+        {
+            "appointment_intake_awaiting": "date_or_time_preference",
+            "selected_doctor_name": "Dr. Emily Carter",
+        },
+    )
+
+    assert reply == "What day or time works best for Dr. Emily Carter?"
+
+
+def test_contextual_fallback_reprompt_mentions_selected_specialty() -> None:
+    reply = _build_contextual_fallback_reply(
+        {
+            "appointment_intake_awaiting": "date_or_time_preference",
+            "selected_specialty_name": "Dermatology",
+        },
+    )
+
+    assert reply == "What day or time works best for Dermatology?"
+
+
+def test_contextual_fallback_reprompts_for_offered_slots() -> None:
+    reply = _build_contextual_fallback_reply(
+        {
+            "appointment_intake_awaiting": "slot_selection",
+            "offered_slots": [
+                {
+                    "availability_slot_id": "11111111-1111-1111-1111-111111111111",
+                    "display_time": "10:00",
+                },
+                {
+                    "availability_slot_id": "22222222-2222-2222-2222-222222222222",
+                    "display_time": "11:00",
+                },
+                {
+                    "availability_slot_id": "33333333-3333-3333-3333-333333333333",
+                    "display_time": "14:00",
+                },
+            ],
+        },
+    )
+
+    assert reply is not None
+    assert "10:00" in reply
+    assert "11:00" in reply
+    assert "14:00" in reply
+    assert "11111111" not in reply
+    assert "availability_slot_id" not in reply
+
+
+def test_contextual_fallback_returns_none_without_active_context() -> None:
+    assert _build_contextual_fallback_reply({}) is None
+
+
+def test_idle_message_uses_generic_scheduling_fallback(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+    spy = SpyDeterministicChatResponder()
+    service.responder = spy
+
+    result = service.handle_message(ChatMessageInput(message="???"))
+
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert result.reply == _GENERIC_SCHEDULING_FALLBACK_MESSAGE
+    assert spy.call_count == 1
+
+
+def test_unclear_message_with_date_or_time_context_uses_contextual_reprompt(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+    spy = SpyDeterministicChatResponder()
+    service.responder = spy
+
+    first = service.handle_message(ChatMessageInput(message="I need a dermatologist"))
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=first.conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "day or time" in result.reply.lower()
+    assert "Dr. Emily Carter" in result.reply
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+    assert spy.call_count == 0
+
+
+def test_unclear_message_with_offered_slots_asks_user_to_choose_time(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    spy = SpyDeterministicChatResponder()
+    service.responder = spy
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=availability.conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "choose one of the offered times" in result.reply.lower()
+    assert "09:00" in result.reply or "10:30" in result.reply
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+    assert spy.call_count == 0
+
+
+def test_booking_identity_context_does_not_use_generic_scheduling_opener() -> None:
+    from tests.chat_booking_flow_support import conversation_with_active_hold
+
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service_with_emily_july_availability()
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=_create_hold_service(),
+    )
+    conversation = conversation_with_active_hold(service)
+
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    assert "seen" in result.reply.lower()
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+
+
+def test_final_booking_confirmation_context_reprompts_instead_of_generic_opener() -> None:
+    from tests.chat_booking_flow_support import (
+        advance_new_patient_to_booking_summary,
+        conversation_with_active_hold,
+    )
+
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = create_demo_scheduling_service_with_emily_july_availability()
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=_create_hold_service(),
+    )
+    conversation = conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "confirm" in result.reply.lower()
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+
+
+def test_resolve_contextual_fallback_for_final_booking_confirmation_step() -> None:
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "booking_identity_step": (
+                ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
+            ),
+            "hold_id": "hold-123",
+        },
+    )
+
+    assert resolved is not None
+    intent, content = resolved
+    assert intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "confirm" in content.lower()
+    assert "book that appointment" in content.lower()
+
+
+def test_cancel_keyword_routing_unchanged_during_slot_selection_context(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I need to cancel",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "cancellation" in result.reply.lower()
