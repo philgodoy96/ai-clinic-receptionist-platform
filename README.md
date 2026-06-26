@@ -161,6 +161,8 @@ Configuration and deployment:
 
 Architecture docs:
 
+- `docs/architecture/chat-turn-understanding.md` — CTU contract, appointment intake orchestration, and state-aware fallback
+- `docs/testing/chat-appointment-intake.md` — manual fake/Groq appointment intake checklist
 - `docs/architecture/groq-llm-provider.md`
 - `docs/architecture/real-llm-provider-adapter.md`
 - `docs/architecture/llm-provider-foundation.md`

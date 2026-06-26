@@ -20,9 +20,12 @@ The LLM understands. The backend validates and decides. Domain services execute.
 
 In practice:
 
-- The **interpreter** extracts intent and candidate fields from the latest user message in context.
-- **Backend validation** accepts or rejects those candidates against scheduling catalogs, date/time parsers, identity rules, and conversation invariants.
-- **Domain services** perform scheduling, holds, booking, cancellation, rescheduling, patient lookup, and emails only after validation and explicit state transitions pass.
+- The **interpreter (CTU)** extracts candidate appointment meaning — specialty, doctor, date, time window, soonest intent, slot reference, and availability-range phrasing — from the latest user message in context.
+- **Backend validation** accepts or rejects those candidates against scheduling catalogs, date/time parsers, offered-doctor and offered-slot lists, identity rules, and conversation invariants.
+- **Scheduling services** decide actual availability and return candidate slots.
+- **Domain services** perform holds, booking, cancellation, rescheduling, patient lookup, and emails only after validation and explicit state transitions pass.
+- **Hold and booking** remain controlled by existing backend flows; no appointment is booked without explicit final confirmation.
+- **Assistant replies** must not expose internal IDs, slot IDs, hold IDs, UUIDs, raw timestamps, or other backend implementation details.
 
 The interpreter must never book, cancel, reschedule, create patients, send emails, or mutate conversation state directly.
 
@@ -244,7 +247,7 @@ Slot IDs and raw ISO timestamps are never shown to the user.
 | `15:00` | `15:00` | Colon 24-hour form |
 | `15` | `15:00` | Bare hour only when slot-selection context makes it safe (hours 13–23); bare `3` is not treated as 3 o'clock to preserve ordinal option selection |
 
-CTU should normalize time expressions into `extracted_fields.appointment_time` when possible. The orchestrator and receptionist service still validate normalized times against actually offered slots before creating a hold.
+CTU should normalize time expressions into `extracted_fields.appointment_time` when possible. `FakeChatTurnUnderstandingInterpreter` follows the same intended CTU contract for reproducible tests and local demos. The orchestrator and receptionist service still validate normalized times against actually offered slots before creating a hold; the backend must not invent or hold an unoffered time.
 
 ### State-aware fallback prompts
 
@@ -256,6 +259,7 @@ When CTU returns `fallback` or low-confidence output, `ChatReceptionistService` 
 | `offered_slots` present or `appointment_intake_awaiting = slot_selection` | Reprompt to choose one of the offered times |
 | `booking_identity_step` active | Ask for the missing identity field for the current step |
 | `booking_identity_step = await_final_booking_confirmation` | Ask for explicit final booking confirmation again |
+| Confirmed `appointment_id` present (post-booking frame) | Closing phrases such as `no thanks` or `that's all` end politely; new actionable scheduling, cancel, or reschedule requests re-enter normal top-level routing |
 | No active task context | Generic fallback |
 
 This keeps scheduling conversations on track without exposing backend internals.
@@ -264,11 +268,13 @@ This keeps scheduling conversations on track without exposing backend internals.
 
 Exact routing depends on current `chat_context` (whether doctors or slots were already offered, and which `appointment_intake_awaiting` value is set).
 
-**Specialty and doctor entry**
+**Provider / specialty**
 
 | Example | Typical behavior |
 | --- | --- |
-| `I'd like to schedule with a dermatologist` | Specialty resolved → earliest availability search |
+| `I'd like to schedule with a dermatologist` | Specialty resolved → earliest availability search or date/time prompt |
+| `I want to see a cardiologist` | Specialty resolved from catalog → proceed toward availability |
+| `What doctors do you have for cardiology?` | Doctor list for the specialty stored in `offered_doctors` → user picks a doctor next |
 | `soonest cardiology appointment` | Specialty + soonest intent → search from clinic today |
 | `cardiology next Monday` | Specialty + natural date → availability for that date |
 | `Dr. Reed next Monday` | Doctor + natural date → availability for that doctor and date |
@@ -289,7 +295,15 @@ Exact routing depends on current `chat_context` (whether doctors or slots were a
 | `tomorrow morning` | Natural date + morning time window |
 | `Sunday afternoon` | Natural date + afternoon time window |
 | `Wednesday` / `afternoon` | Bare weekday or time window when intake task frame is active |
-| `What days do you have next week?` | Contextual availability range; searches the provider across the clinic-local week and offers slots grouped by date |
+
+**Range availability** (provider context required; intake task frame active)
+
+| Example | Typical behavior |
+| --- | --- |
+| `What days do you have next week?` | Clinic-local week range resolved → availability across range → `offered_slots` grouped by day |
+| `What do you have next week?` | Same as above |
+| `Any availability next week?` | Same as above |
+| `Do you have anything this week?` | `this week` from clinic today through Sunday → grouped availability |
 
 **Offered-slot selection** (after availability results)
 
@@ -321,6 +335,7 @@ Exact routing depends on current `chat_context` (whether doctors or slots were a
 | Second LLM response composer | Not added — replies remain deterministic via `RECEPTIONIST_RESPONSE_MODE=deterministic` by default |
 | Retell voice flow | Not modified |
 | Public demos with real LLM providers | Require auth, rate limits, and cost controls before exposure |
+| Post-booking lifecycle | Handled as a small state-aware conversation closure after `appointment_id` is set; broader multi-intent post-booking flows can expand in future appointment-management work |
 
 See [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md) for reproducible fake and Groq test scenarios.
 
