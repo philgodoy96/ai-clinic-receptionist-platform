@@ -584,3 +584,129 @@ def test_afternoon_follow_up_updates_time_window_and_preserves_provider() -> Non
         "end_time": "17:00",
     }
     assert "requested_date" not in updates
+
+
+def _slot_selection_context() -> dict[str, object]:
+    return {
+        "selected_doctor_id": "doctor-1",
+        "selected_doctor_name": "Dr. Emily Carter",
+        "requested_date": "2026-07-02",
+        "appointment_intake_awaiting": "slot_selection",
+        "offered_slots": [
+            {
+                "availability_slot_id": "slot-2pm",
+                "start_time": "2026-07-02T14:00:00+00:00",
+                "display_time": "14:00",
+                "doctor_name": "Dr. Emily Carter",
+            },
+            {
+                "availability_slot_id": "slot-3pm",
+                "start_time": "2026-07-02T15:00:00+00:00",
+                "display_time": "15:00",
+                "doctor_name": "Dr. Emily Carter",
+            },
+        ],
+    }
+
+
+def test_backend_honors_valid_selected_slot_reference() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.95,
+            reason="slot selection",
+            selected_slot_reference="slot-3pm",
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(message="that one", chat_context=_slot_selection_context())
+
+    assert result.intent == "appointment_intake"
+    assert result.chat_context_updates["selected_availability_slot_id"] == "slot-3pm"
+
+
+def test_backend_rejects_unoffered_selected_slot_reference() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.95,
+            reason="slot selection",
+            selected_slot_reference="slot-unoffered",
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(message="that one", chat_context=_slot_selection_context())
+
+    assert "selected_availability_slot_id" not in result.chat_context_updates
+
+
+def test_backend_selects_slot_from_unique_appointment_time() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.9,
+            reason="slot selection by time",
+            extracted_fields=ExtractedTurnFields(
+                appointment_time="15:00",
+                appointment_time_raw="3PM",
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(message="that one", chat_context=_slot_selection_context())
+
+    assert result.chat_context_updates["selected_availability_slot_id"] == "slot-3pm"
+
+
+def test_backend_does_not_select_unoffered_appointment_time() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.9,
+            reason="slot selection by time",
+            extracted_fields=ExtractedTurnFields(
+                appointment_time="09:00",
+                appointment_time_raw="9AM",
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(message="that one", chat_context=_slot_selection_context())
+
+    assert "selected_availability_slot_id" not in result.chat_context_updates
+
+
+def test_backend_does_not_guess_when_multiple_slots_match_time() -> None:
+    context = _slot_selection_context()
+    context["offered_slots"] = [
+        {
+            "availability_slot_id": "slot-3pm-a",
+            "start_time": "2026-07-02T15:00:00+00:00",
+            "display_time": "15:00",
+        },
+        {
+            "availability_slot_id": "slot-3pm-b",
+            "start_time": "2026-07-03T15:00:00+00:00",
+            "display_time": "15:00",
+        },
+    ]
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.9,
+            reason="slot selection by time",
+            extracted_fields=ExtractedTurnFields(
+                appointment_time="15:00",
+                appointment_time_raw="3PM",
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(message="that one", chat_context=context)
+
+    assert "selected_availability_slot_id" not in result.chat_context_updates

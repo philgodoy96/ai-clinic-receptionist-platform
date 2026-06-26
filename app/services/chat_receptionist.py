@@ -48,17 +48,20 @@ from app.services.appointment_holds import (
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.appointment_time_normalization import (
+    normalize_appointment_time_expression,
+)
 from app.services.chat_appointment_intake import (
     APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME,
     APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
     EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS,
     ChatAppointmentIntakeOrchestrator,
     ChatAppointmentIntakeResult,
-    is_appointment_intake_active,
 )
 from app.services.chat_booking_identity import (
     BookingIdentityFlowResult,
     ChatBookingIdentityOrchestrator,
+    ChatBookingIdentityStep,
     ParsedPatientFields,
 )
 from app.services.chat_confirmation import (
@@ -220,6 +223,157 @@ _APPOINTMENT_CLARIFICATION_FALLBACK_MESSAGE = (
 _APPOINTMENT_INTAKE_REPROMPT_MESSAGE = (
     "What day or time would you like me to check?"
 )
+_GENERIC_SCHEDULING_FALLBACK_MESSAGE = (
+    "I can help with clinic scheduling questions. Please tell me whether "
+    "you want to book, cancel, or reschedule an appointment."
+)
+_SLOT_SELECTION_REPROMPT_MESSAGE = (
+    "Please choose one of the appointment times I offered."
+)
+_FINAL_BOOKING_CONFIRMATION_REPROMPT_MESSAGE = (
+    "Please confirm whether you want me to book that appointment."
+)
+
+
+def _format_offered_slot_selection_reprompt(offered_slots: list[Any]) -> str:
+    display_times: list[str] = []
+    for offered_slot in offered_slots:
+        if not isinstance(offered_slot, dict):
+            continue
+        display_time = offered_slot.get("display_time")
+        if isinstance(display_time, str) and display_time:
+            display_times.append(display_time)
+        if len(display_times) >= 3:
+            break
+
+    if display_times:
+        examples = ", ".join(display_times[:3])
+        return f"Please choose one of the offered times, such as {examples}."
+    return _SLOT_SELECTION_REPROMPT_MESSAGE
+
+
+def _format_date_or_time_reprompt(chat_context: dict[str, Any]) -> str:
+    doctor_name = chat_context.get("selected_doctor_name")
+    if isinstance(doctor_name, str) and doctor_name.strip():
+        return f"What day or time works best for {doctor_name.strip()}?"
+
+    specialty_name = chat_context.get("selected_specialty_name")
+    if isinstance(specialty_name, str) and specialty_name.strip():
+        return f"What day or time works best for {specialty_name.strip()}?"
+
+    return _APPOINTMENT_INTAKE_REPROMPT_MESSAGE
+
+
+def _booking_identity_step_reprompt(
+    step: ChatBookingIdentityStep,
+    chat_context: dict[str, Any],
+) -> tuple[ChatReceptionistIntent, str] | None:
+    if step is ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION:
+        return (
+            ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
+            _FINAL_BOOKING_CONFIRMATION_REPROMPT_MESSAGE,
+        )
+
+    if step is ChatBookingIdentityStep.ASK_SEEN_BEFORE:
+        return (
+            ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+            "Have you been seen here before?",
+        )
+
+    if step is ChatBookingIdentityStep.COLLECT_EXISTING_IDENTITY:
+        return (
+            ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+            "I still need the patient's full name and date of birth.",
+        )
+
+    if step is ChatBookingIdentityStep.COLLECT_NEW_NAME:
+        return (
+            ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+            "What name should I put on the appointment?",
+        )
+
+    if step is ChatBookingIdentityStep.COLLECT_NEW_DOB:
+        return (
+            ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+            "What is your date of birth?",
+        )
+
+    if step in {
+        ChatBookingIdentityStep.COLLECT_NEW_EMAIL,
+        ChatBookingIdentityStep.COLLECT_CONFIRMATION_EMAIL,
+    }:
+        return (
+            ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+            "What email should we use for the confirmation?",
+        )
+
+    if step in {
+        ChatBookingIdentityStep.CONFIRM_NEW_EMAIL,
+        ChatBookingIdentityStep.CONFIRM_CONFIRMATION_EMAIL,
+    }:
+        pending_email = chat_context.get("pending_confirmation_email")
+        if isinstance(pending_email, str) and pending_email.strip():
+            return (
+                ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+                f"I heard {pending_email.strip()} — is that correct?",
+            )
+        return (
+            ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
+            "Please confirm whether that email is correct.",
+        )
+
+    if step is ChatBookingIdentityStep.CONFIRM_POSSIBLE_MATCH:
+        return (
+            ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+            "Please let me know if that profile is yours.",
+        )
+
+    return None
+
+
+def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None:
+    resolved = _resolve_contextual_fallback_reply(chat_context)
+    if resolved is None:
+        return None
+    return resolved[1]
+
+
+def _resolve_contextual_fallback_reply(
+    chat_context: dict[str, Any],
+) -> tuple[ChatReceptionistIntent, str] | None:
+    if chat_context.get("appointment_id"):
+        return None
+
+    step_raw = chat_context.get("booking_identity_step")
+    if isinstance(step_raw, str):
+        try:
+            step = ChatBookingIdentityStep(step_raw)
+        except ValueError:
+            step = None
+        if step is not None and step is not ChatBookingIdentityStep.BOOKING_COMPLETED:
+            identity_reprompt = _booking_identity_step_reprompt(step, chat_context)
+            if identity_reprompt is not None:
+                return identity_reprompt
+
+    offered_slots = chat_context.get("offered_slots") or []
+    awaiting = chat_context.get("appointment_intake_awaiting")
+    if offered_slots or awaiting == APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION:
+        return (
+            ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            _format_offered_slot_selection_reprompt(offered_slots),
+        )
+
+    if (
+        awaiting == APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+        or chat_context.get("selected_doctor_id")
+        or chat_context.get("selected_specialty_id")
+    ):
+        return (
+            ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            _format_date_or_time_reprompt(chat_context),
+        )
+
+    return None
 
 
 class ChatReceptionistIntent(StrEnum):
@@ -483,10 +637,7 @@ class DeterministicChatResponder:
 
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.FALLBACK,
-            content=(
-                "I can help with clinic scheduling questions. Please tell me whether "
-                "you want to book, cancel, or reschedule an appointment."
-            ),
+            content=_GENERIC_SCHEDULING_FALLBACK_MESSAGE,
         )
 
     def _contains_any(self, value: str, options: list[str]) -> bool:
@@ -1230,11 +1381,13 @@ class ChatReceptionistService:
                 ),
             )
 
-        if is_appointment_intake_active(merged_context):
+        contextual_fallback = _resolve_contextual_fallback_reply(merged_context)
+        if contextual_fallback is not None:
+            contextual_intent, contextual_content = contextual_fallback
             return finish(
                 ChatReceptionistReply(
-                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
-                    content=_APPOINTMENT_INTAKE_REPROMPT_MESSAGE,
+                    intent=contextual_intent,
+                    content=contextual_content,
                     chat_context_updates=context_updates,
                 ),
             )
@@ -3197,6 +3350,9 @@ class ChatReceptionistService:
         if self._message_has_time_pattern(normalized_message):
             return True
 
+        if offered_slots and self._extract_offered_time(message) is not None:
+            return True
+
         return self._extract_iso_datetime(message) is not None
 
     def _handle_hold_flow(
@@ -3337,12 +3493,8 @@ class ChatReceptionistService:
             if keyword in normalized_message and index < len(offered_slots):
                 return offered_slots[index]
 
-        time_match = _TIME_PATTERN.search(normalized_message)
-        if time_match is not None:
-            normalized_time = self._normalize_time_text(
-                int(time_match.group(1)),
-                int(time_match.group(2)),
-            )
+        normalized_time = self._extract_offered_time(message)
+        if normalized_time is not None:
             for offered_slot in offered_slots:
                 if offered_slot.get("display_time") == normalized_time:
                     return offered_slot
@@ -3366,13 +3518,17 @@ class ChatReceptionistService:
         if self._message_has_time_pattern(normalized_message):
             return True
 
+        if self._extract_offered_time(message) is not None:
+            return True
+
         return self._extract_iso_datetime(message) is not None
 
     def _message_has_time_pattern(self, normalized_message: str) -> bool:
         return _TIME_PATTERN.search(normalized_message) is not None
 
-    def _normalize_time_text(self, hour: int, minute: int) -> str:
-        return f"{hour:02d}:{minute:02d}"
+    def _extract_offered_time(self, message: str) -> str | None:
+        normalized = normalize_appointment_time_expression(message, allow_bare_hour=True)
+        return normalized.value if normalized is not None else None
 
     def _extract_iso_datetime(self, message: str) -> datetime | None:
         match = _ISO_DATETIME_PATTERN.search(message)

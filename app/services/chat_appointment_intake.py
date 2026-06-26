@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, cast
 
 from app.domain.chat_turn_understanding import (
@@ -417,6 +417,62 @@ class ChatAppointmentIntakeOrchestrator:
             )
         return offered_slots
 
+    def _resolve_offered_slot_selection(
+        self,
+        *,
+        understanding: ChatTurnUnderstandingResult,
+        chat_context: dict[str, Any],
+    ) -> str | None:
+        """Validate a CTU slot selection against backend-offered slots.
+
+        The backend never trusts the interpreter to invent a slot. A reference
+        is only honored when it exists in the offered slots, and a normalized
+        appointment_time only selects a slot when exactly one offered slot has
+        that time.
+        """
+        raw_slots = chat_context.get("offered_slots")
+        if not isinstance(raw_slots, list) or not raw_slots:
+            return None
+
+        offered: list[tuple[str, str | None]] = []
+        for item in raw_slots:
+            if not isinstance(item, dict):
+                continue
+            reference = item.get("availability_slot_id")
+            if not isinstance(reference, str):
+                continue
+            offered.append((reference, self._offered_slot_display_time(item)))
+
+        reference = understanding.selected_slot_reference
+        if reference is not None:
+            if any(slot_reference == reference for slot_reference, _ in offered):
+                return reference
+            return None
+
+        appointment_time = understanding.extracted_fields.appointment_time
+        if appointment_time:
+            matches = [
+                slot_reference
+                for slot_reference, display_time in offered
+                if display_time == appointment_time
+            ]
+            if len(matches) == 1:
+                return matches[0]
+
+        return None
+
+    def _offered_slot_display_time(self, item: dict[str, Any]) -> str | None:
+        display_time = item.get("display_time") or item.get("display_label")
+        if isinstance(display_time, str) and display_time:
+            return display_time
+        start_time = item.get("start_time")
+        if isinstance(start_time, str):
+            try:
+                return datetime.fromisoformat(start_time).strftime("%H:%M")
+            except ValueError:
+                return None
+        return None
+
     def _is_actionable_understanding(
         self,
         understanding: ChatTurnUnderstandingResult,
@@ -584,8 +640,12 @@ class ChatAppointmentIntakeOrchestrator:
                     context_updates.update(stale_slot_clearing_updates())
             context_updates["requested_time_window"] = time_result.requested_time_window
 
-        if understanding.selected_slot_reference and chat_context.get("offered_slots"):
-            context_updates["selected_availability_slot_id"] = understanding.selected_slot_reference
+        selected_slot_id = self._resolve_offered_slot_selection(
+            understanding=understanding,
+            chat_context=chat_context,
+        )
+        if selected_slot_id is not None:
+            context_updates["selected_availability_slot_id"] = selected_slot_id
 
         if not context_updates and not soonest_requested:
             return self._noop_or_clarification_result(understanding)
