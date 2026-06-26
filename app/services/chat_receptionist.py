@@ -97,6 +97,12 @@ from app.services.llm_receptionist import (
     ReceptionistAnalysisResult,
 )
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
+from app.services.post_booking_turn import (
+    DeterministicPostBookingTurnClassifier,
+    PostBookingTurnClassifier,
+    PostBookingTurnDecision,
+    PostBookingTurnUnderstanding,
+)
 from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
     ReceptionistResponseGenerator,
@@ -234,6 +240,18 @@ _SLOT_SELECTION_REPROMPT_MESSAGE = (
 )
 _FINAL_BOOKING_CONFIRMATION_REPROMPT_MESSAGE = (
     "Please confirm whether you want me to book that appointment."
+)
+_ALREADY_CONFIRMED_MESSAGE = (
+    "Your appointment is already confirmed. "
+    "Is there anything else I can help with?"
+)
+_POST_BOOKING_CLOSING_MESSAGE = "You're all set. Have a great day!"
+_POST_BOOKING_NEEDS_MORE_HELP_MESSAGE = (
+    "Sure — would you like to schedule, cancel, or reschedule an appointment?"
+)
+_POST_BOOKING_UNKNOWN_MESSAGE = (
+    "Your appointment is confirmed. Would you like to schedule, cancel, "
+    "or reschedule anything else?"
 )
 
 
@@ -670,6 +688,7 @@ class ChatReceptionistService:
         patient_identity_resolution: PatientIdentityResolutionService,
         chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
+        post_booking_turn_classifier: PostBookingTurnClassifier | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -698,6 +717,9 @@ class ChatReceptionistService:
             time_preference_parser=time_preference_parser,
             clinic_time_service=clinic_time_service,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        )
+        self._post_booking_turn_classifier = (
+            post_booking_turn_classifier or DeterministicPostBookingTurnClassifier()
         )
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
@@ -1749,6 +1771,69 @@ class ChatReceptionistService:
             booking_attempted=booking_attempted,
         )
 
+    def _resolve_post_booking_decision(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> PostBookingTurnUnderstanding:
+        return self._post_booking_turn_classifier.classify(
+            message=message,
+            chat_context=chat_context,
+        )
+
+    def _post_booking_reply_for_decision(
+        self,
+        *,
+        decision: PostBookingTurnDecision,
+        appointment_id: Any,
+        hold_id: Any,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostBookingTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostBookingTurnDecision.CANCEL_REQUEST,
+            PostBookingTurnDecision.RESCHEDULE_REQUEST,
+        }:
+            return None
+
+        content_by_decision = {
+            PostBookingTurnDecision.END_CONVERSATION: _POST_BOOKING_CLOSING_MESSAGE,
+            PostBookingTurnDecision.NEEDS_MORE_HELP: _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+            PostBookingTurnDecision.UNKNOWN: _POST_BOOKING_UNKNOWN_MESSAGE,
+        }
+        content = content_by_decision.get(decision)
+        if content is None:
+            return None
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.BOOKING_CONFIRMED,
+            content=content,
+            chat_context_updates=context_updates,
+            hold_id=str(hold_id) if hold_id else None,
+            booking_confirmed=True,
+            appointment_id=str(appointment_id),
+        )
+
+    def _handle_post_booking_message(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        """Lifecycle guard for messages within the post-booking follow-up frame."""
+        understanding = self._resolve_post_booking_decision(
+            message=message,
+            chat_context=merged_context,
+        )
+        return self._post_booking_reply_for_decision(
+            decision=understanding.decision,
+            appointment_id=merged_context["appointment_id"],
+            hold_id=merged_context.get("hold_id"),
+            context_updates=context_updates,
+        )
+
     def _handle_booking_flow(
         self,
         *,
@@ -1767,16 +1852,10 @@ class ChatReceptionistService:
         offered_slots = merged_context.get("offered_slots") or []
 
         if merged_context.get("appointment_id"):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_CONFIRMED,
-                content=(
-                    "Your appointment is already confirmed. "
-                    "Is there anything else I can help with?"
-                ),
-                chat_context_updates=context_updates,
-                hold_id=str(hold_id) if hold_id else None,
-                booking_confirmed=True,
-                appointment_id=str(merged_context["appointment_id"]),
+            return self._handle_post_booking_message(
+                message=message,
+                merged_context=merged_context,
+                context_updates=context_updates,
             )
 
         if hold_id:
@@ -1956,10 +2035,7 @@ class ChatReceptionistService:
         if existing_appointment_id:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_CONFIRMED,
-                content=(
-                    "Your appointment is already confirmed. "
-                    "Is there anything else I can help with?"
-                ),
+                content=_ALREADY_CONFIRMED_MESSAGE,
                 chat_context_updates={
                     **identity_updates,
                     **self._booking_identity.booking_completed_context_updates(),
