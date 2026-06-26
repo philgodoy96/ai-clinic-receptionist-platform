@@ -16,6 +16,9 @@ from app.domain.chat_turn_understanding import (
     OfferedSlot,
     PatientStatusAnswer,
 )
+from app.services.appointment_time_normalization import (
+    normalize_appointment_time_expression,
+)
 
 _MONTH_TOKEN_TO_NUMBER: dict[str, int] = {
     "jan": 1,
@@ -279,25 +282,29 @@ class FakeChatTurnUnderstandingInterpreter:
                 selected_slot_reference=offered_slots[0].reference,
             )
 
-        time_match = re.search(r"\b(\d{1,2})\s*pm\b", normalized)
-        if time_match is None:
+        # Bare-hour expressions like ``15`` are only treated as a time when the
+        # conversation is selecting from offered slots; otherwise they are too
+        # ambiguous to interpret confidently.
+        has_slot_context = bool(offered_slots) or (
+            request.expected_response_type is ExpectedResponseType.SLOT_SELECTION
+        )
+        normalized_time = normalize_appointment_time_expression(
+            message,
+            allow_bare_hour=has_slot_context,
+        )
+        if normalized_time is None:
             return None
-
-        hour = int(time_match.group(1))
-        if hour < 1 or hour > 12:
-            return None
-
-        normalized_time = f"{hour + 12:02d}:00"
-        time_raw = time_match.group(0).strip()
-
-        matching_slots = [
-            slot for slot in offered_slots if self._slot_matches_time(slot, normalized_time)
-        ]
 
         extracted = ExtractedTurnFields(
-            appointment_time_raw=time_raw,
-            appointment_time=normalized_time,
+            appointment_time_raw=normalized_time.raw,
+            appointment_time=normalized_time.value,
         )
+
+        matching_slots = [
+            slot
+            for slot in offered_slots
+            if self._slot_matches_time(slot, normalized_time.value)
+        ]
 
         if len(matching_slots) == 1:
             return self._build_result(
@@ -309,32 +316,34 @@ class FakeChatTurnUnderstandingInterpreter:
             )
 
         if len(matching_slots) > 1:
+            clarification = (
+                f"Which of the {normalized_time.value} slots did you mean?"
+            )
             return self._build_result(
                 ChatTurnIntent.SLOT_SELECTION,
                 confidence=0.72,
                 reason="Multiple offered slots match the requested time.",
                 extracted_fields=extracted,
-                clarification_question="Which of the 2pm slots did you mean?",
+                clarification_question=clarification,
                 ambiguous_fields=[
                     FieldIssue(
                         field="selected_slot_reference",
-                        source_text=time_raw,
+                        source_text=normalized_time.raw,
                         reason="multiple_slot_time_matches",
                         candidates=[slot.reference for slot in matching_slots],
-                        clarification_question="Which of the 2pm slots did you mean?",
+                        clarification_question=clarification,
                     ),
                 ],
             )
 
-        if not offered_slots:
-            return self._build_result(
-                ChatTurnIntent.SLOT_SELECTION,
-                confidence=0.82,
-                reason="Extracted appointment time without offered slots to select.",
-                extracted_fields=extracted,
-            )
-
-        return None
+        # No offered slot matched: return the normalized time only and let the
+        # backend validate it against the offered slots. Never invent a slot.
+        return self._build_result(
+            ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.82,
+            reason="Extracted appointment time; backend must validate against offered slots.",
+            extracted_fields=extracted,
+        )
 
     def _try_appointment_request(
         self,

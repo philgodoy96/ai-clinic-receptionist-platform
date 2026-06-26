@@ -534,7 +534,8 @@ def test_post_chat_message_with_invalid_date_returns_invalid_date_intent(
     body = response.json()
 
     assert body["intent"] == "invalid_date"
-    assert "YYYY-MM-DD" in body["reply"]
+    assert "tomorrow" in body["reply"]
+    assert "next Monday" in body["reply"]
 
 
 def test_success_response_does_not_include_request_or_correlation_ids(

@@ -170,3 +170,9 @@ def test_date_parse_result_to_metadata() -> None:
         "source_text": "today",
         "reason": None,
     }
+
+
+def test_bare_weekday_is_not_parsed_globally(parser: NaturalLanguageDateParser) -> None:
+    result = parser.parse("What about Wednesday?")
+
+    assert result.status == DateParseStatus.NOT_FOUND

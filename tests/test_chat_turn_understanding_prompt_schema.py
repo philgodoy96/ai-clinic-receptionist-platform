@@ -156,6 +156,17 @@ def test_prompt_builder_exposes_current_prompt_version_and_boundaries() -> None:
     assert "reason field is diagnostic only" in prompt
 
 
+def test_prompt_describes_time_normalization_and_offered_slot_preference() -> None:
+    prompt = build_chat_turn_understanding_system_prompt()
+
+    assert "appointment_time" in prompt
+    assert "24-hour" in prompt
+    assert "3PM" in prompt and "15:00" in prompt
+    assert "selected_slot_reference" in prompt
+    assert "not offered" in prompt
+    assert "ambiguous_fields" in prompt
+
+
 def test_existing_receptionist_schema_and_prompt_metadata_remain_unchanged() -> None:
     receptionist_schema = build_receptionist_analysis_openai_json_schema()
     receptionist_metadata = get_current_receptionist_analysis_prompt_metadata()

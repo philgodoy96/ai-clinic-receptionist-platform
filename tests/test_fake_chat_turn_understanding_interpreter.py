@@ -219,6 +219,107 @@ def test_extracts_2pm_time_without_offered_slots() -> None:
     assert result.selected_slot_reference is None
 
 
+def _afternoon_slots() -> list[OfferedSlot]:
+    return [
+        OfferedSlot(reference="slot-2pm", start_time="2026-07-02T14:00:00"),
+        OfferedSlot(reference="slot-3pm", start_time="2026-07-02T15:00:00"),
+        OfferedSlot(reference="slot-6pm", start_time="2026-07-02T18:00:00"),
+    ]
+
+
+def test_selects_offered_slot_for_3pm_no_space() -> None:
+    result = _interpret(
+        "3PM",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=_afternoon_slots(),
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    assert result.extracted_fields.appointment_time == "15:00"
+    assert result.extracted_fields.appointment_time_raw == "3PM"
+    assert result.selected_slot_reference == "slot-3pm"
+
+
+def test_selects_offered_slot_for_3pm_with_space() -> None:
+    result = _interpret(
+        "3 PM",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=_afternoon_slots(),
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    assert result.extracted_fields.appointment_time == "15:00"
+    assert result.extracted_fields.appointment_time_raw == "3 PM"
+    assert result.selected_slot_reference == "slot-3pm"
+
+
+def test_selects_offered_slot_for_bare_hour_15() -> None:
+    result = _interpret(
+        "15",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=_afternoon_slots(),
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    assert result.extracted_fields.appointment_time == "15:00"
+    assert result.extracted_fields.appointment_time_raw == "15"
+    assert result.selected_slot_reference == "slot-3pm"
+
+
+def test_selects_offered_slot_for_colon_time_15_00() -> None:
+    result = _interpret(
+        "15:00",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=_afternoon_slots(),
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    assert result.extracted_fields.appointment_time == "15:00"
+    assert result.selected_slot_reference == "slot-3pm"
+
+
+def test_normalizes_2_pm_with_space_to_offered_slot() -> None:
+    result = _interpret(
+        "2 PM",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=_afternoon_slots(),
+    )
+
+    assert result.extracted_fields.appointment_time == "14:00"
+    assert result.selected_slot_reference == "slot-2pm"
+
+
+def test_bare_hour_15_normalizes_without_offered_slots_when_selecting() -> None:
+    result = _interpret(
+        "15",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    assert result.extracted_fields.appointment_time == "15:00"
+    assert result.selected_slot_reference is None
+
+
+def test_bare_hour_ignored_without_slot_context() -> None:
+    result = _interpret("15")
+
+    assert result.intent is ChatTurnIntent.FALLBACK
+
+
+def test_does_not_select_unoffered_time() -> None:
+    result = _interpret(
+        "3PM",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=[
+            OfferedSlot(reference="slot-2pm", start_time="2026-07-02T14:00:00"),
+        ],
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    assert result.extracted_fields.appointment_time == "15:00"
+    assert result.selected_slot_reference is None
+
+
 def test_extracts_dermatology_next_thursday_afternoon() -> None:
     result = _interpret(
         "I want dermatology next Thursday afternoon",
