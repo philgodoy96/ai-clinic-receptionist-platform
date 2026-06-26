@@ -307,6 +307,26 @@ Demo auto-create stores `patient_phone` only when the caller provided it; omitte
 
 Future: fuzzy identity resolution — see [Voice Patient Identity Resolution](operations/voice-patient-identity-resolution.md).
 
+## Chat turn understanding (identity intake)
+
+Controls whether chat booking identity intake uses the structured turn understanding interpreter.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHAT_TURN_UNDERSTANDING_INTERPRETER` | `disabled` | `disabled` preserves deterministic legacy parsing for patient identity. `fake` enables the deterministic fake interpreter for patient identity intake only. Groq/live LLM is not wired through this setting yet. |
+
+Recommended:
+
+- **Production-like / safe default:** `disabled`
+- **Local demo / natural-language identity testing:** `fake`
+
+```env
+CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled
+# CHAT_TURN_UNDERSTANDING_INTERPRETER=fake
+```
+
+This setting does not change slot selection, booking confirmation, cancellation, rescheduling, or persistence behavior.
+
 ## Deployment Environment Templates
 
 | File | Purpose |
