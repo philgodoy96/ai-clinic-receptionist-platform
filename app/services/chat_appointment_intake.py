@@ -47,6 +47,55 @@ _SOONEST_MARKERS = (
 
 EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS = 14
 
+APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME = "date_or_time_preference"
+APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION = "slot_selection"
+
+_STALE_SLOT_CONTEXT_KEYS = (
+    "offered_slots",
+    "selected_availability_slot_id",
+    "selected_start_time",
+)
+
+_BARE_WEEKDAY_PATTERN = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+_PREFixed_WEEKDAY_PATTERN = re.compile(
+    r"\b(?:this|next)\s+"
+    r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+_WEEKDAY_TO_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def is_appointment_intake_active(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("hold_id") or chat_context.get("booking_identity_step"):
+        return False
+    if chat_context.get("appointment_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return True
+    has_provider = bool(
+        chat_context.get("selected_specialty_id") or chat_context.get("selected_doctor_id"),
+    )
+    return has_provider
+
+
+def stale_slot_clearing_updates() -> dict[str, Any]:
+    return {
+        "offered_slots": [],
+        "selected_availability_slot_id": None,
+        "selected_start_time": None,
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class AppointmentSearchCriteria:
@@ -118,6 +167,13 @@ class ChatAppointmentIntakeOrchestrator:
         message: str,
         chat_context: dict[str, Any],
     ) -> ChatAppointmentIntakeResult:
+        follow_up = self._try_contextual_follow_up(
+            message=message,
+            chat_context=chat_context,
+        )
+        if follow_up is not None:
+            return follow_up
+
         if self.chat_turn_understanding_interpreter is None:
             return self._noop_result()
 
@@ -133,6 +189,33 @@ class ChatAppointmentIntakeOrchestrator:
             chat_context=chat_context,
             understanding=understanding,
         )
+
+    def extract_contextual_follow_up_updates(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        follow_up = self._try_contextual_follow_up(
+            message=message,
+            chat_context=chat_context,
+        )
+        if follow_up is None or follow_up.intent != "appointment_intake":
+            return {}
+
+        updates = dict(follow_up.chat_context_updates)
+        search_criteria = follow_up.search_criteria
+        if search_criteria is None:
+            return updates
+
+        if search_criteria.soonest_requested:
+            updates["soonest_requested"] = True
+        if search_criteria.search_start_date is not None:
+            updates["search_start_date"] = search_criteria.search_start_date
+        if search_criteria.search_end_date is not None:
+            updates["search_end_date"] = search_criteria.search_end_date
+
+        return updates
 
     def _noop_result(self) -> ChatAppointmentIntakeResult:
         return ChatAppointmentIntakeResult(intent="noop")
@@ -228,7 +311,9 @@ class ChatAppointmentIntakeOrchestrator:
         chat_context: dict[str, Any],
         offered_slots: list[OfferedSlot],
     ) -> tuple[ConversationState, ExpectedResponseType]:
-        if offered_slots:
+        if offered_slots and chat_context.get("appointment_intake_awaiting") != (
+            APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+        ):
             return ConversationState.OFFERING_SLOTS, ExpectedResponseType.SLOT_SELECTION
 
         offered_doctors = chat_context.get("offered_doctors")
@@ -400,6 +485,7 @@ class ChatAppointmentIntakeOrchestrator:
             message=message,
             extracted_date=extracted.appointment_date,
             date_raw=extracted.appointment_date_raw,
+            chat_context=chat_context,
         )
         if date_result.clarification is not None:
             return ChatAppointmentIntakeResult(
@@ -452,16 +538,28 @@ class ChatAppointmentIntakeOrchestrator:
             context_updates["selected_doctor_name"] = doctor_result.doctor_name
 
         if date_result.requested_date:
-            conflict = self._context_conflict(
-                chat_context=chat_context,
-                field="requested_date",
-                new_value=date_result.requested_date,
-                display_name=date_result.requested_date,
-                label="date",
+            existing_date = chat_context.get("requested_date")
+            is_active_date_change = (
+                is_appointment_intake_active(chat_context)
+                and isinstance(existing_date, str)
+                and existing_date != date_result.requested_date
             )
-            if conflict is not None:
-                return ChatAppointmentIntakeResult(intent="clarification", content=conflict)
-            context_updates["requested_date"] = date_result.requested_date
+            if is_active_date_change:
+                context_updates.update(stale_slot_clearing_updates())
+                context_updates["requested_date"] = date_result.requested_date
+            else:
+                conflict = self._context_conflict(
+                    chat_context=chat_context,
+                    field="requested_date",
+                    new_value=date_result.requested_date,
+                    display_name=date_result.requested_date,
+                    label="date",
+                )
+                if conflict is not None:
+                    return ChatAppointmentIntakeResult(intent="clarification", content=conflict)
+                if chat_context.get("offered_slots"):
+                    context_updates.update(stale_slot_clearing_updates())
+                context_updates["requested_date"] = date_result.requested_date
 
         if time_result.requested_time_window:
             existing_window = chat_context.get("requested_time_window")
@@ -471,7 +569,10 @@ class ChatAppointmentIntakeOrchestrator:
             ):
                 existing_label = str(existing_window.get("label", "requested"))
                 new_label = time_result.requested_time_window.get("label", "requested")
-                if existing_label != new_label:
+                if (
+                    existing_label != new_label
+                    and not is_appointment_intake_active(chat_context)
+                ):
                     return ChatAppointmentIntakeResult(
                         intent="clarification",
                         content=(
@@ -479,6 +580,8 @@ class ChatAppointmentIntakeOrchestrator:
                             f"Did you want to change that to {new_label}?"
                         ),
                     )
+                if chat_context.get("offered_slots"):
+                    context_updates.update(stale_slot_clearing_updates())
             context_updates["requested_time_window"] = time_result.requested_time_window
 
         if understanding.selected_slot_reference and chat_context.get("offered_slots"):
@@ -651,6 +754,7 @@ class ChatAppointmentIntakeOrchestrator:
         message: str,
         extracted_date: str | None,
         date_raw: str | None,
+        chat_context: dict[str, Any] | None = None,
     ) -> _DateValidation:
         if extracted_date and self._is_iso_date(extracted_date):
             return _DateValidation(requested_date=extracted_date)
@@ -667,6 +771,10 @@ class ChatAppointmentIntakeOrchestrator:
                 retry = self.date_parser.parse(stripped)
                 if retry.status == DateParseStatus.PARSED and retry.normalized_date:
                     return _DateValidation(requested_date=retry.normalized_date)
+            if chat_context is not None and is_appointment_intake_active(chat_context):
+                bare_weekday = self._parse_bare_weekday(message)
+                if bare_weekday is not None:
+                    return _DateValidation(requested_date=bare_weekday)
             return _DateValidation()
 
         if date_raw or extracted_date:
@@ -674,6 +782,102 @@ class ChatAppointmentIntakeOrchestrator:
                 clarification="Could you tell me which date works for you?",
             )
         return _DateValidation()
+
+    def _parse_bare_weekday(self, message: str) -> str | None:
+        normalized = message.lower()
+        if _PREFixed_WEEKDAY_PATTERN.search(normalized):
+            return None
+
+        match = _BARE_WEEKDAY_PATTERN.search(normalized)
+        if match is None:
+            return None
+
+        weekday_index = _WEEKDAY_TO_INDEX[match.group(1).lower()]
+        if self.clinic_time_service is not None:
+            today = self.clinic_time_service.clinic_today()
+        else:
+            from app.services.date_parsing import SystemClock
+
+            today = SystemClock().today()
+
+        days_ahead = (weekday_index - today.weekday()) % 7
+        return (today + timedelta(days=days_ahead)).isoformat()
+
+    def _try_contextual_follow_up(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> ChatAppointmentIntakeResult | None:
+        if not is_appointment_intake_active(chat_context):
+            return None
+
+        date_result = self._validate_date(
+            message=message,
+            extracted_date=None,
+            date_raw=None,
+            chat_context=chat_context,
+        )
+        if date_result.clarification is not None:
+            return ChatAppointmentIntakeResult(
+                intent="clarification",
+                content=date_result.clarification,
+            )
+
+        time_result = self._validate_time_window(
+            message=message,
+            extracted_window=None,
+            window_raw=None,
+        )
+        if time_result.clarification is not None:
+            return ChatAppointmentIntakeResult(
+                intent="clarification",
+                content=time_result.clarification,
+            )
+
+        if not date_result.requested_date and not time_result.requested_time_window:
+            return None
+
+        context_updates: dict[str, Any] = {}
+
+        if date_result.requested_date:
+            existing_date = chat_context.get("requested_date")
+            if (
+                isinstance(existing_date, str)
+                and existing_date != date_result.requested_date
+            ) or chat_context.get("offered_slots"):
+                context_updates.update(stale_slot_clearing_updates())
+            context_updates["requested_date"] = date_result.requested_date
+
+        if time_result.requested_time_window:
+            existing_window = chat_context.get("requested_time_window")
+            if (
+                existing_window != time_result.requested_time_window
+                and chat_context.get("offered_slots")
+            ):
+                context_updates.update(stale_slot_clearing_updates())
+            context_updates["requested_time_window"] = time_result.requested_time_window
+
+        if not context_updates:
+            return None
+
+        merged = {**chat_context, **context_updates}
+        if not merged.get("requested_date"):
+            context_updates["appointment_intake_awaiting"] = (
+                APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+            )
+
+        search_criteria = self._build_search_criteria(
+            chat_context=chat_context,
+            context_updates=context_updates,
+            soonest_requested=False,
+        )
+
+        return ChatAppointmentIntakeResult(
+            intent="appointment_intake",
+            chat_context_updates=context_updates,
+            search_criteria=search_criteria,
+        )
 
     def _validate_time_window(
         self,

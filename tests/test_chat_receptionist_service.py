@@ -374,8 +374,13 @@ def test_dermatologist_request_matches_specialty_and_lists_doctors(
     assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
     assert "Dr. Emily Carter" in result.reply
     assert "Dr. Michael Reed" not in result.reply
+    assert "What day or time works best?" in result.reply
     assert result.assistant_message.message_metadata["matched_specialty_name"] == "Dermatology"
     assert result.assistant_message.message_metadata["intent"] == "specialty_doctors"
+    assert (
+        result.conversation.conversation_metadata["chat_context"]["appointment_intake_awaiting"]
+        == "date_or_time_preference"
+    )
 
 
 def test_appointment_request_message_returns_intent_appointment_request(

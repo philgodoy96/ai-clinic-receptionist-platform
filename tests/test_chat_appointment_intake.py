@@ -489,3 +489,98 @@ def test_fake_interpreter_cardiology_message_updates_specialty() -> None:
 
     assert result.intent == "appointment_intake"
     assert result.chat_context_updates["selected_specialty_name"] == "Cardiology"
+
+
+def test_bare_weekday_resolves_only_with_active_appointment_context() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=StubChatTurnUnderstandingInterpreter(
+            ChatTurnUnderstandingResult(
+                intent=ChatTurnIntent.FALLBACK,
+                confidence=0.2,
+                reason="unused",
+            ),
+        ),
+        reference_date=date(2026, 7, 1),
+    )
+
+    inactive = orchestrator.extract_contextual_follow_up_updates(
+        message="What about Wednesday?",
+        chat_context={},
+    )
+    assert inactive == {}
+
+    active = orchestrator.extract_contextual_follow_up_updates(
+        message="What about Wednesday?",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Emily Carter",
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+    assert active["requested_date"] == "2026-07-01"
+
+
+def test_contextual_follow_up_clears_stale_offered_slots_on_date_change() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=StubChatTurnUnderstandingInterpreter(
+            ChatTurnUnderstandingResult(
+                intent=ChatTurnIntent.FALLBACK,
+                confidence=0.2,
+                reason="unused",
+            ),
+        ),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="What about Wednesday?",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Emily Carter",
+            "requested_date": "2026-07-06",
+            "offered_slots": [
+                {
+                    "availability_slot_id": "slot-1",
+                    "start_time": "2026-07-06T09:00:00+00:00",
+                },
+            ],
+            "selected_availability_slot_id": "slot-1",
+            "selected_start_time": "2026-07-06T09:00:00+00:00",
+            "appointment_intake_awaiting": "slot_selection",
+        },
+    )
+
+    assert updates["requested_date"] == "2026-07-01"
+    assert updates["offered_slots"] == []
+    assert updates["selected_availability_slot_id"] is None
+    assert updates["selected_start_time"] is None
+
+
+def test_afternoon_follow_up_updates_time_window_and_preserves_provider() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=StubChatTurnUnderstandingInterpreter(
+            ChatTurnUnderstandingResult(
+                intent=ChatTurnIntent.FALLBACK,
+                confidence=0.2,
+                reason="unused",
+            ),
+        ),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="afternoon",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Emily Carter",
+            "requested_date": "2026-07-06",
+            "appointment_intake_awaiting": "slot_selection",
+        },
+    )
+
+    assert updates["requested_time_window"] == {
+        "label": "afternoon",
+        "start_time": "12:00",
+        "end_time": "17:00",
+    }
+    assert "requested_date" not in updates
