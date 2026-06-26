@@ -31,6 +31,7 @@ from app.services.human_handoff_notifications import HumanHandoffNotificationSer
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from tests.chat_booking_flow_support import complete_new_patient_booking
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     TrackingAppointmentBookingService,
@@ -46,9 +47,6 @@ from tests.test_scheduling_services import (
     create_demo_scheduling_service_with_emily_july_availability,
 )
 
-FULL_IDENTITY_WITH_CONFIRM = (
-    "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. Please confirm."
-)
 _HUMAN_HANDOFF_PHRASE = "human follow-up"
 _ESCALATION_SUGGESTION_PHRASE = "if you prefer, i can transfer this to a human receptionist"
 
@@ -190,12 +188,7 @@ def test_booking_flow_still_works_with_conversation_health(
     service, tracking_booking, _hold_service = health_enabled_booking_service
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert result.booking_confirmed is True
@@ -405,12 +398,7 @@ def test_booking_confirmation_does_not_append_escalation_suggestion(
     service, _tracking_booking, _hold_service = health_enabled_booking_service
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert _ESCALATION_SUGGESTION_PHRASE not in result.reply.lower()
@@ -665,12 +653,7 @@ def test_booking_confirmation_flow_still_passes_with_human_escalation_service(
     )
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert result.booking_confirmed is True
@@ -693,12 +676,7 @@ def test_booking_flow_does_not_create_human_escalation(
     )
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert len(tracking_booking.book_calls) == 1

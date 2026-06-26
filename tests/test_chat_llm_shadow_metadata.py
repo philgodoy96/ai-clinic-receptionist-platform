@@ -19,10 +19,8 @@ from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
-from tests.test_chat_booking_confirmation_flow import (
-    FULL_IDENTITY_WITH_CONFIRM,
-    create_jane_doe_patient,
-)
+from tests.chat_booking_flow_support import complete_new_patient_booking
+from tests.test_chat_booking_confirmation_flow import create_jane_doe_patient
 from tests.test_chat_receptionist_service import (
     TrackingAppointmentBookingService,
     _create_hold_service,
@@ -196,12 +194,7 @@ def test_booking_with_llm_shadow_enabled_uses_deterministic_flow() -> None:
         ),
     )
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=hold.conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, hold.conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert result.booking_confirmed is True
