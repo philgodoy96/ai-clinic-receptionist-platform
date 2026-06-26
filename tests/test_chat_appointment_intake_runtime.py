@@ -745,3 +745,98 @@ def test_earliest_search_with_no_availability_returns_natural_guidance() -> None
     assert "not seeing openings" in result.reply.lower()
     assert "YYYY-MM-DD" not in result.reply
     assert result.conversation.conversation_metadata["chat_context"].get("offered_slots") == []
+
+
+def test_dermatologist_listing_includes_follow_up_and_awaiting_flag() -> None:
+    service = _create_runtime_service(None)
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need a dermatologist"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
+    assert "What day or time works best?" in result.reply
+    assert "The following doctors are available" not in result.reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_intake_awaiting"] == "date_or_time_preference"
+    assert chat_context["selected_specialty_name"] == "Dermatology"
+
+
+def test_what_about_wednesday_reenters_availability_without_generic_fallback() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    service = _create_runtime_service(spy)
+    scheduling = service.scheduling
+
+    first = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    conversation_id = first.conversation.id
+    first_context = first.conversation.conversation_metadata["chat_context"]
+    assert first_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert first_context["requested_date"] == "2026-07-02"
+
+    with (
+        patch.object(
+            service._appointment_intake,
+            "_parse_bare_weekday",
+            return_value="2026-07-08",
+        ),
+        patch.object(
+            scheduling,
+            "check_availability",
+            wraps=scheduling.check_availability,
+        ) as check_availability_mock,
+    ):
+        second = service.handle_message(
+            ChatMessageInput(
+                message="What about Wednesday?",
+                conversation_id=conversation_id,
+            ),
+        )
+
+    assert second.intent != ChatReceptionistIntent.FALLBACK
+    assert "book, cancel, or reschedule" not in second.reply.lower()
+    check_availability_mock.assert_called_once()
+    chat_context = second.conversation.conversation_metadata["chat_context"]
+    assert chat_context["requested_date"] == "2026-07-08"
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context.get("offered_slots") == []
+
+
+def test_what_about_wednesday_without_appointment_context_uses_generic_fallback() -> None:
+    service = _create_runtime_service(None)
+
+    result = service.handle_message(ChatMessageInput(message="What about Wednesday?"))
+
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "book, cancel, or reschedule" in result.reply.lower()
+
+
+def test_afternoon_follow_up_reenters_availability_with_existing_provider_and_date() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    service = _create_runtime_service(spy)
+    scheduling = service.scheduling
+
+    first = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    conversation_id = first.conversation.id
+
+    with patch.object(
+        scheduling,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        second = service.handle_message(
+            ChatMessageInput(
+                message="afternoon",
+                conversation_id=conversation_id,
+            ),
+        )
+
+    assert second.intent != ChatReceptionistIntent.FALLBACK
+    check_availability_mock.assert_called_once()
+    chat_context = second.conversation.conversation_metadata["chat_context"]
+    assert chat_context["requested_time_window"]["label"] == "afternoon"
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context["requested_date"] == "2026-07-02"
