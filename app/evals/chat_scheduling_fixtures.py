@@ -13,9 +13,11 @@ from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.domain.scheduling.phone import normalize_phone_digits
+from app.domain.voice_patient_intake import VoicePatientIntakeMode
 from app.evals.chat_scheduling import ChatSchedulingEvaluationError
 from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
+from app.repositories.memory.patient_resolution import InMemoryPatientResolutionRepository
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.chat_receptionist import ChatReceptionistService
@@ -25,6 +27,8 @@ from app.services.conversations import ConversationService
 from app.services.date_parsing import FixedClock as DateParsingFixedClock
 from app.services.date_parsing import NaturalLanguageDateParser
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
+from app.services.patient_identity_resolution import PatientIdentityResolutionService
+from app.services.patient_intake import PatientIntakeService
 from app.services.scheduling import SchedulingAvailabilityPolicy, SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
@@ -499,6 +503,14 @@ def _create_chat_receptionist_service(
         date_parser=date_parser,
         time_preference_parser=time_preference_parser,
         response_generation_mode=ReceptionistResponseMode.DETERMINISTIC,
+        patient_identity_resolution=PatientIdentityResolutionService(
+            patients=scheduling.patients,
+            resolutions=InMemoryPatientResolutionRepository(),
+            patient_intake=PatientIntakeService(
+                patients=scheduling.patients,
+                mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+            ),
+        ),
     )
 
 
