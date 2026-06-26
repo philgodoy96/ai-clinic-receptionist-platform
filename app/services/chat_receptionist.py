@@ -48,6 +48,10 @@ from app.services.appointment_holds import (
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.chat_appointment_intake import (
+    ChatAppointmentIntakeOrchestrator,
+    ChatAppointmentIntakeResult,
+)
 from app.services.chat_booking_identity import (
     BookingIdentityFlowResult,
     ChatBookingIdentityOrchestrator,
@@ -196,7 +200,7 @@ _HANDOFF_CONTEXT_KEYS = (
 )
 _ESCALATION_SUGGESTION_SUFFIX = " If you prefer, I can transfer this to a human receptionist."
 _DATE_CLARIFICATION_MESSAGE = (
-    "Please provide a specific date in YYYY-MM-DD or say something like tomorrow or next Monday."
+    "What day works best? You can say something like tomorrow or next Monday."
 )
 _TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "Please specify a time-of-day preference such as morning, afternoon, or "
@@ -205,6 +209,9 @@ _TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
 _HELD_TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "You already have a time held. Please complete or release that hold before "
     "changing your time-of-day preference."
+)
+_APPOINTMENT_CLARIFICATION_FALLBACK_MESSAGE = (
+    "Could you tell me a bit more about the appointment you are looking for?"
 )
 
 
@@ -519,6 +526,13 @@ class ChatReceptionistService:
         self.chat_turn_understanding_records = chat_turn_understanding_records
         self._booking_identity = ChatBookingIdentityOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        )
+        self._appointment_intake = ChatAppointmentIntakeOrchestrator(
+            scheduling=scheduling,
+            date_parser=date_parser,
+            time_preference_parser=time_preference_parser,
+            clinic_time_service=clinic_time_service,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
         )
 
@@ -964,16 +978,43 @@ class ChatReceptionistService:
                 )
             return reply
 
-        if date_extraction.requires_clarification and self._is_clearly_asking_availability(
-            normalized_message,
-            date_parsing=date_extraction.date_parsing,
-        ):
-            context_updates = self._extract_context_updates(
+        intake_result = self._try_appointment_intake(
+            message=message,
+            existing_context=existing_context,
+            normalized_message=normalized_message,
+        )
+        if intake_result is not None and intake_result.intent == "clarification":
+            return finish(
+                ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                    content=intake_result.content or _APPOINTMENT_CLARIFICATION_FALLBACK_MESSAGE,
+                ),
+            )
+        intake_updates = self._appointment_intake_context_updates(intake_result)
+
+        def merge_intake_context_updates(
+            context_updates: dict[str, Any],
+        ) -> dict[str, Any]:
+            if not intake_updates:
+                return context_updates
+            return {**context_updates, **intake_updates}
+
+        if (
+            date_extraction.requires_clarification
+            and self._is_clearly_asking_availability(
                 normalized_message,
-                message,
-                existing_context=existing_context,
-                date_extraction=date_extraction,
-                time_extraction=time_extraction,
+                date_parsing=date_extraction.date_parsing,
+            )
+            and not intake_updates.get("requested_date")
+        ):
+            context_updates = merge_intake_context_updates(
+                self._extract_context_updates(
+                    normalized_message,
+                    message,
+                    existing_context=existing_context,
+                    date_extraction=date_extraction,
+                    time_extraction=time_extraction,
+                ),
             )
             return finish(
                 ChatReceptionistReply(
@@ -989,13 +1030,16 @@ class ChatReceptionistService:
                 normalized_message,
                 time_preference_parsing=time_extraction.time_preference_parsing,
             )
+            and not intake_updates.get("requested_time_window")
         ):
-            context_updates = self._extract_context_updates(
-                normalized_message,
-                message,
-                existing_context=existing_context,
-                date_extraction=date_extraction,
-                time_extraction=time_extraction,
+            context_updates = merge_intake_context_updates(
+                self._extract_context_updates(
+                    normalized_message,
+                    message,
+                    existing_context=existing_context,
+                    date_extraction=date_extraction,
+                    time_extraction=time_extraction,
+                ),
             )
             return finish(
                 ChatReceptionistReply(
@@ -1010,7 +1054,8 @@ class ChatReceptionistService:
                 ChatReceptionistReply(
                     intent=ChatReceptionistIntent.INVALID_DATE,
                     content=(
-                        "That date does not look valid. Please provide a date in YYYY-MM-DD format."
+                        "That date doesn't look quite right. What day should I check? "
+                        "You can say tomorrow or next Monday."
                     ),
                 ),
             )
@@ -1019,22 +1064,26 @@ class ChatReceptionistService:
             self.date_parser is not None
             and date_extraction.date_parsing is not None
             and date_extraction.date_parsing.get("status") == DateParseStatus.INVALID.value
+            and not intake_updates.get("requested_date")
         ):
             return finish(
                 ChatReceptionistReply(
                     intent=ChatReceptionistIntent.INVALID_DATE,
                     content=(
-                        "That date does not look valid. Please provide a date in YYYY-MM-DD format."
+                        "That date doesn't look quite right. What day should I check? "
+                        "You can say tomorrow or next Monday."
                     ),
                 ),
             )
 
-        context_updates = self._extract_context_updates(
-            normalized_message,
-            message,
-            existing_context=existing_context,
-            date_extraction=date_extraction,
-            time_extraction=time_extraction,
+        context_updates = merge_intake_context_updates(
+            self._extract_context_updates(
+                normalized_message,
+                message,
+                existing_context=existing_context,
+                date_extraction=date_extraction,
+                time_extraction=time_extraction,
+            ),
         )
         merged_context = {**existing_context, **context_updates}
 
@@ -1196,6 +1245,77 @@ class ChatReceptionistService:
             context_updates["selected_doctor_name"] = matched_doctor.full_name
 
         return context_updates
+
+    def _try_appointment_intake(
+        self,
+        *,
+        message: str,
+        existing_context: dict[str, Any],
+        normalized_message: str,
+    ) -> ChatAppointmentIntakeResult | None:
+        if not self._should_run_appointment_intake(
+            existing_context=existing_context,
+            normalized_message=normalized_message,
+            message=message,
+        ):
+            return None
+
+        return self._appointment_intake.handle(
+            message=message,
+            chat_context=existing_context,
+        )
+
+    def _should_run_appointment_intake(
+        self,
+        *,
+        existing_context: dict[str, Any],
+        normalized_message: str,
+        message: str,
+    ) -> bool:
+        if self._appointment_intake.chat_turn_understanding_interpreter is None:
+            return False
+
+        if existing_context.get("appointment_id"):
+            return False
+
+        if existing_context.get("booking_identity_step"):
+            return False
+
+        hold_id = existing_context.get("hold_id")
+        if hold_id and self._booking_identity.is_active(existing_context):
+            return False
+
+        if self._is_hold_request(normalized_message, existing_context, message):
+            return False
+
+        return True
+
+    def _appointment_intake_context_updates(
+        self,
+        intake_result: ChatAppointmentIntakeResult | None,
+    ) -> dict[str, Any]:
+        if intake_result is None or intake_result.intent != "appointment_intake":
+            return {}
+
+        context_updates = dict(intake_result.chat_context_updates)
+        search_criteria = intake_result.search_criteria
+        if search_criteria is None:
+            return context_updates
+
+        if search_criteria.soonest_requested:
+            context_updates["soonest_requested"] = True
+            if (
+                not context_updates.get("requested_date")
+                and search_criteria.search_start_date is not None
+            ):
+                context_updates["requested_date"] = search_criteria.search_start_date
+
+        return context_updates
+
+    def _format_availability_missing_date_prompt(self, target_name: str) -> str:
+        if target_name:
+            return f"What day works best for {target_name}?"
+        return "What day works best for your appointment?"
 
     def parse_patient_identity(
         self,
@@ -1830,14 +1950,21 @@ class ChatReceptionistService:
         selected_specialty_id = merged_context.get("selected_specialty_id")
         requested_date = merged_context.get("requested_date")
 
-        if self._mentions_unknown_doctor(normalized_message):
+        if (
+            not merged_context.get("selected_doctor_id")
+            and self._mentions_unknown_doctor(normalized_message)
+        ):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_UNKNOWN_DOCTOR,
                 content=self._format_unknown_doctor_prompt(),
                 chat_context_updates=context_updates,
             )
 
-        if self._mentions_unknown_specialty(normalized_message):
+        if (
+            not merged_context.get("selected_specialty_id")
+            and not merged_context.get("selected_doctor_id")
+            and self._mentions_unknown_specialty(normalized_message)
+        ):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_UNKNOWN_SPECIALTY,
                 content=self._format_unknown_specialty_prompt(),
@@ -1855,10 +1982,7 @@ class ChatReceptionistService:
             target_name = self._availability_target_name(merged_context)
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_MISSING_DATE,
-                content=(
-                    f"Please provide the date you would like to check for {target_name} "
-                    "in YYYY-MM-DD format."
-                ),
+                content=self._format_availability_missing_date_prompt(target_name),
                 chat_context_updates=context_updates,
             )
 
