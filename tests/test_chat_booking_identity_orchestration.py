@@ -8,6 +8,8 @@ from app.models.conversations import Conversation
 from app.models.scheduling import Patient
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.chat_receptionist import (
+    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
+    APPOINTMENT_MANAGEMENT_MODE_CANCEL,
     ChatMessageInput,
     ChatReceptionistIntent,
     ChatReceptionistService,
@@ -435,8 +437,16 @@ def test_post_booking_cancel_request_routes_to_cancellation() -> None:
 
     reply = result.reply.lower()
     assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "full name" in reply
+    assert "date of birth" in reply
     assert "already confirmed" not in reply
     assert len(tracking_booking.book_calls) == 1
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
 
 
 def test_post_booking_reschedule_request_routes_to_reschedule() -> None:
