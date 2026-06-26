@@ -332,3 +332,244 @@ def test_reschedule_message_still_routes_through_top_level_flow_not_intake() -> 
 
     assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
     assert spy.calls == []
+
+
+def _reed_doctor_id(service: ChatReceptionistService) -> str:
+    for doctor in service.scheduling.list_doctors():
+        if doctor.full_name == "Dr. Michael Reed":
+            return str(doctor.id)
+    raise AssertionError("Dr. Michael Reed not found")
+
+
+def test_specialty_doctor_list_stores_offered_doctors_in_chat_context() -> None:
+    service = _create_runtime_service(None)
+
+    result = service.handle_message(ChatMessageInput(message="cardiology"))
+
+    assert result.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
+    assert "Dr. Michael Reed" in result.reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_specialty_name"] == "Cardiology"
+    assert chat_context["selected_specialty_id"] == _cardiology_specialty_id(service)
+    offered_doctors = chat_context["offered_doctors"]
+    assert len(offered_doctors) == 1
+    assert offered_doctors[0] == {
+        "reference": "doctor-1",
+        "doctor_id": _reed_doctor_id(service),
+        "doctor_name": "Dr. Michael Reed",
+        "specialty_id": _cardiology_specialty_id(service),
+        "specialty_name": "Cardiology",
+    }
+
+
+def test_offered_doctor_selection_sets_doctor_and_asks_for_date() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.FALLBACK,
+            confidence=0.2,
+            reason="unused for first turn",
+        ),
+    )
+    service = _create_runtime_service(interpreter)
+    scheduling = service.scheduling
+
+    first = service.handle_message(ChatMessageInput(message="cardiology"))
+    conversation_id = first.conversation.id
+
+    interpreter.result = ChatTurnUnderstandingResult(
+        intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+        confidence=0.9,
+        reason="offered doctor selection",
+        extracted_fields=ExtractedTurnFields(
+            doctor_name_raw="Dr. Reed",
+        ),
+    )
+
+    with patch.object(
+        scheduling,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        second = service.handle_message(
+            ChatMessageInput(
+                message="It can be Dr. Reed",
+                conversation_id=conversation_id,
+            ),
+        )
+
+    check_availability_mock.assert_not_called()
+    assert second.intent == ChatReceptionistIntent.AVAILABILITY_MISSING_DATE
+    assert "what day works best" in second.reply.lower()
+    assert "Dr. Michael Reed" in second.reply
+    assert "YYYY-MM-DD" not in second.reply
+    assert "specialty or doctor" not in second.reply.lower()
+    chat_context = second.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_doctor_name"] == "Dr. Michael Reed"
+    assert chat_context["selected_doctor_id"] == _reed_doctor_id(service)
+
+
+def test_dermatology_offered_doctor_selection_is_contextual() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.FALLBACK,
+            confidence=0.2,
+            reason="unused for first turn",
+        ),
+    )
+    service = _create_runtime_service(interpreter)
+    scheduling = service.scheduling
+
+    first = service.handle_message(
+        ChatMessageInput(message="I need a dermatologist"),
+    )
+    conversation_id = first.conversation.id
+    assert first.intent == ChatReceptionistIntent.SPECIALTY_DOCTORS
+    offered_doctors = first.conversation.conversation_metadata["chat_context"]["offered_doctors"]
+    assert offered_doctors[0]["doctor_name"] == "Dr. Emily Carter"
+
+    interpreter.result = ChatTurnUnderstandingResult(
+        intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+        confidence=0.9,
+        reason="offered dermatology doctor selection",
+        extracted_fields=ExtractedTurnFields(
+            doctor_name_raw="Dr. Emily",
+        ),
+    )
+
+    with patch.object(
+        scheduling,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        second = service.handle_message(
+            ChatMessageInput(
+                message="Dr. Emily is fine",
+                conversation_id=conversation_id,
+            ),
+        )
+
+    check_availability_mock.assert_not_called()
+    assert second.intent == ChatReceptionistIntent.AVAILABILITY_MISSING_DATE
+    assert "Dr. Emily Carter" in second.reply
+    assert "what day works best" in second.reply.lower()
+    chat_context = second.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+
+
+def test_offered_doctor_selection_does_not_expose_doctor_ids_in_reply() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.FALLBACK,
+            confidence=0.2,
+            reason="unused for first turn",
+        ),
+    )
+    service = _create_runtime_service(interpreter)
+
+    first = service.handle_message(ChatMessageInput(message="cardiology"))
+    reed_id = _reed_doctor_id(service)
+
+    interpreter.result = ChatTurnUnderstandingResult(
+        intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+        confidence=0.9,
+        reason="offered doctor selection",
+        extracted_fields=ExtractedTurnFields(
+            doctor_name_raw="Dr. Reed",
+        ),
+    )
+
+    second = service.handle_message(
+        ChatMessageInput(
+            message="It can be Dr. Reed",
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    assert reed_id not in second.reply
+
+
+def test_unknown_doctor_with_offered_doctors_returns_clarification() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.FALLBACK,
+            confidence=0.2,
+            reason="unused for first turn",
+        ),
+    )
+    service = _create_runtime_service(interpreter)
+    scheduling = service.scheduling
+
+    first = service.handle_message(ChatMessageInput(message="cardiology"))
+
+    interpreter.result = ChatTurnUnderstandingResult(
+        intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+        confidence=0.9,
+        reason="unknown doctor among offered options",
+        extracted_fields=ExtractedTurnFields(
+            doctor_name_raw="Dr. Unknown",
+        ),
+    )
+
+    with patch.object(
+        scheduling,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        second = service.handle_message(
+            ChatMessageInput(
+                message="I'd prefer Dr. Unknown",
+                conversation_id=first.conversation.id,
+            ),
+        )
+
+    assert second.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "doctor" in second.reply.lower()
+    assert "options i shared" in second.reply.lower()
+    check_availability_mock.assert_not_called()
+    chat_context = second.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("selected_doctor_name") != "Dr. Unknown"
+
+
+def test_slot_selection_with_offered_slots_not_intercepted_by_intake() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.FALLBACK,
+            confidence=0.2,
+            reason="noop for availability turn",
+        ),
+    )
+    service = _create_runtime_service(interpreter)
+    scheduling = service.scheduling
+
+    availability_result = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    conversation_id = availability_result.conversation.id
+    offered_slots = availability_result.conversation.conversation_metadata["chat_context"][
+        "offered_slots"
+    ]
+    assert offered_slots
+
+    interpreter.result = ChatTurnUnderstandingResult(
+        intent=ChatTurnIntent.SLOT_SELECTION,
+        confidence=0.95,
+        reason="slot selection",
+        selected_slot_reference=str(offered_slots[0]["availability_slot_id"]),
+    )
+
+    with patch.object(
+        scheduling,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        hold_result = service.handle_message(
+            ChatMessageInput(
+                message="09:00",
+                conversation_id=conversation_id,
+            ),
+        )
+
+    check_availability_mock.assert_not_called()
+    assert hold_result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert interpreter.calls
+    assert hold_result.conversation.conversation_metadata["chat_context"].get("hold_id")
