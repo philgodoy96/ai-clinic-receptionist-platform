@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class ChatTurnUnderstandingInterpreterProvider(StrEnum):
     DISABLED = "disabled"
     FAKE = "fake"
+    GROQ = "groq"
 
 
 class ConversationState(StrEnum):
