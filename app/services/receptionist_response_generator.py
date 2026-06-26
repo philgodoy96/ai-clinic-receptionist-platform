@@ -367,7 +367,8 @@ def render_deterministic_template(
 
     if template_type == ReceptionistTemplateType.ASK_FOR_CONFIRMATION:
         return (
-            "I have your patient details on file. Please confirm to book that appointment time."
+            "Before I book it, please confirm the appointment details. "
+            "Should I book that?"
         )
 
     if template_type == ReceptionistTemplateType.BOOKING_SUCCEEDED:

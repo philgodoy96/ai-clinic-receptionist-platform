@@ -14,6 +14,10 @@ from app.services.chat_receptionist import (
 )
 from app.services.conversations import ConversationService
 from app.services.scheduling import SchedulingService
+from tests.chat_booking_flow_support import (
+    advance_new_patient_to_booking_summary,
+    complete_new_patient_booking,
+)
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     _create_hold_service,
@@ -47,7 +51,7 @@ def booking_chat_service() -> tuple[
     conversations = ConversationService(repository=repository)
     hold_service = _create_hold_service()
     scheduling = create_demo_scheduling_service_with_emily_july_availability(
-        patients=[create_jane_doe_patient()],
+        patients=[],
     )
     service = create_chat_receptionist_service(
         conversations=conversations,
@@ -67,7 +71,7 @@ def test_confirmation_without_hold_returns_booking_hold_missing(
     service, _hold_service, _scheduling = booking_chat_service
 
     result = service.handle_message(
-        ChatMessageInput(message="Please confirm my appointment"),
+        ChatMessageInput(message="Yes"),
     )
 
     assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_MISSING
@@ -93,15 +97,10 @@ def test_complete_identity_without_confirmation_requests_confirmation(
         ),
     )
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=("Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"),
-            conversation_id=hold.conversation.id,
-        ),
-    )
+    result = advance_new_patient_to_booking_summary(service, hold.conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
-    assert "confirm" in result.reply.lower()
+    assert "before i book" in result.reply.lower()
 
 
 def test_booking_confirmed_creates_appointment_and_updates_context(
@@ -125,14 +124,7 @@ def test_booking_confirmed_creates_appointment_and_updates_context(
         ),
     )
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=(
-                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. Please confirm."
-            ),
-            conversation_id=hold.conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, hold.conversation)
 
     chat_context = result.conversation.conversation_metadata["chat_context"]
 
@@ -194,6 +186,5 @@ def test_partial_identity_with_hold_returns_booking_identity_missing(
         ),
     )
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
-    assert "phone" in result.reply.lower()
-    assert result.assistant_message.message_metadata["booking_attempted"] is True
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    assert "seen" in result.reply.lower() or "before" in result.reply.lower()

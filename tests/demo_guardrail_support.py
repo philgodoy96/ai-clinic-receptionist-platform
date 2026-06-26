@@ -37,7 +37,6 @@ from app.services.email_jobs import (
 from tests.retell_webhook_support import configure_retell_for_tests, make_retell_enabled_settings
 from tests.test_api_errors import EmptySchedulingService
 from tests.test_chat_api import FakeDatabaseSession, FakeEmailJobService
-from tests.test_chat_booking_confirmation_flow import create_jane_doe_patient
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     create_chat_receptionist_service,
@@ -87,6 +86,17 @@ def make_guardrail_settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+def make_chat_booking_guardrail_settings(**overrides: Any) -> Settings:
+    return make_guardrail_settings(
+        DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100,
+        DEMO_CHAT_MESSAGES_PER_DAY_PER_IP=100,
+        DEMO_GLOBAL_CHAT_MESSAGES_PER_DAY=100,
+        DEMO_APPOINTMENTS_PER_DAY_PER_IP=100,
+        DEMO_GLOBAL_APPOINTMENTS_PER_DAY=100,
+        **overrides,
+    )
+
+
 def make_disabled_guardrail_settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "PUBLIC_DEMO_MODE": False,
@@ -124,7 +134,7 @@ def create_guarded_chat_app(
     chat_service = create_chat_receptionist_service(
         conversations=conversation_service,
         scheduling=create_demo_scheduling_service_with_emily_july_availability(
-            patients=[create_jane_doe_patient()],
+            patients=[],
         ),
         hold_service=hold_service,
     )

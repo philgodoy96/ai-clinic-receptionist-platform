@@ -20,6 +20,7 @@ from app.domain.human_escalations import (
     HumanEscalationSource,
 )
 from app.domain.receptionist.enums import ReceptionistResponseMode
+from app.domain.scheduling.availability import AvailabilityCheckStatus
 from app.domain.scheduling.expressions import (
     DateExpression,
     DateExpressionKind,
@@ -46,6 +47,17 @@ from app.services.appointment_holds import (
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.chat_booking_identity import (
+    BookingIdentityFlowResult,
+    ChatBookingIdentityOrchestrator,
+    ParsedPatientFields,
+)
+from app.services.chat_confirmation import (
+    ConfirmationType,
+    is_confirmation_confirmed,
+    normalize_email_address,
+    normalize_patient_display_name,
+)
 from app.services.clinic_time import ClinicTimeService
 from app.services.conversation_health import (
     ConversationHealthResult,
@@ -68,6 +80,7 @@ from app.services.llm_receptionist import (
     ReceptionistAnalysisRequest,
     ReceptionistAnalysisResult,
 )
+from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
     ReceptionistResponseGenerator,
@@ -79,9 +92,9 @@ from app.services.receptionist_response_planning import (
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
-    InsufficientPatientIdentityError,
-    PatientLookupCriteria,
+    DoctorAttributedAvailabilitySlot,
     SchedulingService,
+    SpecialtyAvailabilityCheckResult,
 )
 from app.services.scheduling_availability import SchedulingAvailabilityResolver
 from app.services.slot_filling import (
@@ -98,6 +111,11 @@ from app.services.time_preferences import (
 
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+_DR_MENTION_PATTERN = re.compile(r"\bdr\.?\s+[a-z]", re.IGNORECASE)
+_SPECIALTY_MENTION_PATTERN = re.compile(
+    r"\b\w+(?:ology|iatry|surgery|ologist)\b",
+    re.IGNORECASE,
+)
 _ISO_DATETIME_PATTERN = re.compile(
     r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\b",
 )
@@ -155,13 +173,6 @@ _ORDINAL_SLOT_KEYWORDS = {
 _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\s\-().]{6,}\d|\b\d{10,14}\b)")
 _MY_NAME_IS_PATTERN = re.compile(r"my name is\s+(.+)", re.IGNORECASE)
-_CONFIRMATION_PHRASES = [
-    "confirm",
-    "yes, book",
-    "book it",
-    "schedule it",
-    "go ahead",
-]
 _PATIENT_IDENTITY_FIELD_LABELS = {
     "full_name": "full name",
     "date_of_birth": "date of birth",
@@ -206,6 +217,8 @@ class ChatReceptionistIntent(StrEnum):
     AVAILABILITY_REQUEST = "availability_request"
     AVAILABILITY_MISSING_DATE = "availability_missing_date"
     AVAILABILITY_MISSING_DOCTOR = "availability_missing_doctor"
+    AVAILABILITY_UNKNOWN_SPECIALTY = "availability_unknown_specialty"
+    AVAILABILITY_UNKNOWN_DOCTOR = "availability_unknown_doctor"
     AVAILABILITY_RESULTS = "availability_results"
     AVAILABILITY_NO_SLOTS = "availability_no_slots"
     AVAILABILITY_NO_MATCHING_TIME_WINDOW = "availability_no_matching_time_window"
@@ -233,6 +246,8 @@ _AVAILABILITY_CONTEXT_INTENTS = frozenset(
     {
         ChatReceptionistIntent.AVAILABILITY_MISSING_DATE,
         ChatReceptionistIntent.AVAILABILITY_MISSING_DOCTOR,
+        ChatReceptionistIntent.AVAILABILITY_UNKNOWN_SPECIALTY,
+        ChatReceptionistIntent.AVAILABILITY_UNKNOWN_DOCTOR,
         ChatReceptionistIntent.AVAILABILITY_RESULTS,
         ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
         ChatReceptionistIntent.AVAILABILITY_NO_MATCHING_TIME_WINDOW,
@@ -299,8 +314,10 @@ class ChatPatientIdentity:
 
 
 def message_has_confirmation(message: str) -> bool:
-    normalized = message.lower()
-    return any(phrase in normalized for phrase in _CONFIRMATION_PHRASES)
+    return is_confirmation_confirmed(
+        confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,
+        message=message,
+    )
 
 
 def merge_patient_identity(
@@ -476,6 +493,7 @@ class ChatReceptionistService:
         response_generation_mode: ReceptionistResponseMode = (
             ReceptionistResponseMode.DETERMINISTIC
         ),
+        patient_identity_resolution: PatientIdentityResolutionService,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -492,6 +510,10 @@ class ChatReceptionistService:
         self.clinic_time_service = clinic_time_service
         self.response_generator = response_generator or DeterministicReceptionistResponseGenerator()
         self.response_generation_mode = response_generation_mode
+        self.patient_identity_resolution = patient_identity_resolution
+        self._booking_identity = ChatBookingIdentityOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+        )
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -1097,6 +1119,7 @@ class ChatReceptionistService:
                 self._handle_availability_flow(
                     merged_context=merged_context,
                     context_updates=context_updates,
+                    normalized_message=normalized_message,
                 ),
             )
 
@@ -1163,7 +1186,11 @@ class ChatReceptionistService:
         booking_context: bool = False,
     ) -> ChatPatientIdentity:
         email_match = _EMAIL_PATTERN.search(message)
-        email = email_match.group(0) if email_match is not None else None
+        email = (
+            normalize_email_address(email_match.group(0))
+            if email_match is not None
+            else None
+        )
 
         phone = self._extract_phone(message)
         date_of_birth = self._extract_date_of_birth(
@@ -1262,7 +1289,8 @@ class ChatReceptionistService:
             if cut_points:
                 remainder = remainder[: min(cut_points)].strip()
 
-            return remainder or None
+            normalized = normalize_patient_display_name(remainder) if remainder else None
+            return normalized or None
 
         segments = [segment.strip() for segment in message.split(",")]
         if len(segments) < 2:
@@ -1272,7 +1300,7 @@ class ChatReceptionistService:
                 and len(segments[0].split()) >= 2
                 and not self._looks_like_scheduling_text(segments[0])
             ):
-                return segments[0]
+                return normalize_patient_display_name(segments[0])
             return None
 
         first_segment = segments[0]
@@ -1280,7 +1308,7 @@ class ChatReceptionistService:
             return None
 
         if len(first_segment.split()) >= 2:
-            return first_segment
+            return normalize_patient_display_name(first_segment)
 
         return None
 
@@ -1315,6 +1343,51 @@ class ChatReceptionistService:
         labels = [_PATIENT_IDENTITY_FIELD_LABELS[field] for field in missing_fields]
         return self._join_names(labels)
 
+    def _parse_booking_patient_fields(
+        self,
+        message: str,
+        *,
+        booking_context: bool = False,
+    ) -> ParsedPatientFields:
+        parsed = self.parse_patient_identity(message, booking_context=booking_context)
+        return ParsedPatientFields(
+            full_name=parsed.full_name,
+            date_of_birth=parsed.date_of_birth,
+            email=parsed.email,
+            phone=parsed.phone,
+        )
+
+    def _booking_flow_result_to_reply(
+        self,
+        flow: BookingIdentityFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+            hold_id=flow.hold_id,
+            booking_attempted=flow.booking_attempted,
+        )
+
+    def _hold_booking_identity_unavailable_reply(
+        self,
+        *,
+        hold_id: str,
+        context_updates: dict[str, Any],
+        booking_attempted: bool = False,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+            content=(
+                "I need to confirm patient details through our secure booking flow "
+                "before I can finish this appointment. Please check availability and "
+                "choose a time again."
+            ),
+            chat_context_updates=context_updates,
+            hold_id=hold_id,
+            booking_attempted=booking_attempted,
+        )
+
     def _handle_booking_flow(
         self,
         *,
@@ -1326,8 +1399,91 @@ class ChatReceptionistService:
     ) -> ChatReceptionistReply | None:
         hold_id = merged_context.get("hold_id")
         booking_context = bool(hold_id)
-        has_confirmation = message_has_confirmation(message)
+        has_confirmation = is_confirmation_confirmed(
+            confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,
+            message=message,
+        )
         offered_slots = merged_context.get("offered_slots") or []
+
+        if merged_context.get("appointment_id"):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.BOOKING_CONFIRMED,
+                content=(
+                    "Your appointment is already confirmed. "
+                    "Is there anything else I can help with?"
+                ),
+                chat_context_updates=context_updates,
+                hold_id=str(hold_id) if hold_id else None,
+                booking_confirmed=True,
+                appointment_id=str(merged_context["appointment_id"]),
+            )
+
+        if hold_id:
+            hold_id_str = str(hold_id)
+            if not self._booking_identity.is_active(merged_context):
+                parsed_hold_identity = self.parse_patient_identity(
+                    message,
+                    booking_context=booking_context,
+                )
+                has_identity_fields = any(
+                    (
+                        parsed_hold_identity.full_name,
+                        parsed_hold_identity.date_of_birth,
+                        parsed_hold_identity.phone,
+                        parsed_hold_identity.email,
+                    )
+                )
+                if has_confirmation or has_identity_fields:
+                    return self._hold_booking_identity_unavailable_reply(
+                        hold_id=hold_id_str,
+                        context_updates=context_updates,
+                        booking_attempted=has_confirmation,
+                    )
+                return None
+
+            flow_result = self._booking_identity.handle(
+                message=message,
+                conversation=conversation,
+                merged_context=merged_context,
+                context_updates=context_updates,
+                parse_patient_fields=self._parse_booking_patient_fields,
+                format_missing_identity_fields=self._format_missing_identity_fields,
+                hold_id=hold_id_str,
+            )
+            if flow_result is not None:
+                flow_reply = self._booking_flow_result_to_reply(flow_result)
+                if flow_reply.intent == ChatReceptionistIntent.BOOKING_CONFIRMED:
+                    return replace(
+                        flow_reply,
+                        booking_confirmed=True,
+                        appointment_id=(
+                            str(merged_context["appointment_id"])
+                            if merged_context.get("appointment_id")
+                            else flow_reply.appointment_id
+                        ),
+                    )
+                return flow_reply
+
+            flow_context = {**merged_context, **context_updates}
+            if self._booking_identity.should_attempt_booking(
+                merged_context=flow_context,
+                message=message,
+            ):
+                identity_raw = flow_context.get("patient_identity")
+                merged_identity = identity_raw if isinstance(identity_raw, dict) else {}
+                identity_updates = {
+                    **context_updates,
+                    "patient_identity": merged_identity,
+                }
+                return self._attempt_booking(
+                    conversation=conversation,
+                    merged_context=flow_context,
+                    merged_identity=merged_identity,
+                    identity_updates=identity_updates,
+                    request_patient_id=request_patient_id,
+                )
+
+            return None
 
         parsed = self.parse_patient_identity(
             message,
@@ -1347,6 +1503,7 @@ class ChatReceptionistService:
             has_identity_fields=has_identity_fields,
             has_confirmation=has_confirmation,
             offered_slots=offered_slots,
+            merged_context=merged_context,
         ):
             return None
 
@@ -1383,45 +1540,16 @@ class ChatReceptionistService:
             if has_identity_fields and identity.is_complete():
                 return ChatReceptionistReply(
                     intent=ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
-                    content="I have all of your patient details on file.",
+                    content=(
+                        "I have your contact details noted. "
+                        "Please choose an available time to continue booking."
+                    ),
                     chat_context_updates=identity_updates,
                 )
 
             return None
 
-        if not identity.is_complete():
-            missing_text = self._format_missing_identity_fields(
-                identity.missing_fields(),
-            )
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
-                content=(
-                    f"I still need your {missing_text} to confirm the booking. "
-                    "Your hold is still active."
-                ),
-                chat_context_updates=identity_updates,
-                hold_id=str(hold_id),
-                booking_attempted=True,
-            )
-
-        if not has_confirmation:
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
-                content=(
-                    "I have your patient details on file. "
-                    "Please confirm to book the held appointment."
-                ),
-                chat_context_updates=identity_updates,
-                hold_id=str(hold_id),
-            )
-
-        return self._attempt_booking(
-            conversation=conversation,
-            merged_context=merged_context,
-            merged_identity=merged_identity,
-            identity_updates=identity_updates,
-            request_patient_id=request_patient_id,
-        )
+        return None
 
     def _should_enter_booking_flow(
         self,
@@ -1430,7 +1558,15 @@ class ChatReceptionistService:
         has_identity_fields: bool,
         has_confirmation: bool,
         offered_slots: list[Any],
+        merged_context: dict[str, Any] | None = None,
     ) -> bool:
+        if (
+            hold_id
+            and merged_context is not None
+            and self._booking_identity.is_active(merged_context)
+        ):
+            return True
+
         if hold_id and (has_identity_fields or has_confirmation):
             return True
 
@@ -1454,6 +1590,23 @@ class ChatReceptionistService:
         hold_id_raw = merged_context.get("hold_id")
         slot_id_raw = merged_context.get("selected_availability_slot_id")
         hold_id = str(hold_id_raw) if hold_id_raw else None
+        existing_appointment_id = merged_context.get("appointment_id")
+
+        if existing_appointment_id:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.BOOKING_CONFIRMED,
+                content=(
+                    "Your appointment is already confirmed. "
+                    "Is there anything else I can help with?"
+                ),
+                chat_context_updates={
+                    **identity_updates,
+                    **self._booking_identity.booking_completed_context_updates(),
+                },
+                hold_id=hold_id,
+                appointment_id=str(existing_appointment_id),
+                booking_confirmed=True,
+            )
 
         if not hold_id or not slot_id_raw:
             return ChatReceptionistReply(
@@ -1466,28 +1619,39 @@ class ChatReceptionistService:
                 booking_attempted=True,
             )
 
-        owner_id = str(merged_context.get("hold_owner_id") or conversation.id)
-
-        try:
-            patient = self._resolve_patient_for_booking(
-                merged_identity,
-                conversation_patient_id=conversation.patient_id,
-                request_patient_id=request_patient_id,
-            )
-        except InsufficientPatientIdentityError:
-            missing_text = self._format_missing_identity_fields(
-                self._patient_identity_from_context(merged_identity).missing_fields(),
-            )
+        if not merged_context.get("patient_resolution_id"):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
                 content=(
-                    f"I still need your {missing_text} to confirm the booking. "
+                    "I still need to verify patient details before booking. "
                     "Your hold is still active."
                 ),
                 chat_context_updates=identity_updates,
                 hold_id=hold_id,
                 booking_attempted=True,
             )
+
+        if not merged_context.get("confirmed_booking_email"):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
+                content=(
+                    "I still need a confirmed email before booking. "
+                    "Your hold is still active."
+                ),
+                chat_context_updates=identity_updates,
+                hold_id=hold_id,
+                booking_attempted=True,
+            )
+
+        owner_id = str(merged_context.get("hold_owner_id") or conversation.id)
+
+        patient = self._resolve_patient_for_booking(
+            merged_identity,
+            conversation=conversation,
+            conversation_patient_id=conversation.patient_id,
+            request_patient_id=request_patient_id,
+            merged_context=merged_context,
+        )
 
         if patient is None:
             return ChatReceptionistReply(
@@ -1572,6 +1736,7 @@ class ChatReceptionistService:
                 **identity_updates,
                 "appointment_id": str(appointment.id),
                 "booking_confirmed_at": booking_confirmed_at,
+                **self._booking_identity.booking_completed_context_updates(),
             },
             hold_id=hold_id,
             appointment_id=str(appointment.id),
@@ -1590,24 +1755,27 @@ class ChatReceptionistService:
         self,
         merged_identity: dict[str, Any],
         *,
+        conversation: Conversation,
         conversation_patient_id: UUID | None,
         request_patient_id: UUID | None = None,
+        merged_context: dict[str, Any] | None = None,
     ) -> Patient | None:
-        linked_patient_id = conversation_patient_id or request_patient_id
-        if linked_patient_id is not None:
-            patient = self.scheduling.patients.get_by_id(linked_patient_id)
+        del merged_identity, conversation_patient_id, request_patient_id
+        if merged_context is None:
+            return None
 
-            if patient is not None:
-                return patient
+        resolution_id = merged_context.get("patient_resolution_id")
+        if not isinstance(resolution_id, str):
+            return None
 
-        return self.scheduling.lookup_patient(
-            PatientLookupCriteria(
-                full_name=str(merged_identity["full_name"]),
-                date_of_birth=date.fromisoformat(str(merged_identity["date_of_birth"])),
-                phone_number=merged_identity.get("phone"),
-                email=merged_identity.get("email"),
-            ),
+        record = self.patient_identity_resolution.get_resolution_for_booking(
+            patient_resolution_id=resolution_id,
+            conversation_id=conversation.id,
         )
+        if record is None:
+            return None
+
+        return self.scheduling.patients.get_by_id(record.patient_id)
 
     def _format_booking_display_time(self, merged_context: dict[str, Any]) -> str:
         start_time_raw = merged_context.get("selected_start_time")
@@ -1638,24 +1806,39 @@ class ChatReceptionistService:
         *,
         merged_context: dict[str, Any],
         context_updates: dict[str, Any],
+        normalized_message: str = "",
     ) -> ChatReceptionistReply:
         selected_doctor_id = merged_context.get("selected_doctor_id")
+        selected_specialty_id = merged_context.get("selected_specialty_id")
         requested_date = merged_context.get("requested_date")
 
-        if not selected_doctor_id:
-            content = self._format_missing_doctor_prompt(merged_context)
+        if self._mentions_unknown_doctor(normalized_message):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_UNKNOWN_DOCTOR,
+                content=self._format_unknown_doctor_prompt(),
+                chat_context_updates=context_updates,
+            )
+
+        if self._mentions_unknown_specialty(normalized_message):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_UNKNOWN_SPECIALTY,
+                content=self._format_unknown_specialty_prompt(),
+                chat_context_updates=context_updates,
+            )
+
+        if not selected_doctor_id and not selected_specialty_id:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_MISSING_DOCTOR,
-                content=content,
+                content=self._format_missing_scheduling_target_prompt(),
                 chat_context_updates=context_updates,
             )
 
         if not requested_date:
-            doctor_name = merged_context.get("selected_doctor_name", "the selected doctor")
+            target_name = self._availability_target_name(merged_context)
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_MISSING_DATE,
                 content=(
-                    f"Please provide the date you would like to check for {doctor_name} "
+                    f"Please provide the date you would like to check for {target_name} "
                     "in YYYY-MM-DD format."
                 ),
                 chat_context_updates=context_updates,
@@ -1671,6 +1854,32 @@ class ChatReceptionistService:
                     **scheduling_validation.chat_context_updates,
                 },
             )
+
+        if selected_doctor_id:
+            return self._handle_doctor_availability_flow(
+                merged_context=merged_context,
+                context_updates=context_updates,
+                requested_date=str(requested_date),
+                parsed_requested_date=parsed_requested_date,
+            )
+
+        return self._handle_specialty_availability_flow(
+            merged_context=merged_context,
+            context_updates=context_updates,
+            requested_date=str(requested_date),
+            parsed_requested_date=parsed_requested_date,
+        )
+
+    def _handle_doctor_availability_flow(
+        self,
+        *,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        requested_date: str,
+        parsed_requested_date: date,
+    ) -> ChatReceptionistReply:
+        selected_doctor_id = merged_context.get("selected_doctor_id")
+        assert selected_doctor_id is not None
 
         slots = self._query_availability(
             doctor_id=UUID(str(selected_doctor_id)),
@@ -1703,13 +1912,18 @@ class ChatReceptionistService:
 
         if slots:
             shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
-            offered_slots = self._serialize_offered_slots(shown_slots)
+            offered_slots = self._serialize_offered_slots(
+                shown_slots,
+                doctor_names={slot.doctor_id: doctor_name for slot in shown_slots},
+                specialty_name=merged_context.get("selected_specialty_name"),
+                display_date=requested_date,
+            )
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
-                content=self._format_availability_slots(
+                content=self._format_doctor_availability_slots(
                     slots,
                     doctor_name=doctor_name,
-                    requested_date=str(requested_date),
+                    requested_date=requested_date,
                 ),
                 chat_context_updates={
                     **context_updates,
@@ -1733,23 +1947,160 @@ class ChatReceptionistService:
             offered_slot_count=0,
         )
 
-    def _format_missing_doctor_prompt(self, merged_context: dict[str, Any]) -> str:
-        specialty_id = merged_context.get("selected_specialty_id")
-        specialty_name = merged_context.get("selected_specialty_name")
-
-        if specialty_id is not None:
-            doctors = self.scheduling.list_doctors(specialty_id=UUID(str(specialty_id)))
-            if doctors:
-                doctor_names = self._join_names([doctor.full_name for doctor in doctors])
-                return (
-                    f"Please choose a doctor for {specialty_name}: {doctor_names}. "
-                    "Tell me the doctor name so I can check availability."
-                )
-
-        return (
-            "Please tell me which doctor or specialty you would like to check. "
-            "You can ask for our doctor list or mention a specialty."
+    def _handle_specialty_availability_flow(
+        self,
+        *,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        requested_date: str,
+        parsed_requested_date: date,
+    ) -> ChatReceptionistReply:
+        selected_specialty_id = merged_context.get("selected_specialty_id")
+        specialty_name = str(
+            merged_context.get("selected_specialty_name", "the selected specialty"),
         )
+        assert selected_specialty_id is not None
+
+        availability_result = self._query_specialty_availability(
+            specialty_id=UUID(str(selected_specialty_id)),
+            requested_date=parsed_requested_date,
+        )
+        requested_time_window = merged_context.get("requested_time_window")
+        attributed_slots = list(availability_result.available_slots)
+
+        if isinstance(requested_time_window, dict):
+            filtered_slots = self._filter_attributed_slots_by_time_window(
+                attributed_slots,
+                requested_time_window,
+            )
+            if attributed_slots and not filtered_slots:
+                label = str(requested_time_window.get("label", "requested"))
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.AVAILABILITY_NO_MATCHING_TIME_WINDOW,
+                    content=(
+                        f"I don't see any {label} openings for that date. "
+                        "Would you like another time window or another date?"
+                    ),
+                    chat_context_updates={
+                        **context_updates,
+                        "offered_slots": [],
+                    },
+                    availability_checked=True,
+                    offered_slot_count=0,
+                )
+            attributed_slots = filtered_slots
+
+        if attributed_slots:
+            shown_slots = attributed_slots[:_MAX_OFFERED_SLOTS]
+            offered_slots = self._serialize_attributed_offered_slots(
+                shown_slots,
+                specialty_name=specialty_name,
+                display_date=requested_date,
+            )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
+                content=self._format_specialty_availability_slots(
+                    shown_slots,
+                    specialty_name=specialty_name,
+                    requested_date=requested_date,
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                },
+                availability_checked=True,
+                offered_slot_count=len(offered_slots),
+            )
+
+        if (
+            availability_result.suggested_response_text is not None
+            and availability_result.status is AvailabilityCheckStatus.OUTSIDE_BOOKING_HORIZON
+        ):
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.INVALID_DATE,
+                content=availability_result.suggested_response_text,
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": [],
+                },
+                availability_checked=True,
+                offered_slot_count=0,
+            )
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
+            content=(
+                f"I did not find open times for {specialty_name} on {requested_date}. "
+                "Please try another date or doctor."
+            ),
+            chat_context_updates={
+                **context_updates,
+                "offered_slots": [],
+            },
+            availability_checked=True,
+            offered_slot_count=0,
+        )
+
+    def _availability_target_name(self, merged_context: dict[str, Any]) -> str:
+        doctor_name = merged_context.get("selected_doctor_name")
+        if isinstance(doctor_name, str) and doctor_name.strip():
+            return doctor_name
+
+        specialty_name = merged_context.get("selected_specialty_name")
+        if isinstance(specialty_name, str) and specialty_name.strip():
+            return specialty_name
+
+        return "your appointment"
+
+    def _format_missing_scheduling_target_prompt(self) -> str:
+        return (
+            "What kind of appointment are you looking for? "
+            "You can mention a specialty or preferred doctor."
+        )
+
+    def _format_unknown_specialty_prompt(self) -> str:
+        specialties = self.scheduling.list_specialties()
+        if not specialties:
+            return (
+                "I could not find that specialty. "
+                "Please tell me which type of appointment you are looking for."
+            )
+
+        names = [specialty.name for specialty in specialties]
+        return (
+            f"I could not find that specialty. We currently support "
+            f"{self._join_names(names)}. Which one would you like?"
+        )
+
+    def _format_unknown_doctor_prompt(self) -> str:
+        return (
+            "I could not find that doctor. "
+            "Would you like to choose a different doctor or search by specialty?"
+        )
+
+    def _mentions_unknown_doctor(self, normalized_message: str) -> bool:
+        if not normalized_message:
+            return False
+
+        if self._match_doctor_in_message(normalized_message) is not None:
+            return False
+
+        return _DR_MENTION_PATTERN.search(normalized_message) is not None
+
+    def _mentions_unknown_specialty(self, normalized_message: str) -> bool:
+        if not normalized_message:
+            return False
+
+        if self._match_specialty_in_message(normalized_message) is not None:
+            return False
+
+        if _DR_MENTION_PATTERN.search(normalized_message) is not None:
+            return False
+
+        return _SPECIALTY_MENTION_PATTERN.search(normalized_message) is not None
+
+    def _format_missing_doctor_prompt(self, merged_context: dict[str, Any]) -> str:
+        return self._format_missing_scheduling_target_prompt()
 
     def _validate_scheduling_date(
         self,
@@ -1829,21 +2180,97 @@ class ChatReceptionistService:
             start_to=start_to,
         )
 
+    def _query_specialty_availability(
+        self,
+        *,
+        specialty_id: UUID,
+        requested_date: date,
+    ) -> SpecialtyAvailabilityCheckResult:
+        if self.clinic_time_service is not None:
+            availability_window = SchedulingAvailabilityResolver(
+                self.clinic_time_service,
+                date_parser=self.date_parser,
+            ).resolve_check_availability(
+                CheckAvailabilityToolArguments(
+                    date_expression=DateExpressionSchema(
+                        kind=DateExpressionKind.EXACT_DATE,
+                        exact_date=requested_date,
+                    ),
+                ),
+                {},
+            )
+            if availability_window.is_resolved:
+                assert availability_window.start_from is not None
+                assert availability_window.end_to is not None
+                return self.scheduling.check_availability_for_specialty(
+                    specialty_id=specialty_id,
+                    start_from=availability_window.start_from,
+                    start_to=availability_window.end_to,
+                    limit=_MAX_OFFERED_SLOTS,
+                )
+            return SpecialtyAvailabilityCheckResult(
+                status=AvailabilityCheckStatus.NO_MATCHING_SLOTS,
+                available_slots=[],
+            )
+
+        start_from = datetime(
+            requested_date.year,
+            requested_date.month,
+            requested_date.day,
+            tzinfo=UTC,
+        )
+        start_to = start_from + timedelta(days=1)
+
+        return self.scheduling.check_availability_for_specialty(
+            specialty_id=specialty_id,
+            start_from=start_from,
+            start_to=start_to,
+            limit=_MAX_OFFERED_SLOTS,
+        )
+
     def _serialize_offered_slots(
         self,
         slots: Sequence[AvailabilitySlot],
+        *,
+        doctor_names: dict[UUID, str] | None = None,
+        specialty_name: str | None = None,
+        display_date: str | None = None,
     ) -> list[dict[str, Any]]:
+        doctor_names = doctor_names or {}
         return [
             {
                 "availability_slot_id": str(slot.id),
                 "doctor_id": str(slot.doctor_id),
+                "doctor_name": doctor_names.get(slot.doctor_id, ""),
+                "specialty_name": specialty_name,
                 "start_time": slot.start_time.isoformat(),
                 "display_time": slot.start_time.strftime("%H:%M"),
+                "display_date": display_date,
             }
             for slot in slots
         ]
 
-    def _format_availability_slots(
+    def _serialize_attributed_offered_slots(
+        self,
+        slots: Sequence[DoctorAttributedAvailabilitySlot],
+        *,
+        specialty_name: str | None = None,
+        display_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "availability_slot_id": str(item.slot.id),
+                "doctor_id": str(item.doctor_id),
+                "doctor_name": item.doctor_name,
+                "specialty_name": specialty_name,
+                "start_time": item.slot.start_time.isoformat(),
+                "display_time": item.slot.start_time.strftime("%H:%M"),
+                "display_date": display_date,
+            }
+            for item in slots
+        ]
+
+    def _format_doctor_availability_slots(
         self,
         slots: Sequence[AvailabilitySlot],
         *,
@@ -1859,8 +2286,26 @@ class ChatReceptionistService:
             suffix = f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
 
         return (
-            f"Open times for {doctor_name} on {requested_date}: {times_text}.{suffix} "
-            "You can choose a time, and booking will be handled in a later step."
+            f"I found openings with {doctor_name} on {requested_date} at {times_text}. "
+            f"Which time works better?{suffix}"
+        )
+
+    def _format_specialty_availability_slots(
+        self,
+        slots: Sequence[DoctorAttributedAvailabilitySlot],
+        *,
+        specialty_name: str,
+        requested_date: str,
+    ) -> str:
+        opening_descriptions = [
+            f"{item.slot.start_time.strftime('%H:%M')} with {item.doctor_name}"
+            for item in slots
+        ]
+        openings_text = self._join_names(opening_descriptions)
+
+        return (
+            f"I found {specialty_name} openings on {requested_date}: {openings_text}. "
+            "Which time works better?"
         )
 
     def _extract_requested_date(self, message: str) -> _RequestedDateExtraction:
@@ -2014,6 +2459,35 @@ class ChatReceptionistService:
             )
         ]
 
+    def _filter_attributed_slots_by_time_window(
+        self,
+        slots: Sequence[DoctorAttributedAvailabilitySlot],
+        window: dict[str, Any],
+    ) -> list[DoctorAttributedAvailabilitySlot]:
+        label = window.get("label")
+        start_time = window.get("start_time")
+        end_time = window.get("end_time")
+        if (
+            not isinstance(label, str)
+            or not isinstance(start_time, str)
+            or not isinstance(end_time, str)
+        ):
+            return list(slots)
+
+        time_window = TimeWindow(
+            label=label,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        return [
+            item
+            for item in slots
+            if is_time_in_window(
+                time_value=item.slot.start_time.strftime("%H:%M"),
+                window=time_window,
+            )
+        ]
+
     def _time_windows_equal(
         self,
         existing: dict[str, Any],
@@ -2090,7 +2564,9 @@ class ChatReceptionistService:
             return False
 
         return bool(
-            merged_context.get("selected_doctor_id") or merged_context.get("requested_date"),
+            merged_context.get("selected_doctor_id")
+            or merged_context.get("selected_specialty_id")
+            or merged_context.get("requested_date"),
         )
 
     def _should_complete_availability_from_context(
@@ -2099,10 +2575,13 @@ class ChatReceptionistService:
         merged_context: dict[str, Any],
         context_updates: dict[str, Any],
     ) -> bool:
-        has_doctor = bool(merged_context.get("selected_doctor_id"))
+        has_target = bool(
+            merged_context.get("selected_doctor_id")
+            or merged_context.get("selected_specialty_id"),
+        )
         has_date = bool(merged_context.get("requested_date"))
 
-        if not has_doctor or not has_date:
+        if not has_target or not has_date:
             return False
 
         relevant_updates = {
@@ -2229,23 +2708,33 @@ class ChatReceptionistService:
             seconds=self.appointment_holds.ttl_seconds,
         )
         display_time = str(selected_slot.get("display_time", slot.start_time.strftime("%H:%M")))
-        doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
+        doctor_name = str(
+            selected_slot.get("doctor_name")
+            or merged_context.get("selected_doctor_name", "the selected doctor"),
+        )
+
+        hold_context_updates = {
+            **context_updates,
+            "selected_availability_slot_id": str(slot.id),
+            "selected_doctor_id": str(slot.doctor_id),
+            "selected_doctor_name": doctor_name,
+            "selected_start_time": slot.start_time.isoformat(),
+            "hold_id": str(hold.hold_id),
+            "hold_expires_at": hold_expires_at.isoformat(),
+            "hold_owner_id": owner_id,
+        }
+        hold_context_updates = self._booking_identity.hold_created_context_updates(
+            hold_context_updates,
+        )
+        hold_content = self._booking_identity.hold_created_message(
+            display_time=display_time,
+            doctor_name=doctor_name,
+        )
 
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.HOLD_CREATED,
-            content=(
-                f"I temporarily held {display_time} with {doctor_name}. "
-                "This is not booked yet. To confirm, please provide the patient's "
-                "full name, date of birth, phone, and email."
-            ),
-            chat_context_updates={
-                **context_updates,
-                "selected_availability_slot_id": str(slot.id),
-                "selected_start_time": slot.start_time.isoformat(),
-                "hold_id": str(hold.hold_id),
-                "hold_expires_at": hold_expires_at.isoformat(),
-                "hold_owner_id": owner_id,
-            },
+            content=hold_content,
+            chat_context_updates=hold_context_updates,
             hold_created=True,
             hold_id=str(hold.hold_id),
         )
