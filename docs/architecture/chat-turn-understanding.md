@@ -107,6 +107,112 @@ All interpreters—fake, LLM-backed, or future Groq-backed—implement this prot
 
 The `reason` field on `ChatTurnUnderstandingResult` is **diagnostic only**. Backend logic must not branch on `reason`; it validates fields and applies policy deterministically.
 
+## Appointment Intake Orchestration
+
+Appointment intake is the first production wiring of `ChatTurnUnderstandingResult` into scheduling context collection.
+
+`ChatAppointmentIntakeOrchestrator` (`app/services/chat_appointment_intake.py`) runs inside `ChatReceptionistService` **before** the existing deterministic availability routing. It is active only when `CHAT_TURN_UNDERSTANDING_INTERPRETER` is not `disabled`.
+
+### Flow
+
+```text
+1. User sends a scheduling message during appointment intake
+      (not during active booking identity, hold confirmation, or cancel/reschedule)
+
+2. ChatAppointmentIntakeOrchestrator builds ChatTurnUnderstandingRequest
+      (state, expected response type, known specialties/doctors, offered doctors/slots)
+
+3. Interpreter returns ChatTurnUnderstandingResult
+      (intent, extracted specialty/doctor/date/time candidates, ambiguity signals)
+
+4. Orchestrator validates candidates against backend catalogs and parsers
+      (specialty catalog, doctor catalog, NaturalLanguageDateParser, TimePreferenceParser)
+
+5. Orchestrator returns ChatAppointmentIntakeResult
+      (context updates, optional earliest-search criteria, or clarification)
+
+6. ChatReceptionistService merges context updates and continues the existing flow
+      (availability lookup, offered slots in chat_context, hold, identity, confirmation)
+
+7. Domain services execute durable side effects only after hold + identity + confirmation pass
+```
+
+### Responsibilities
+
+| Layer | Responsibility |
+| --- | --- |
+| **Interpreter (CTU)** | Extract candidate meaning from the latest user message in context |
+| **Appointment intake orchestrator** | Validate specialty, doctor, date, time, and soonest intent; resolve offered-doctor selection; build search criteria |
+| **Chat receptionist** | Route to availability, store `offered_slots`, create holds, collect identity, require explicit confirmation |
+| **Scheduling domain services** | Decide availability, create holds, and book appointments |
+
+The interpreter and orchestrator must never book, hold, cancel, or reschedule directly.
+
+### Runtime gating
+
+Appointment intake CTU is skipped when:
+
+- `CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled`
+- the conversation already has a confirmed `appointment_id`
+- booking identity collection is active (`booking_identity_step`)
+- an active hold is in the booking-identity flow
+- the message is a hold request
+
+Cancel, reschedule, and emergency messages continue through the existing top-level deterministic routes.
+
+### Earliest / soonest availability search
+
+When the user names a specialty or doctor without an explicit date, or explicitly asks for the soonest opening, the orchestrator sets an earliest-search window in `chat_context`:
+
+- `search_start_date` — clinic-local today from `ClinicTimeService`
+- `search_end_date` — clinic today + `EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS` (14)
+- `soonest_requested` — `true` when markers such as `soonest`, `earliest`, `asap`, or `first available` appear
+
+`ChatReceptionistService` uses these fields to call scheduling availability services and store returned slots in `offered_slots` for later hold selection.
+
+### Offered-doctor selection
+
+When `offered_doctors` is present in `chat_context` (for example after listing doctors for a specialty), doctor validation is **contextual**:
+
+- only doctors from the offered list are accepted
+- a unique partial match such as `Dr. Reed` or `Dr. Emily` updates `selected_doctor_id` / `selected_doctor_name`
+- unknown or ambiguous offered-doctor references return clarification without mutating context
+
+### Supported appointment-intake examples
+
+These are representative natural-language inputs the slice is designed to handle:
+
+| Example | Typical extraction |
+| --- | --- |
+| `I'd like to schedule with a dermatologist` | specialty → earliest availability search |
+| `soonest cardiology appointment` | specialty + soonest intent |
+| `cardiology next Monday` | specialty + natural date |
+| `Dr. Reed next Monday` | doctor + natural date |
+| `I want Dr. Emily soonest available` | doctor + soonest intent |
+| `It can be Dr. Reed` | offered-doctor selection (after doctor list) |
+| `Dr. Emily is fine` | offered-doctor selection (after doctor list) |
+| `tomorrow morning` | natural date + time-of-day window |
+| `Sunday afternoon` | natural date + time-of-day window |
+
+Exact routing still depends on current `chat_context` (for example whether doctors or slots were already offered).
+
+### Expected behavior
+
+- **Specialty without date** can trigger earliest availability search instead of asking for `YYYY-MM-DD`.
+- **Doctor without date** can trigger earliest doctor availability search.
+- **Doctor selection from offered doctors** updates `selected_doctor_id` / `selected_doctor_name` and proceeds toward availability.
+- **Natural date prompts** should ask conversationally (`What day works best?`) rather than requesting `YYYY-MM-DD`.
+- **Offered slots** are stored in `chat_context.offered_slots` and are later used by the existing hold flow.
+- **No appointment is booked** until the existing final confirmation flow succeeds (hold → identity → explicit confirmation → `AppointmentBookingService`).
+- **Ambiguous CTU output** (low confidence, `ambiguous_fields`, or unsupported intents) returns clarification or falls back to deterministic parsing without unsafe context mutation.
+- **Conflicting context changes** (for example switching doctors after one was already selected) return clarification instead of silent overwrite.
+
+### Known follow-up
+
+There is a known follow-up to audit demo availability timezone/seed behavior. Displayed availability may appear several hours later than expected when UTC storage and clinic-local presentation are not aligned. This slice does not fix that behavior.
+
+See [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md) for reproducible fake and Groq test scenarios.
+
 ## Reliability Behavior
 
 `LLMChatTurnUnderstandingInterpreter` follows the same reliability patterns as `LLMReceptionistAnalysisService` and [Chat LLM Interpretation Reliability](chat-llm-reliability.md).
@@ -165,8 +271,9 @@ Use it in unit tests and future local demo flows without calling real LLM provid
 - Renders a deterministic context snapshot (`conversation_state`, `expected_response_type`, `allowed_intents`, catalogs, offered slots, etc.) plus the latest user message
 - Parses provider output through existing structured-output helpers into `ChatTurnUnderstandingResult`
 - Applies retry, repair prompt, fallback provider, and safe fallback as described above
-- Does **not** execute actions or persist results in the current foundation slice
-- Is covered by fake-provider tests only; Groq is not connected at runtime
+- Does **not** execute actions or persist durable scheduling side effects directly
+
+When `CHAT_TURN_UNDERSTANDING_INTERPRETER=groq`, `build_chat_turn_understanding_interpreter_from_settings()` wires a `GroqLLMProvider` with `GROQ_RESPONSE_FORMAT=json_schema` into appointment intake and booking identity orchestrators. Use Groq only for controlled local testing with authentication, rate limits, and cost controls on any public demo.
 
 ## Persistence (Existing Slice)
 
@@ -189,39 +296,23 @@ Record lifecycle today (via `ChatReceptionistService`):
 5. `ChatTurnUnderstandingRecordService.record_best_effort(...)` persists one row.
 6. Chat route commits the transaction.
 
-The new interpreter foundation does not yet feed this persistence path with `ChatTurnUnderstandingResult` metadata.
+Appointment intake and booking identity orchestrators consume `ChatTurnUnderstandingResult` at runtime, but per-turn persistence still records receptionist analysis / slot-filling metadata rather than full appointment-intake CTU payloads.
 
-## What Is Intentionally Not Wired Yet
+## What Is Intentionally Not Changed
 
-- **Not wired into `ChatReceptionistService`** — chat replies and state transitions still use the existing deterministic + `ReceptionistLLMAnalysis` path
-- **Does not change public Chat API behavior**
-- **Does not replace booking flow** — scheduling, holds, and confirmation remain unchanged
-- **Does not call real Groq in runtime** — LLM interpreter is foundation + fake-provider tests only
-- **Does not modify Retell**
-- **Does not persist new `ChatTurnUnderstandingResult` metadata** beyond what the previous persistence slice already stores from receptionist analysis / slot filling
-
-## Next Slice
-
-**Wire Chat Turn Understanding into patient identity intake**
-
-First target flow:
-
-**Assistant asks:** “What name and date of birth should I use?”
-
-**User says:** “Felipe Marques, Sep 19th 1996”
-
-**Expected future behavior:**
-
-1. Interpreter extracts `patient_name` and date-of-birth candidates (`date_of_birth_raw`, normalized `date_of_birth` when unambiguous).
-2. Backend validates name and DOB format/policy.
-3. Backend resolves patient identity through existing patient lookup services.
-4. Backend asks only for the next missing or needed field (e.g. email for new patients).
+- **Public Chat API schema** — response fields such as `intent`, `reply`, `appointment_id`, and `booking_confirmed` are unchanged
+- **Hold and booking confirmation flow** — holds, identity collection, explicit confirmation, and `AppointmentBookingService` rules are unchanged
+- **Retell voice channel** — no Retell prompt, tool, or adapter changes in this slice
+- **LLM shadow analysis path** — `ReceptionistLLMAnalysis` and slot filling remain separate observability layers
 
 ## Related Documents
 
 - [ADR-004: Introduce Structured Chat Turn Understanding](../adr/004-structured-chat-turn-understanding.md)
+- [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md)
 - [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md)
 - [Chat LLM Interpretation Reliability](chat-llm-reliability.md)
+- [Natural-Language Date Parsing Boundary](natural-language-date-parsing.md)
+- [Time-of-Day Preference Parsing Boundary](time-of-day-preference-parsing.md)
 - [Prompt Versioning and LLM Traceability](prompt-versioning.md)
 - [Chat API Foundation](chat-api-foundation.md)
 - [Audit Logs](audit-logs.md)
