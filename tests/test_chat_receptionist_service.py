@@ -587,8 +587,8 @@ def test_invalid_date_does_not_query_availability(
         )
 
     assert result.intent == ChatReceptionistIntent.INVALID_DATE
-    assert "YYYY-MM-DD" in result.reply
     assert "tomorrow" in result.reply
+    assert "next Monday" in result.reply
     assert result.assistant_message.message_metadata["date_parsing"]["status"] == "invalid"
     check_availability_mock.assert_not_called()
 
@@ -668,8 +668,7 @@ def test_unsupported_date_with_availability_request_returns_clarification(
 
     assert result.intent == ChatReceptionistIntent.INVALID_DATE
     assert result.reply == (
-        "Please provide a specific date in YYYY-MM-DD or say something like "
-        "tomorrow or next Monday."
+        "What day works best? You can say something like tomorrow or next Monday."
     )
     assert result.assistant_message.message_metadata["date_parsing"]["status"] == "unsupported"
     check_availability_mock.assert_not_called()
@@ -703,8 +702,7 @@ def test_dr_emily_carter_next_week_asks_for_specific_date(
 
     assert result.intent == ChatReceptionistIntent.INVALID_DATE
     assert result.reply == (
-        "Please provide a specific date in YYYY-MM-DD or say something like "
-        "tomorrow or next Monday."
+        "What day works best? You can say something like tomorrow or next Monday."
     )
     assert "requested_date" not in result.conversation.conversation_metadata.get(
         "chat_context",

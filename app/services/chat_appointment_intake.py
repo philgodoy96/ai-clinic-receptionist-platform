@@ -138,6 +138,9 @@ class ChatAppointmentIntakeOrchestrator:
         self,
         understanding: ChatTurnUnderstandingResult,
     ) -> ChatAppointmentIntakeResult:
+        if understanding.intent is ChatTurnIntent.FALLBACK:
+            return self._noop_result()
+
         clarification = understanding.clarification_question
         if clarification is None:
             for issue in understanding.ambiguous_fields:

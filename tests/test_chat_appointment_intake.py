@@ -106,8 +106,7 @@ def test_ctu_fallback_returns_no_context_updates() -> None:
 
     result = orchestrator.handle(message="cardiology", chat_context={})
 
-    assert result.intent == "clarification"
-    assert result.content == "Could you clarify?"
+    assert result.intent == "noop"
     assert result.chat_context_updates == {}
     assert len(interpreter.calls) == 1
 
