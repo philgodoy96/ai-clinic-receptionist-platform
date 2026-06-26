@@ -6,6 +6,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class ChatTurnUnderstandingInterpreterProvider(StrEnum):
+    DISABLED = "disabled"
+    FAKE = "fake"
+    GROQ = "groq"
+
+
 class ConversationState(StrEnum):
     IDLE = "idle"
     COLLECTING_APPOINTMENT_REQUEST = "collecting_appointment_request"

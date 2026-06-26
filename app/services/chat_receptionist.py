@@ -59,6 +59,7 @@ from app.services.chat_confirmation import (
     normalize_email_address,
     normalize_patient_display_name,
 )
+from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
 from app.services.clinic_time import ClinicTimeService
 from app.services.conversation_health import (
@@ -497,6 +498,7 @@ class ChatReceptionistService:
         ),
         patient_identity_resolution: PatientIdentityResolutionService,
         chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
+        chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -517,6 +519,7 @@ class ChatReceptionistService:
         self.chat_turn_understanding_records = chat_turn_understanding_records
         self._booking_identity = ChatBookingIdentityOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
         )
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:

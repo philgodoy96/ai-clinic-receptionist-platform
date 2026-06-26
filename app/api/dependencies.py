@@ -50,6 +50,10 @@ from app.services.appointment_holds import AppointmentHoldService
 from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.chat_turn_understanding_factory import (
+    build_chat_turn_understanding_interpreter_from_settings,
+)
+from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
 from app.services.clinic_time import ClinicTimeService
 from app.services.clock import SystemClock
@@ -321,6 +325,12 @@ def get_chat_turn_understanding_record_service(
     )
 
 
+def get_chat_turn_understanding_interpreter(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ChatTurnUnderstandingInterpreter | None:
+    return build_chat_turn_understanding_interpreter_from_settings(settings)
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -380,6 +390,10 @@ def get_chat_receptionist_service(
         ChatTurnUnderstandingRecordService,
         Depends(get_chat_turn_understanding_record_service),
     ],
+    chat_turn_understanding_interpreter: Annotated[
+        ChatTurnUnderstandingInterpreter | None,
+        Depends(get_chat_turn_understanding_interpreter),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -398,6 +412,7 @@ def get_chat_receptionist_service(
         response_generation_mode=settings.receptionist_response_mode,
         patient_identity_resolution=patient_identity_resolution,
         chat_turn_understanding_records=chat_turn_understanding_records,
+        chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
     )
 
 

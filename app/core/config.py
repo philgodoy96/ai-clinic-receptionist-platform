@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.ai.llm_provider import GroqResponseFormat, LLMProviderName
+from app.domain.chat_turn_understanding import ChatTurnUnderstandingInterpreterProvider
 from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.domain.voice_patient_intake import VoicePatientIntakeMode
 
@@ -269,6 +270,10 @@ class Settings(BaseSettings):
         default=VoicePatientIntakeMode.LOOKUP_ONLY,
         alias="VOICE_PATIENT_INTAKE_MODE",
     )
+    chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreterProvider = Field(
+        default=ChatTurnUnderstandingInterpreterProvider.DISABLED,
+        alias="CHAT_TURN_UNDERSTANDING_INTERPRETER",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -383,6 +388,7 @@ class Settings(BaseSettings):
 
         self._validate_email_provider_settings()
         self._validate_retell_settings()
+        self._validate_chat_turn_understanding_interpreter_settings()
         self._validate_production_public_demo_settings()
 
         return self
@@ -463,6 +469,23 @@ class Settings(BaseSettings):
 
         if not self.email_from_address.strip():
             raise ValueError("EMAIL_FROM_ADDRESS is required when EMAIL_PROVIDER is resend")
+
+    def _validate_chat_turn_understanding_interpreter_settings(self) -> None:
+        if (
+            self.chat_turn_understanding_interpreter
+            != ChatTurnUnderstandingInterpreterProvider.GROQ
+        ):
+            return
+
+        if not self.groq_api_key.strip():
+            raise ValueError(
+                "GROQ_API_KEY is required when CHAT_TURN_UNDERSTANDING_INTERPRETER is groq",
+            )
+
+        if not self.groq_model.strip():
+            raise ValueError(
+                "GROQ_MODEL is required when CHAT_TURN_UNDERSTANDING_INTERPRETER is groq",
+            )
 
     def _validate_llm_provider_config(self, provider: LLMProviderName) -> None:
         if provider == LLMProviderName.BEDROCK and not self.bedrock_model_id.strip():

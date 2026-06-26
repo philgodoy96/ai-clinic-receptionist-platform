@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import MagicMock
+
 import pytest
 
+from app.ai.chat_turn_understanding_schema import build_chat_turn_understanding_openai_json_schema
 from app.ai.groq_provider import GROQ_HTTP_USER_AGENT, GroqLLMProvider
 from app.ai.llm_provider import (
     GroqResponseFormat,
@@ -102,6 +107,7 @@ def build_groq_provider_with_client(
     client: StubGroqHttpClient,
     *,
     response_format: GroqResponseFormat = GroqResponseFormat.JSON_SCHEMA,
+    json_schema_builder: Callable[[], dict[str, Any]] | None = None,
 ) -> GroqLLMProvider:
     return GroqLLMProvider(
         api_key="gsk_test",
@@ -112,6 +118,7 @@ def build_groq_provider_with_client(
         max_output_tokens=800,
         response_format=response_format,
         http_client=client,
+        json_schema_builder=json_schema_builder,
     )
 
 
@@ -316,3 +323,66 @@ def test_groq_stub_client_avoids_real_network_calls() -> None:
 
     assert client.last_url is not None
     assert client.last_timeout_seconds == 10
+
+
+def test_groq_sends_chat_turn_understanding_schema_when_custom_builder_provided() -> None:
+    payload = build_receptionist_analysis_payload(intent="greeting")
+    client = StubGroqHttpClient(
+        response=build_valid_chat_completion_response(content=payload),
+    )
+    provider = build_groq_provider_with_client(
+        client,
+        response_format=GroqResponseFormat.JSON_SCHEMA,
+        json_schema_builder=build_chat_turn_understanding_openai_json_schema,
+    )
+
+    provider.complete(build_sample_llm_request())
+
+    assert client.last_payload is not None
+    response_format = client.last_payload["response_format"]
+    assert isinstance(response_format, dict)
+    json_schema = response_format["json_schema"]
+    assert isinstance(json_schema, dict)
+    assert json_schema["name"] == "ChatTurnUnderstandingResult"
+
+
+def test_groq_custom_schema_builder_not_called_for_json_object_format() -> None:
+    payload = build_receptionist_analysis_payload(intent="greeting")
+    schema_builder = MagicMock(
+        return_value=build_receptionist_analysis_openai_json_schema(),
+    )
+    client = StubGroqHttpClient(
+        response=build_valid_chat_completion_response(content=payload),
+    )
+    provider = build_groq_provider_with_client(
+        client,
+        response_format=GroqResponseFormat.JSON_OBJECT,
+        json_schema_builder=schema_builder,
+    )
+
+    provider.complete(build_sample_llm_request())
+
+    schema_builder.assert_not_called()
+    assert client.last_payload is not None
+    assert client.last_payload["response_format"] == {"type": "json_object"}
+
+
+def test_groq_custom_schema_builder_not_called_for_none_format() -> None:
+    payload = build_receptionist_analysis_payload(intent="greeting")
+    schema_builder = MagicMock(
+        return_value=build_receptionist_analysis_openai_json_schema(),
+    )
+    client = StubGroqHttpClient(
+        response=build_valid_chat_completion_response(content=payload),
+    )
+    provider = build_groq_provider_with_client(
+        client,
+        response_format=GroqResponseFormat.NONE,
+        json_schema_builder=schema_builder,
+    )
+
+    provider.complete(build_sample_llm_request())
+
+    schema_builder.assert_not_called()
+    assert client.last_payload is not None
+    assert "response_format" not in client.last_payload
