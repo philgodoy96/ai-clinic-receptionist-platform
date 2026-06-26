@@ -308,13 +308,11 @@ def _post_new_patient_booking_messages(
             "/api/v1/chat/messages",
             json={"message": message, "conversation_id": conversation_id},
         )
-    return cast(
-        Response,
-        client.post(
-            "/api/v1/chat/messages",
-            json={"message": FINAL_BOOKING_CONFIRM, "conversation_id": conversation_id},
-        ),
+    response: Response = client.post(
+        "/api/v1/chat/messages",
+        json={"message": FINAL_BOOKING_CONFIRM, "conversation_id": conversation_id},
     )
+    return response
 
 
 def test_successful_booking_api_creates_confirmation_email_job() -> None:
