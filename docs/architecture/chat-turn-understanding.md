@@ -185,8 +185,27 @@ The marker is cleared when intake completes, booking identity begins, or the con
 
 - User: `What about Wednesday?` — backend keeps `selected_doctor_id` / `selected_specialty_id`, resolves the bare weekday against clinic-local today, clears stale `offered_slots` if the date changes, and re-runs availability.
 - User: `afternoon` — backend applies a time-of-day window via `TimePreferenceParser` when doctor/specialty context is already present, then searches availability with the updated window.
+- User: `What days do you have next week?` — backend recognizes the contextual availability range, resolves the clinic-local week window via `ClinicTimeService`, and searches the selected doctor or specialty across that range instead of re-prompting for a single day.
 
 Bare weekday and time-window follow-ups run through backend parsers even when the interpreter returns `fallback`, as long as `is_appointment_intake_active(chat_context)` is true.
+
+### Contextual availability range follow-ups
+
+When appointment intake is active and provider context exists, the orchestrator recognizes a narrow set of week-range questions before the generic date/time re-prompt runs:
+
+- `What days do you have next week?`
+- `What do you have next week?` / `What about next week?`
+- `Any availability next week?`
+- `Do you have anything this week?` / `What days are available this week?`
+
+This is intentionally limited to `this week` and `next week`. Broader calendar phrases (next month, early next week, end of the month, recurring weekdays, exclusions) are deliberately out of scope, and `NaturalLanguageDateParser` is **not** globally changed.
+
+Resolution and routing:
+
+- `ChatAppointmentIntakeOrchestrator._extract_contextual_availability_range` detects the range label, gated by `is_appointment_intake_active`.
+- `_resolve_week_range` resolves clinic-local Monday–Sunday dates from `ClinicTimeService.clinic_today()` (the `this week` start is clamped to today).
+- With a selected doctor, the backend searches doctor availability across the range; with only a selected specialty it searches specialty availability. Without provider context it asks which doctor or specialty to check instead of searching blindly.
+- `ChatReceptionistService._handle_availability_range_flow` runs the existing scheduling availability methods (`check_availability_with_status` / `check_availability_for_specialty`), groups returned slots by date, stores `offered_slots`, clears stale `selected_availability_slot_id` / `selected_start_time`, and sets `appointment_intake_awaiting = slot_selection`. It optionally stores `availability_range_label` (`this_week` / `next_week`). When nothing is open it returns a natural no-availability message rather than a generic fallback. Replies never expose slot, doctor, or hold identifiers.
 
 ### Offered doctors
 
@@ -270,6 +289,7 @@ Exact routing depends on current `chat_context` (whether doctors or slots were a
 | `tomorrow morning` | Natural date + morning time window |
 | `Sunday afternoon` | Natural date + afternoon time window |
 | `Wednesday` / `afternoon` | Bare weekday or time window when intake task frame is active |
+| `What days do you have next week?` | Contextual availability range; searches the provider across the clinic-local week and offers slots grouped by date |
 
 **Offered-slot selection** (after availability results)
 

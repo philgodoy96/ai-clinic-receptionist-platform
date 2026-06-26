@@ -50,6 +50,14 @@ EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS = 14
 APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME = "date_or_time_preference"
 APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION = "slot_selection"
 
+APPOINTMENT_AVAILABILITY_RANGE_THIS_WEEK = "this_week"
+APPOINTMENT_AVAILABILITY_RANGE_NEXT_WEEK = "next_week"
+
+# Intentionally narrow: only bare "this week" / "next week" contextual ranges are
+# supported. Broader calendar phrases (next month, early next week, end of month,
+# recurring weekdays, exclusions) are deliberately out of scope here.
+_AVAILABILITY_RANGE_PATTERN = re.compile(r"\b(this|next)\s+week\b", re.IGNORECASE)
+
 _STALE_SLOT_CONTEXT_KEYS = (
     "offered_slots",
     "selected_availability_slot_id",
@@ -108,6 +116,7 @@ class AppointmentSearchCriteria:
     soonest_requested: bool = False
     search_start_date: str | None = None
     search_end_date: str | None = None
+    availability_range_label: str | None = None
     limit: int | None = None
 
 
@@ -167,6 +176,13 @@ class ChatAppointmentIntakeOrchestrator:
         message: str,
         chat_context: dict[str, Any],
     ) -> ChatAppointmentIntakeResult:
+        range_follow_up = self._try_availability_range_follow_up(
+            message=message,
+            chat_context=chat_context,
+        )
+        if range_follow_up is not None:
+            return range_follow_up
+
         follow_up = self._try_contextual_follow_up(
             message=message,
             chat_context=chat_context,
@@ -862,6 +878,123 @@ class ChatAppointmentIntakeOrchestrator:
 
         days_ahead = (weekday_index - today.weekday()) % 7
         return (today + timedelta(days=days_ahead)).isoformat()
+
+    def _clinic_today(self) -> date:
+        if self.clinic_time_service is not None:
+            return self.clinic_time_service.clinic_today()
+
+        from app.services.date_parsing import SystemClock
+
+        return SystemClock().today()
+
+    def _extract_contextual_availability_range(self, message: str) -> str | None:
+        """Detect a narrow contextual availability range phrase.
+
+        Only bare ``this week`` / ``next week`` are recognized. This is
+        intentionally not a general calendar parser and must stay context-gated
+        by the caller so it never globally changes date parsing behavior.
+        """
+        match = _AVAILABILITY_RANGE_PATTERN.search(message)
+        if match is None:
+            return None
+        if match.group(1).lower() == "next":
+            return APPOINTMENT_AVAILABILITY_RANGE_NEXT_WEEK
+        return APPOINTMENT_AVAILABILITY_RANGE_THIS_WEEK
+
+    def _resolve_week_range(self, label: str) -> tuple[date, date] | None:
+        today = self._clinic_today()
+        start_of_week = today - timedelta(days=today.weekday())
+
+        if label == APPOINTMENT_AVAILABILITY_RANGE_NEXT_WEEK:
+            start = start_of_week + timedelta(days=7)
+        elif label == APPOINTMENT_AVAILABILITY_RANGE_THIS_WEEK:
+            start = start_of_week
+        else:
+            return None
+
+        end = start + timedelta(days=6)
+        if start < today:
+            start = today
+        return start, end
+
+    def _should_handle_availability_range_follow_up(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> bool:
+        if not is_appointment_intake_active(chat_context):
+            return False
+        return self._extract_contextual_availability_range(message) is not None
+
+    def _try_availability_range_follow_up(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> ChatAppointmentIntakeResult | None:
+        if not self._should_handle_availability_range_follow_up(
+            message=message,
+            chat_context=chat_context,
+        ):
+            return None
+
+        label = self._extract_contextual_availability_range(message)
+        if label is None:
+            return None
+
+        has_provider = bool(
+            _as_str(chat_context.get("selected_specialty_id"))
+            or _as_str(chat_context.get("selected_doctor_id")),
+        )
+        if not has_provider:
+            return ChatAppointmentIntakeResult(
+                intent="clarification",
+                content=(
+                    "Which doctor or specialty would you like me to check availability for?"
+                ),
+            )
+
+        week_range = self._resolve_week_range(label)
+        if week_range is None:
+            return None
+        start_date, end_date = week_range
+
+        context_updates: dict[str, Any] = {
+            **stale_slot_clearing_updates(),
+            "requested_date": None,
+            "availability_range_label": label,
+            "search_start_date": start_date.isoformat(),
+            "search_end_date": end_date.isoformat(),
+        }
+
+        requested_window = chat_context.get("requested_time_window")
+        window: dict[str, str] | None = None
+        if isinstance(requested_window, dict):
+            window = {
+                "label": str(requested_window.get("label", "")),
+                "start_time": str(requested_window.get("start_time", "")),
+                "end_time": str(requested_window.get("end_time", "")),
+            }
+
+        search_criteria = AppointmentSearchCriteria(
+            selected_specialty_id=_as_str(chat_context.get("selected_specialty_id")),
+            selected_specialty_name=_as_str(chat_context.get("selected_specialty_name")),
+            selected_doctor_id=_as_str(chat_context.get("selected_doctor_id")),
+            selected_doctor_name=_as_str(chat_context.get("selected_doctor_name")),
+            requested_date=None,
+            requested_time_window=window,
+            soonest_requested=False,
+            search_start_date=start_date.isoformat(),
+            search_end_date=end_date.isoformat(),
+            availability_range_label=label,
+        )
+
+        return ChatAppointmentIntakeResult(
+            intent="appointment_intake",
+            chat_context_updates=context_updates,
+            search_criteria=search_criteria,
+        )
 
     def _try_contextual_follow_up(
         self,
