@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import cast
 from uuid import UUID
 
 from httpx import Response
@@ -88,13 +87,11 @@ def post_new_patient_booking_via_api(
             "/api/v1/chat/messages",
             json={"message": message, "conversation_id": conversation_id},
         )
-    return cast(
-        Response,
-        client.post(
-            "/api/v1/chat/messages",
-            json={"message": FINAL_BOOKING_CONFIRM, "conversation_id": conversation_id},
-        ),
+    response: Response = client.post(
+        "/api/v1/chat/messages",
+        json={"message": FINAL_BOOKING_CONFIRM, "conversation_id": conversation_id},
     )
+    return response
 
 
 def complete_existing_patient_booking(

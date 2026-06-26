@@ -307,19 +307,22 @@ Demo auto-create stores `patient_phone` only when the caller provided it; omitte
 
 Future: fuzzy identity resolution — see [Voice Patient Identity Resolution](operations/voice-patient-identity-resolution.md).
 
-## Chat turn understanding (identity intake)
+## Chat turn understanding
 
-Controls whether chat booking identity intake uses the structured turn understanding interpreter.
+Controls whether chat uses the structured turn understanding interpreter for:
+
+- **Appointment intake** — specialty, doctor, date, time, soonest intent, and offered-doctor selection before availability routing
+- **Booking identity intake** — patient status and identity fields during hold confirmation
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CHAT_TURN_UNDERSTANDING_INTERPRETER` | `disabled` | Interpreter selection for patient identity intake only: `disabled`, `fake`, or `groq` |
+| `CHAT_TURN_UNDERSTANDING_INTERPRETER` | `disabled` | Interpreter selection: `disabled`, `fake`, or `groq` |
 
 Supported values:
 
-- `disabled` — default; preserves deterministic legacy parsing for patient identity
-- `fake` — deterministic local/demo interpreter with no provider calls
-- `groq` — real provider-backed interpreter for controlled local testing
+- `disabled` — default; preserves deterministic fallback parsing for appointment and identity intake
+- `fake` — deterministic local/demo interpreter with no provider calls; recommended for reproducible manual testing
+- `groq` — real provider-backed interpreter for controlled local testing with a Groq API key
 
 When `CHAT_TURN_UNDERSTANDING_INTERPRETER=groq`, these settings are required independently of `LLM_PRIMARY_PROVIDER` / `LLM_PROVIDER`:
 
@@ -332,12 +335,12 @@ Optional Groq settings reused by chat turn understanding:
 - `GROQ_REQUEST_TIMEOUT_SECONDS`
 - `GROQ_MAX_OUTPUT_TOKENS`
 - `GROQ_TEMPERATURE`
-- `GROQ_RESPONSE_FORMAT`
+- `GROQ_RESPONSE_FORMAT` — use `json_schema` for structured `ChatTurnUnderstandingResult` output
 
 Recommended:
 
 - **Production-like / safe default:** `disabled`
-- **Local demo / natural-language identity testing:** `fake`
+- **Local demo / reproducible appointment and identity testing:** `fake`
 - **Controlled local Groq testing:** `groq` with credentials configured locally
 
 ```env
@@ -346,11 +349,14 @@ CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled
 # CHAT_TURN_UNDERSTANDING_INTERPRETER=groq
 # GROQ_API_KEY=gsk_...
 # GROQ_MODEL=llama-3.3-70b-versatile
+# GROQ_RESPONSE_FORMAT=json_schema
 ```
 
 Do not expose public Groq-backed chat turn understanding without authentication, rate limits, and cost controls.
 
-This setting does not change slot selection, booking confirmation, cancellation, rescheduling, or persistence behavior.
+This setting does not change public Chat API schemas, hold creation rules, booking confirmation, cancellation, rescheduling, or Retell behavior.
+
+See [Chat Turn Understanding Architecture](architecture/chat-turn-understanding.md) and [Chat Appointment Intake Manual Testing](testing/chat-appointment-intake.md).
 
 ## Deployment Environment Templates
 

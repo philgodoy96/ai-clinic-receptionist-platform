@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+import pytest
+
+from app.services.appointment_time_normalization import (
+    normalize_appointment_time_expression,
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_value", "expected_raw"),
+    [
+        ("3PM", "15:00", "3PM"),
+        ("3 PM", "15:00", "3 PM"),
+        ("3pm", "15:00", "3pm"),
+        ("2PM", "14:00", "2PM"),
+        ("2 PM", "14:00", "2 PM"),
+        ("2:30 PM", "14:30", "2:30 PM"),
+        ("11am", "11:00", "11am"),
+        ("12pm", "12:00", "12pm"),
+        ("12am", "00:00", "12am"),
+        ("15:00", "15:00", "15:00"),
+        ("9:30", "09:30", "9:30"),
+        ("15", "15:00", "15"),
+        ("23", "23:00", "23"),
+    ],
+)
+def test_normalizes_supported_time_expressions(
+    text: str,
+    expected_value: str,
+    expected_raw: str,
+) -> None:
+    normalized = normalize_appointment_time_expression(text)
+
+    assert normalized is not None
+    assert normalized.value == expected_value
+    assert normalized.raw == expected_raw
+
+
+@pytest.mark.parametrize("text", ["3", "0", "12", "24", "25", "", "tomorrow", "1500"])
+def test_rejects_ambiguous_or_non_time_expressions(text: str) -> None:
+    assert normalize_appointment_time_expression(text) is None
+
+
+def test_bare_hour_disabled_when_not_allowed() -> None:
+    assert normalize_appointment_time_expression("15", allow_bare_hour=False) is None
+    # am/pm and colon forms still work regardless of allow_bare_hour.
+    assert normalize_appointment_time_expression("3PM", allow_bare_hour=False) is not None
+    assert normalize_appointment_time_expression("15:00", allow_bare_hour=False) is not None
+
+
+def test_invalid_colon_time_is_rejected() -> None:
+    assert normalize_appointment_time_expression("25:00") is None
+    assert normalize_appointment_time_expression("12:99") is None
