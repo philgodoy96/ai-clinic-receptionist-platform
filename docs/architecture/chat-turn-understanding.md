@@ -170,31 +170,115 @@ When the user names a specialty or doctor without an explicit date, or explicitl
 
 `ChatReceptionistService` uses these fields to call scheduling availability services and store returned slots in `offered_slots` for later hold selection.
 
-### Offered-doctor selection
+### Appointment task frame (`appointment_intake_awaiting`)
 
-When `offered_doctors` is present in `chat_context` (for example after listing doctors for a specialty), doctor validation is **contextual**:
+Active appointment intake stores an explicit task marker in `chat_context.appointment_intake_awaiting`. This prevents generic fallback replies during scheduling and enables contextual follow-ups when CTU returns low confidence or `fallback` intent.
 
-- only doctors from the offered list are accepted
-- a unique partial match such as `Dr. Reed` or `Dr. Emily` updates `selected_doctor_id` / `selected_doctor_name`
-- unknown or ambiguous offered-doctor references return clarification without mutating context
+| Value | Set when | Meaning |
+| --- | --- | --- |
+| `date_or_time_preference` | Specialty or doctor is selected but no concrete date is set, or availability returned no slots and the assistant is waiting for a day/time preference | User should supply a date, weekday, or time-of-day window |
+| `slot_selection` | Availability lookup returned one or more offered slots | User should choose one of the offered times |
+
+The marker is cleared when intake completes, booking identity begins, or the conversation leaves appointment scheduling.
+
+**Contextual follow-ups** use the task frame plus existing provider context:
+
+- User: `What about Wednesday?` — backend keeps `selected_doctor_id` / `selected_specialty_id`, resolves the bare weekday against clinic-local today, clears stale `offered_slots` if the date changes, and re-runs availability.
+- User: `afternoon` — backend applies a time-of-day window via `TimePreferenceParser` when doctor/specialty context is already present, then searches availability with the updated window.
+
+Bare weekday and time-window follow-ups run through backend parsers even when the interpreter returns `fallback`, as long as `is_appointment_intake_active(chat_context)` is true.
+
+### Offered doctors
+
+When the assistant lists doctors for a specialty, `offered_doctors` is stored in `chat_context`. Later messages resolve against that list only:
+
+- `It can be Dr. Reed` or `Dr. Emily is fine` update `selected_doctor_id` / `selected_doctor_name` when exactly one offered doctor matches
+- unknown or ambiguous references return clarification without mutating context
+- doctor IDs are never exposed in assistant replies
+
+### Offered slots
+
+After a successful availability lookup, `offered_slots` is stored in `chat_context` and `appointment_intake_awaiting` is set to `slot_selection`. Each entry carries internal identifiers (`availability_slot_id`, `start_time`, optional doctor attribution) plus a user-facing `display_time` label.
+
+Later user messages can select a slot by:
+
+- **Reference** — `selected_slot_reference` from CTU (for example `second one`, or an internal reference the interpreter maps from ordinals)
+- **Normalized clock time** — `extracted_fields.appointment_time` after time normalization (for example `3PM` → `15:00`)
+
+The backend validates every selection in `_resolve_offered_slot_selection`:
+
+- a `selected_slot_reference` is honored only when it exists in the current `offered_slots` list
+- a normalized `appointment_time` selects a slot only when **exactly one** offered slot matches that `HH:MM` display time
+- the backend never invents, holds, or books an unoffered time
+
+Slot IDs and raw ISO timestamps are never shown to the user.
+
+### Time normalization
+
+`normalize_appointment_time_expression` (`app/services/appointment_time_normalization.py`) converts user clock-time phrases into internal `HH:MM` (24-hour) format for comparison against offered slot display times.
+
+| User input | Normalized time | Notes |
+| --- | --- | --- |
+| `3PM` / `3 PM` | `15:00` | AM/PM with optional space and punctuation |
+| `2:30 PM` | `14:30` | Minutes supported |
+| `11am` | `11:00` | Case-insensitive meridiem |
+| `15:00` | `15:00` | Colon 24-hour form |
+| `15` | `15:00` | Bare hour only when slot-selection context makes it safe (hours 13–23); bare `3` is not treated as 3 o'clock to preserve ordinal option selection |
+
+CTU should normalize time expressions into `extracted_fields.appointment_time` when possible. The orchestrator and receptionist service still validate normalized times against actually offered slots before creating a hold.
+
+### State-aware fallback prompts
+
+When CTU returns `fallback` or low-confidence output, `ChatReceptionistService` checks `chat_context` before using the generic fallback reply (`_resolve_contextual_fallback_reply`).
+
+| Active context | Fallback behavior |
+| --- | --- |
+| `appointment_intake_awaiting = date_or_time_preference`, or specialty/doctor selected without slots | Ask what day or time to check (for example `What day or time works best for Cardiology?`) |
+| `offered_slots` present or `appointment_intake_awaiting = slot_selection` | Reprompt to choose one of the offered times |
+| `booking_identity_step` active | Ask for the missing identity field for the current step |
+| `booking_identity_step = await_final_booking_confirmation` | Ask for explicit final booking confirmation again |
+| No active task context | Generic fallback |
+
+This keeps scheduling conversations on track without exposing backend internals.
 
 ### Supported appointment-intake examples
 
-These are representative natural-language inputs the slice is designed to handle:
+Exact routing depends on current `chat_context` (whether doctors or slots were already offered, and which `appointment_intake_awaiting` value is set).
 
-| Example | Typical extraction |
+**Specialty and doctor entry**
+
+| Example | Typical behavior |
 | --- | --- |
-| `I'd like to schedule with a dermatologist` | specialty → earliest availability search |
-| `soonest cardiology appointment` | specialty + soonest intent |
-| `cardiology next Monday` | specialty + natural date |
-| `Dr. Reed next Monday` | doctor + natural date |
-| `I want Dr. Emily soonest available` | doctor + soonest intent |
-| `It can be Dr. Reed` | offered-doctor selection (after doctor list) |
-| `Dr. Emily is fine` | offered-doctor selection (after doctor list) |
-| `tomorrow morning` | natural date + time-of-day window |
-| `Sunday afternoon` | natural date + time-of-day window |
+| `I'd like to schedule with a dermatologist` | Specialty resolved → earliest availability search |
+| `soonest cardiology appointment` | Specialty + soonest intent → search from clinic today |
+| `cardiology next Monday` | Specialty + natural date → availability for that date |
+| `Dr. Reed next Monday` | Doctor + natural date → availability for that doctor and date |
+| `I want Dr. Emily soonest available` | Doctor + soonest intent → earliest doctor availability search |
 
-Exact routing still depends on current `chat_context` (for example whether doctors or slots were already offered).
+**Offered-doctor selection** (after doctor list)
+
+| Example | Typical behavior |
+| --- | --- |
+| `It can be Dr. Reed` | Resolve against `offered_doctors` → update selected doctor → availability |
+| `Dr. Emily is fine` | Same as above for a unique partial match |
+
+**Date and time preference**
+
+| Example | Typical behavior |
+| --- | --- |
+| `What about Wednesday?` | Contextual weekday follow-up; preserves provider; rechecks availability |
+| `tomorrow morning` | Natural date + morning time window |
+| `Sunday afternoon` | Natural date + afternoon time window |
+| `Wednesday` / `afternoon` | Bare weekday or time window when intake task frame is active |
+
+**Offered-slot selection** (after availability results)
+
+| Example | Typical behavior |
+| --- | --- |
+| `3PM` | Normalize to `15:00` → validate against offered slots → hold flow if unique match |
+| `15` | Normalize to `15:00` when unambiguous bare hour is safe in slot context |
+| `15:00` | Direct `HH:MM` match against offered slot display times |
+| `second one` | Ordinal/reference selection via `selected_slot_reference` when unambiguous |
 
 ### Expected behavior
 
@@ -203,13 +287,20 @@ Exact routing still depends on current `chat_context` (for example whether docto
 - **Doctor selection from offered doctors** updates `selected_doctor_id` / `selected_doctor_name` and proceeds toward availability.
 - **Natural date prompts** should ask conversationally (`What day works best?`) rather than requesting `YYYY-MM-DD`.
 - **Offered slots** are stored in `chat_context.offered_slots` and are later used by the existing hold flow.
+- **Hold and booking** remain controlled by existing backend flows; CTU and the orchestrator never create holds or book directly.
 - **No appointment is booked** until the existing final confirmation flow succeeds (hold → identity → explicit confirmation → `AppointmentBookingService`).
-- **Ambiguous CTU output** (low confidence, `ambiguous_fields`, or unsupported intents) returns clarification or falls back to deterministic parsing without unsafe context mutation.
+- **Ambiguous CTU output** (low confidence, `ambiguous_fields`, or unsupported intents) returns clarification or state-aware fallback without unsafe context mutation.
 - **Conflicting context changes** (for example switching doctors after one was already selected) return clarification instead of silent overwrite.
 
-### Known follow-up
+### Out of scope and follow-ups
 
-There is a known follow-up to audit demo availability timezone/seed behavior. Displayed availability may appear several hours later than expected when UTC storage and clinic-local presentation are not aligned. This slice does not fix that behavior.
+| Item | Status |
+| --- | --- |
+| Cancel/reschedule contextual task frame | Future slice — cancel/reschedule still use top-level deterministic routes |
+| Timezone/seed audit for demo availability | Future slice — displayed slots may appear offset when UTC storage and clinic-local presentation are misaligned; not fixed in this branch |
+| Second LLM response composer | Not added — replies remain deterministic via `RECEPTIONIST_RESPONSE_MODE=deterministic` by default |
+| Retell voice flow | Not modified |
+| Public demos with real LLM providers | Require auth, rate limits, and cost controls before exposure |
 
 See [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md) for reproducible fake and Groq test scenarios.
 
