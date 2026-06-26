@@ -48,15 +48,14 @@ from app.services.human_handoff_notifications import HumanHandoffNotificationSer
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
+from tests.chat_booking_flow_support import (
+    post_new_patient_booking_via_api,
+)
 from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
 from tests.llm_reliability_test_helpers import (
     AlwaysFailingLLMProvider,
     CountingLLMProvider,
     assert_shadow_reliability_metadata,
-)
-from tests.test_chat_booking_confirmation_flow import (
-    FULL_IDENTITY_WITH_CONFIRM,
-    create_jane_doe_patient,
 )
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
@@ -152,7 +151,7 @@ def booking_chat_api_client() -> Generator[BookingChatApiContext, None, None]:
     chat_service = create_chat_receptionist_service(
         conversations=conversation_service,
         scheduling=create_demo_scheduling_service_with_emily_july_availability(
-            patients=[create_jane_doe_patient()],
+            patients=[],
         ),
         hold_service=hold_service,
     )
@@ -206,7 +205,7 @@ def booking_chat_api_client_failing_dispatch() -> Generator[BookingChatApiContex
     chat_service = create_chat_receptionist_service(
         conversations=conversation_service,
         scheduling=create_demo_scheduling_service_with_emily_july_availability(
-            patients=[create_jane_doe_patient()],
+            patients=[],
         ),
         hold_service=hold_service,
     )
@@ -574,12 +573,9 @@ def test_post_chat_message_booking_success_returns_booking_confirmed(
     )
     assert hold_response.status_code == 200
 
-    booking_response = booking_chat_api_client.client.post(
-        "/api/v1/chat/messages",
-        json={
-            "message": FULL_IDENTITY_WITH_CONFIRM,
-            "conversation_id": conversation_id,
-        },
+    booking_response = post_new_patient_booking_via_api(
+        booking_chat_api_client.client,
+        conversation_id,
     )
 
     assert booking_response.status_code == 200
@@ -659,12 +655,9 @@ def test_post_chat_message_dispatch_failure_does_not_fail_booking(
         },
     )
 
-    booking_response = client.client.post(
-        "/api/v1/chat/messages",
-        json={
-            "message": FULL_IDENTITY_WITH_CONFIRM,
-            "conversation_id": conversation_id,
-        },
+    booking_response = post_new_patient_booking_via_api(
+        client.client,
+        conversation_id,
     )
 
     assert booking_response.status_code == 200

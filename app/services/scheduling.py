@@ -69,6 +69,21 @@ class AvailabilityCheckResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DoctorAttributedAvailabilitySlot:
+    slot: AvailabilitySlot
+    doctor_id: UUID
+    doctor_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpecialtyAvailabilityCheckResult:
+    status: AvailabilityCheckStatus
+    available_slots: Sequence[DoctorAttributedAvailabilitySlot]
+    booking_window: BookingWindow | None = None
+    suggested_response_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PatientLookupCriteria:
     full_name: str
     date_of_birth: date
@@ -196,6 +211,84 @@ class SchedulingService:
             )
 
         return AvailabilityCheckResult(
+            status=AvailabilityCheckStatus.NO_MATCHING_SLOTS,
+            available_slots=[],
+            booking_window=booking_window,
+            suggested_response_text=NO_MATCHING_SLOTS_RESPONSE_TEXT,
+        )
+
+    def check_availability_for_specialty(
+        self,
+        *,
+        specialty_id: UUID,
+        start_from: datetime,
+        start_to: datetime,
+        limit: int | None = None,
+    ) -> SpecialtyAvailabilityCheckResult:
+        if start_to <= start_from:
+            raise InvalidAvailabilityWindowError("start_to must be greater than start_from")
+
+        doctors = self.list_doctors(specialty_id=specialty_id)
+        booking_window: BookingWindow | None = None
+        aggregated_slots: list[DoctorAttributedAvailabilitySlot] = []
+        doctor_statuses: list[AvailabilityCheckStatus] = []
+        outside_horizon_text: str | None = None
+
+        for doctor in doctors:
+            try:
+                doctor_result = self.check_availability_with_status(
+                    doctor_id=doctor.id,
+                    start_from=start_from,
+                    start_to=start_to,
+                )
+            except DoctorNotFoundError:
+                continue
+
+            doctor_statuses.append(doctor_result.status)
+
+            if booking_window is None and doctor_result.booking_window is not None:
+                booking_window = doctor_result.booking_window
+
+            if doctor_result.status is AvailabilityCheckStatus.OUTSIDE_BOOKING_HORIZON:
+                outside_horizon_text = doctor_result.suggested_response_text
+                continue
+
+            for slot in doctor_result.available_slots:
+                aggregated_slots.append(
+                    DoctorAttributedAvailabilitySlot(
+                        slot=slot,
+                        doctor_id=doctor.id,
+                        doctor_name=doctor.full_name,
+                    ),
+                )
+
+        aggregated_slots.sort(key=lambda item: item.slot.start_time)
+
+        if limit is not None:
+            aggregated_slots = aggregated_slots[:limit]
+
+        if aggregated_slots:
+            return SpecialtyAvailabilityCheckResult(
+                status=AvailabilityCheckStatus.AVAILABLE,
+                available_slots=aggregated_slots,
+                booking_window=booking_window,
+            )
+
+        if (
+            doctor_statuses
+            and all(
+                status is AvailabilityCheckStatus.OUTSIDE_BOOKING_HORIZON
+                for status in doctor_statuses
+            )
+        ):
+            return SpecialtyAvailabilityCheckResult(
+                status=AvailabilityCheckStatus.OUTSIDE_BOOKING_HORIZON,
+                available_slots=[],
+                booking_window=booking_window,
+                suggested_response_text=outside_horizon_text,
+            )
+
+        return SpecialtyAvailabilityCheckResult(
             status=AvailabilityCheckStatus.NO_MATCHING_SLOTS,
             available_slots=[],
             booking_window=booking_window,

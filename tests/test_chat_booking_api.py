@@ -25,7 +25,7 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobResult,
     EmailJobService,
 )
-from tests.test_chat_booking_confirmation import create_jane_doe_patient
+from tests.chat_booking_flow_support import post_new_patient_booking_via_api
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     create_chat_receptionist_service,
@@ -112,7 +112,7 @@ def chat_booking_client() -> Generator[ChatBookingApiContext, None, None]:
     conversations = ConversationService(repository=repository)
     hold_service = FakeAppointmentHoldService()
     scheduling = create_demo_scheduling_service_with_emily_july_availability(
-        patients=[create_jane_doe_patient()],
+        patients=[],
     )
     chat_service = create_chat_receptionist_service(
         conversations=conversations,
@@ -177,14 +177,9 @@ def test_chat_booking_enqueues_email_and_publishes_dispatch_after_commit(
     )
     assert hold_response.status_code == 200
 
-    booking_response = chat_booking_client.client.post(
-        "/api/v1/chat/messages",
-        json={
-            "message": (
-                "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com. Please confirm."
-            ),
-            "conversation_id": conversation_id,
-        },
+    booking_response = post_new_patient_booking_via_api(
+        chat_booking_client.client,
+        conversation_id,
     )
 
     assert booking_response.status_code == 200

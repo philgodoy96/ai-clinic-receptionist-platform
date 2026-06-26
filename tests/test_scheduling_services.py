@@ -97,6 +97,99 @@ def test_check_availability_returns_available_slots() -> None:
     assert [slot.id for slot in slots] == [available_slot.id]
 
 
+def test_check_availability_for_specialty_aggregates_across_doctors() -> None:
+    specialty = create_specialty(name="Dermatology")
+    doctor_a = Doctor(
+        id=uuid4(),
+        specialty_id=specialty.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    doctor_b = Doctor(
+        id=uuid4(),
+        specialty_id=specialty.id,
+        full_name="Dr. Anna Brooks",
+        email="anna.brooks@example-clinic.test",
+        phone_number="+1-555-0105",
+        is_active=True,
+    )
+    slot_a = create_availability_slot(
+        doctor_id=doctor_a.id,
+        start_time=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+    slot_b = create_availability_slot(
+        doctor_id=doctor_b.id,
+        start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+    service = create_service(
+        specialties=[specialty],
+        doctors=[doctor_a, doctor_b],
+        availability_slots=[slot_a, slot_b],
+    )
+
+    result = service.check_availability_for_specialty(
+        specialty_id=specialty.id,
+        start_from=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+        start_to=datetime(2026, 7, 3, 0, 0, tzinfo=UTC),
+    )
+
+    assert len(result.available_slots) == 2
+    assert result.available_slots[0].doctor_name == "Dr. Emily Carter"
+    assert result.available_slots[0].slot.id == slot_a.id
+    assert result.available_slots[1].doctor_name == "Dr. Anna Brooks"
+    assert result.available_slots[1].slot.id == slot_b.id
+
+
+def test_check_availability_for_specialty_respects_limit() -> None:
+    specialty = create_specialty(name="Dermatology")
+    doctor_a = Doctor(
+        id=uuid4(),
+        specialty_id=specialty.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    doctor_b = Doctor(
+        id=uuid4(),
+        specialty_id=specialty.id,
+        full_name="Dr. Anna Brooks",
+        email="anna.brooks@example-clinic.test",
+        phone_number="+1-555-0105",
+        is_active=True,
+    )
+    slots = [
+        create_availability_slot(
+            doctor_id=doctor_a.id,
+            start_time=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=doctor_b.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    service = create_service(
+        specialties=[specialty],
+        doctors=[doctor_a, doctor_b],
+        availability_slots=slots,
+    )
+
+    result = service.check_availability_for_specialty(
+        specialty_id=specialty.id,
+        start_from=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+        start_to=datetime(2026, 7, 3, 0, 0, tzinfo=UTC),
+        limit=1,
+    )
+
+    assert len(result.available_slots) == 1
+
+
 def test_lookup_patient_rejects_insufficient_identity() -> None:
     service = create_service()
 

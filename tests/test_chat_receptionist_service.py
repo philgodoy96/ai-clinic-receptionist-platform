@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -9,7 +9,10 @@ import pytest
 from app.domain.conversations.enums import ConversationChannel, ConversationMessageRole
 from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.domain.scheduling.appointment_holds import AppointmentHold
+from app.domain.scheduling.enums import AvailabilitySlotStatus
+from app.domain.voice_patient_intake import VoicePatientIntakeMode
 from app.models.scheduling import Doctor
+from app.repositories.memory.patient_resolution import InMemoryPatientResolutionRepository
 from app.services.appointment_booking import (
     AppointmentBookingRequest,
     AppointmentBookingResult,
@@ -33,6 +36,8 @@ from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import LLMReceptionistAnalysisService
+from app.services.patient_identity_resolution import PatientIdentityResolutionService
+from app.services.patient_intake import PatientIntakeService
 from app.services.receptionist_response_generator import ReceptionistResponseGenerator
 from app.services.scheduling import SchedulingService
 from app.services.slot_filling import LLMChatSlotFillingService
@@ -43,6 +48,7 @@ from tests.test_scheduling_services import (
     EMILY_JULY_SLOT_1_ID,
     EMILY_JULY_SLOT_2_ID,
     FakeAppointmentRepository,
+    create_availability_slot,
     create_demo_scheduling_service,
     create_demo_scheduling_service_with_emily_afternoon_july_availability,
     create_demo_scheduling_service_with_emily_july_availability,
@@ -134,6 +140,21 @@ def create_appointment_booking_service_for_scheduling(
     )
 
 
+def create_patient_identity_resolution_for_scheduling(
+    scheduling: SchedulingService,
+    *,
+    mode: VoicePatientIntakeMode = VoicePatientIntakeMode.DEMO_AUTO_CREATE,
+) -> PatientIdentityResolutionService:
+    return PatientIdentityResolutionService(
+        patients=scheduling.patients,
+        resolutions=InMemoryPatientResolutionRepository(),
+        patient_intake=PatientIntakeService(
+            patients=scheduling.patients,
+            mode=mode,
+        ),
+    )
+
+
 def create_chat_receptionist_service(
     *,
     conversations: ConversationService,
@@ -151,11 +172,17 @@ def create_chat_receptionist_service(
     clinic_time_service: ClinicTimeService | None = None,
     response_generator: ReceptionistResponseGenerator | None = None,
     response_generation_mode: ReceptionistResponseMode = (ReceptionistResponseMode.DETERMINISTIC),
+    patient_identity_resolution: PatientIdentityResolutionService | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
         scheduling,
         holds,
+    )
+    identity_resolution = (
+        patient_identity_resolution
+        if patient_identity_resolution is not None
+        else create_patient_identity_resolution_for_scheduling(scheduling)
     )
     return ChatReceptionistService(
         conversations=conversations,
@@ -173,6 +200,7 @@ def create_chat_receptionist_service(
         clinic_time_service=clinic_time_service,
         response_generator=response_generator,
         response_generation_mode=response_generation_mode,
+        patient_identity_resolution=identity_resolution,
     )
 
 
@@ -811,49 +839,235 @@ def test_conversation_context_carries_across_messages(
     assert "10:30" in second.reply
 
 
-def test_availability_with_specialty_and_multiple_doctors_prompts_for_doctor_choice(
+def test_availability_with_specialty_and_multiple_doctors_returns_specialty_wide_results(
     scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
     service, _repository = scheduling_chat_service
     dermatology = create_specialty(name="Dermatology")
-    doctors = [
-        Doctor(
-            id=uuid4(),
-            specialty_id=dermatology.id,
-            full_name="Dr. Emily Carter",
-            email="emily.carter@example-clinic.test",
-            phone_number="+1-555-0101",
-            is_active=True,
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    anna = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Anna Brooks",
+        email="anna.brooks@example-clinic.test",
+        phone_number="+1-555-0105",
+        is_active=True,
+    )
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
         ),
-        Doctor(
-            id=uuid4(),
-            specialty_id=dermatology.id,
-            full_name="Dr. James Lopez",
-            email="james.lopez@example-clinic.test",
-            phone_number="+1-555-0104",
-            is_active=True,
+        create_availability_slot(
+            doctor_id=anna.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
     service_with_multiple_dermatologists = create_chat_receptionist_service(
         conversations=service.conversations,
         scheduling=create_service(
             specialties=[dermatology],
-            doctors=doctors,
+            doctors=[emily, anna],
+            availability_slots=availability_slots,
         ),
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
     )
 
     result = service_with_multiple_dermatologists.handle_message(
         ChatMessageInput(
-            message="What availability does dermatology have on 2026-07-15?",
+            message="I want to book dermatology on 2026-07-02.",
         ),
     )
 
-    assert result.intent == ChatReceptionistIntent.AVAILABILITY_MISSING_DOCTOR
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
     assert "Dr. Emily Carter" in result.reply
-    assert "Dr. James Lopez" in result.reply
-    assert result.conversation.conversation_metadata["chat_context"]["selected_specialty_name"] == (
-        "Dermatology"
+    assert "Dr. Anna Brooks" in result.reply
+    assert "10:00" in result.reply
+    assert "14:00" in result.reply
+    offered_slots = result.conversation.conversation_metadata["chat_context"]["offered_slots"]
+    assert len(offered_slots) == 2
+    assert offered_slots[0]["doctor_name"] == "Dr. Emily Carter"
+    assert offered_slots[1]["doctor_name"] == "Dr. Anna Brooks"
+
+
+def test_doctor_specialty_and_date_uses_doctor_specific_availability(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability_for_specialty",
+        wraps=scheduling.check_availability_for_specialty,
+    ) as specialty_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message=(
+                    "I want to book dermatology with Dr. Emily Carter on 2026-07-02."
+                ),
+            ),
+        )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    specialty_availability_mock.assert_not_called()
+    assert "Dr. Emily Carter" in result.reply
+    assert "09:00" in result.reply
+
+
+def test_book_appointment_without_doctor_or_specialty_prompts_for_preference(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    result = service.handle_message(
+        ChatMessageInput(message="I want to book an appointment."),
     )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "specialty" in result.reply.lower()
+    assert "doctor" in result.reply.lower()
+
+
+def test_unknown_specialty_does_not_query_availability(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        with patch.object(
+            SchedulingService,
+            "check_availability_for_specialty",
+            wraps=scheduling.check_availability_for_specialty,
+        ) as specialty_availability_mock:
+            result = service.handle_message(
+                ChatMessageInput(
+                    message="I want to book neurosurgery on 2026-07-02.",
+                ),
+            )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_UNKNOWN_SPECIALTY
+    assert "could not find that specialty" in result.reply.lower()
+    assert "Dermatology" in result.reply
+    check_availability_mock.assert_not_called()
+    specialty_availability_mock.assert_not_called()
+
+
+def test_unknown_doctor_does_not_query_availability(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    scheduling = service.scheduling
+
+    with patch.object(
+        SchedulingService,
+        "check_availability",
+        wraps=scheduling.check_availability,
+    ) as check_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="I want to book with Dr. Fake Person on 2026-07-02.",
+            ),
+        )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_UNKNOWN_DOCTOR
+    assert "could not find that doctor" in result.reply.lower()
+    check_availability_mock.assert_not_called()
+
+
+def test_hold_after_specialty_wide_availability_preserves_doctor_context(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    anna = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Anna Brooks",
+        email="anna.brooks@example-clinic.test",
+        phone_number="+1-555-0105",
+        is_active=True,
+    )
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=anna.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    hold_service = _create_hold_service()
+    service_with_multiple_dermatologists = create_chat_receptionist_service(
+        conversations=service.conversations,
+        scheduling=create_service(
+            specialties=[dermatology],
+            doctors=[emily, anna],
+            availability_slots=availability_slots,
+        ),
+        hold_service=hold_service,
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+    )
+
+    availability = service_with_multiple_dermatologists.handle_message(
+        ChatMessageInput(message="I want to book dermatology on 2026-07-02."),
+    )
+    hold = service_with_multiple_dermatologists.handle_message(
+        ChatMessageInput(
+            message="I'll take 14:00",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert hold.intent == ChatReceptionistIntent.HOLD_CREATED
+    chat_context = hold.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_doctor_id"] == str(anna.id)
+    assert chat_context["selected_doctor_name"] == "Dr. Anna Brooks"
+    assert chat_context["selected_start_time"]
+    assert "seen" in hold.reply.lower() or "before" in hold.reply.lower()
 
 
 def test_specialty_with_no_doctors_returns_safe_message(
@@ -1001,7 +1215,7 @@ def test_hold_first_one_after_availability_creates_hold(
     assert result.intent == ChatReceptionistIntent.HOLD_CREATED
     assert "09:00" in result.reply
     assert "Dr. Emily Carter" in result.reply
-    assert "not booked yet" in result.reply.lower()
+    assert "seen" in result.reply.lower() or "hold" in result.reply.lower()
     booking_mock.assert_not_called()
 
     chat_context = result.conversation.conversation_metadata["chat_context"]
@@ -1203,12 +1417,9 @@ def test_hold_created_response_uses_expected_language(
 
     assert result.intent == ChatReceptionistIntent.HOLD_CREATED
     reply = result.reply.lower()
-    assert "temporarily held" in reply
-    assert "not booked yet" in reply
-    assert "full name" in reply
-    assert "date of birth" in reply
-    assert "phone" in reply
-    assert "email" in reply
+    assert "hold" in reply
+    assert "seen here before" in reply or "been seen" in reply
+    assert "hold_id" not in reply
 
 
 def test_morning_availability_filters_slots_and_stores_time_window(
