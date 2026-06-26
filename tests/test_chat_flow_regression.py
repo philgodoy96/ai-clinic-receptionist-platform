@@ -7,14 +7,15 @@ from unittest.mock import patch
 
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.chat_receptionist import (
-    ChatMessageInput,
     ChatReceptionistIntent,
     ChatReceptionistService,
 )
 from app.services.conversations import ConversationService
 from app.services.scheduling import SchedulingService
+from tests.chat_booking_flow_support import (
+    complete_new_patient_booking,
+)
 from tests.test_chat_booking_confirmation_flow import (
-    FULL_IDENTITY_WITH_CONFIRM,
     _conversation_with_active_hold,
     create_jane_doe_patient,
 )
@@ -78,12 +79,7 @@ def test_regression_chat_booking_flow_still_books() -> None:
     conversation = _conversation_with_active_hold(service)
 
     with patch("app.services.chat_receptionist.openai", create=True) as openai_mock:
-        result = service.handle_message(
-            ChatMessageInput(
-                message=FULL_IDENTITY_WITH_CONFIRM,
-                conversation_id=conversation.id,
-            ),
-        )
+        result = complete_new_patient_booking(service, conversation)
 
     assert openai_mock.call_count == 0
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED

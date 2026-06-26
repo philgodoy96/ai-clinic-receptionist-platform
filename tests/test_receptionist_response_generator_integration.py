@@ -12,12 +12,9 @@ from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
     LLMReceptionistResponseGenerator,
 )
+from tests.chat_booking_flow_support import complete_new_patient_booking
 from tests.llm_provider_test_helpers import RaisingLLMProvider, StaticContentLLMProvider
 from tests.llm_reliability_test_helpers import CountingLLMProvider
-from tests.test_chat_booking_confirmation_flow import (
-    FULL_IDENTITY_WITH_CONFIRM,
-    create_jane_doe_patient,
-)
 from tests.test_chat_receptionist_service import (
     TrackingAppointmentBookingService,
     _create_hold_service,
@@ -137,7 +134,7 @@ def test_booking_confirmation_does_not_depend_on_llm_output() -> None:
     conversations = ConversationService(repository=repository)
     holds = _create_hold_service()
     scheduling = create_demo_scheduling_service_with_emily_july_availability(
-        patients=[create_jane_doe_patient()],
+        patients=[],
     )
     booking = TrackingAppointmentBookingService(
         create_appointment_booking_service_for_scheduling(scheduling, holds),
@@ -159,19 +156,14 @@ def test_booking_confirmation_does_not_depend_on_llm_output() -> None:
     availability = service.handle_message(
         ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
     )
-    service.handle_message(
+    hold = service.handle_message(
         ChatMessageInput(
             message="I'll take 09:00",
             conversation_id=availability.conversation.id,
         ),
     )
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=availability.conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, hold.conversation)
 
     assert result.booking_confirmed is True
     assert booking.book_calls

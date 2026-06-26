@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.chat_booking_flow_support import post_new_patient_booking_via_api
 from tests.demo_guardrail_support import (
     FailingRedisClient,
     FakeRedisClient,
     TrackingRedisClient,
     create_guarded_chat_app,
     create_local_chat_app,
+    make_chat_booking_guardrail_settings,
     make_guardrail_settings,
 )
-from tests.test_chat_booking_confirmation_flow import FULL_IDENTITY_WITH_CONFIRM
 
 
 @pytest.fixture()
@@ -95,7 +95,7 @@ def test_redis_guardrail_failure_returns_503() -> None:
 def test_booking_success_increments_appointment_quota() -> None:
     redis_client = FakeRedisClient()
     app, _, _ = create_guarded_chat_app(
-        make_guardrail_settings(DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100),
+        make_chat_booking_guardrail_settings(),
         redis_client=redis_client,
     )
 
@@ -111,7 +111,7 @@ def test_booking_success_increments_appointment_quota() -> None:
 def test_email_job_creation_increments_email_quota() -> None:
     redis_client = FakeRedisClient()
     app, _, email_jobs = create_guarded_chat_app(
-        make_guardrail_settings(DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100),
+        make_chat_booking_guardrail_settings(),
         redis_client=redis_client,
         track_email_jobs=True,
     )
@@ -130,7 +130,7 @@ def test_email_job_creation_increments_email_quota() -> None:
 def test_failed_booking_does_not_increment_appointment_quota() -> None:
     redis_client = FakeRedisClient()
     app, _, _ = create_guarded_chat_app(
-        make_guardrail_settings(DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100),
+        make_chat_booking_guardrail_settings(),
         redis_client=redis_client,
     )
 
@@ -150,9 +150,9 @@ def test_failed_booking_does_not_increment_appointment_quota() -> None:
 def test_email_quota_exceeded_keeps_booking_and_skips_confirmation_email() -> None:
     redis_client = FakeRedisClient()
     app, _, email_jobs = create_guarded_chat_app(
-        make_guardrail_settings(
+        make_chat_booking_guardrail_settings(
             DEMO_CONFIRMATION_EMAILS_PER_DAY_PER_IP=1,
-            DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100,
+            DEMO_GLOBAL_CONFIRMATION_EMAILS_PER_DAY=1,
         ),
         redis_client=redis_client,
         track_email_jobs=True,
@@ -161,10 +161,19 @@ def test_email_quota_exceeded_keeps_booking_and_skips_confirmation_email() -> No
     redis_client.values[email_ip_key] = 1
 
     with TestClient(app) as client:
-        response = client.post(
+        availability_response = client.post(
             "/api/v1/chat/messages",
-            json=_booking_messages(client),
+            json={"message": "Dr. Emily Carter on 2026-07-02"},
         )
+        conversation_id = availability_response.json()["conversation_id"]
+        client.post(
+            "/api/v1/chat/messages",
+            json={
+                "message": "I'll take 09:00",
+                "conversation_id": conversation_id,
+            },
+        )
+        response = post_new_patient_booking_via_api(client, conversation_id)
 
     app.dependency_overrides.clear()
 
@@ -188,7 +197,7 @@ def test_guarded_chat_uses_fake_dependencies_not_real_providers(
     assert "error" not in response.json()
 
 
-def _booking_messages(client: TestClient) -> dict[str, Any]:
+def _book_appointment_via_chat(client: TestClient) -> str:
     availability_response = client.post(
         "/api/v1/chat/messages",
         json={"message": "Dr. Emily Carter on 2026-07-02"},
@@ -201,14 +210,7 @@ def _booking_messages(client: TestClient) -> dict[str, Any]:
             "conversation_id": conversation_id,
         },
     )
-    return {
-        "message": FULL_IDENTITY_WITH_CONFIRM,
-        "conversation_id": conversation_id,
-    }
-
-
-def _book_appointment_via_chat(client: TestClient) -> str:
-    response = client.post("/api/v1/chat/messages", json=_booking_messages(client))
+    response = post_new_patient_booking_via_api(client, conversation_id)
     assert response.status_code == 200
     body = response.json()
     assert body["booking_confirmed"] is True

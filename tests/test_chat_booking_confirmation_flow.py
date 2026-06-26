@@ -6,6 +6,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from httpx import Response
+from starlette.testclient import TestClient
 
 from app.models.conversations import Conversation
 from app.models.scheduling import Patient
@@ -25,6 +27,12 @@ from app.services.email_jobs import (
     EmailJobService,
 )
 from app.services.scheduling import SchedulingService
+from tests.chat_booking_flow_support import (
+    FINAL_BOOKING_CONFIRM,
+    NEW_PATIENT_IDENTITY_STEPS,
+    complete_new_patient_booking,
+    conversation_with_active_hold,
+)
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     TrackingAppointmentBookingService,
@@ -65,7 +73,7 @@ def booking_flow_context() -> tuple[
     conversations = ConversationService(repository=repository)
     hold_service = _create_hold_service()
     scheduling = create_demo_scheduling_service_with_emily_july_availability(
-        patients=[create_jane_doe_patient()],
+        patients=[],
     )
     inner_booking = create_appointment_booking_service_for_scheduling(
         scheduling,
@@ -82,16 +90,7 @@ def booking_flow_context() -> tuple[
 
 
 def _conversation_with_active_hold(service: ChatReceptionistService) -> Conversation:
-    availability = service.handle_message(
-        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
-    )
-    hold = service.handle_message(
-        ChatMessageInput(
-            message="I'll take 09:00",
-            conversation_id=availability.conversation.id,
-        ),
-    )
-    return hold.conversation
+    return conversation_with_active_hold(service)
 
 
 def test_confirm_without_hold_returns_booking_hold_missing_and_does_not_book(
@@ -125,11 +124,10 @@ def test_hold_exists_but_identity_missing_on_confirm(
         ChatMessageInput(message="confirm", conversation_id=conversation.id),
     )
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
     assert tracking_booking.book_calls == []
     reply = result.reply.lower()
-    assert "full name" in reply or "date of birth" in reply
-    assert "phone" in reply or "email" in reply
+    assert "seen" in reply or "before" in reply
 
 
 def test_partial_identity_is_stored_in_chat_context(
@@ -172,8 +170,8 @@ def test_complete_identity_without_confirmation_requests_confirmation_and_does_n
         ),
     )
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
-    assert "confirm" in result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    assert "on file" not in result.reply.lower()
     assert tracking_booking.book_calls == []
 
 
@@ -191,12 +189,7 @@ def test_complete_identity_with_confirmation_books_appointment_without_llm(
     conversation = _conversation_with_active_hold(service)
 
     with patch("app.services.chat_receptionist.openai", create=True) as openai_mock:
-        result = service.handle_message(
-            ChatMessageInput(
-                message=FULL_IDENTITY_WITH_CONFIRM,
-                conversation_id=conversation.id,
-            ),
-        )
+        result = complete_new_patient_booking(service, conversation)
 
     assert openai_mock.call_count == 0
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
@@ -220,12 +213,7 @@ def test_booking_conflict_when_fake_booking_service_raises_conflict(
     )
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFLICT
     assert len(tracking_booking.book_calls) == 1
@@ -247,12 +235,7 @@ def test_hold_expired_when_booking_service_raises_hold_not_found(
     )
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_EXPIRED
     assert len(tracking_booking.book_calls) == 1
@@ -272,12 +255,7 @@ def test_complete_identity_with_confirmation_creates_one_idempotent_email_job(
     email_jobs = EmailJobService(repository=email_job_repository)
     conversation = _conversation_with_active_hold(service)
 
-    result = service.handle_message(
-        ChatMessageInput(
-            message=FULL_IDENTITY_WITH_CONFIRM,
-            conversation_id=conversation.id,
-        ),
-    )
+    result = complete_new_patient_booking(service, conversation)
 
     assert result.booking_confirmed is True
     assert result.appointment_id is not None
@@ -321,13 +299,34 @@ def test_emergency_takes_priority_over_booking_confirmation(
     assert tracking_booking.book_calls == []
 
 
+def _post_new_patient_booking_messages(
+    client: TestClient,
+    conversation_id: str,
+) -> Response:
+    for message in NEW_PATIENT_IDENTITY_STEPS:
+        client.post(
+            "/api/v1/chat/messages",
+            json={"message": message, "conversation_id": conversation_id},
+        )
+    return cast(
+        Response,
+        client.post(
+            "/api/v1/chat/messages",
+            json={"message": FINAL_BOOKING_CONFIRM, "conversation_id": conversation_id},
+        ),
+    )
+
+
 def test_successful_booking_api_creates_confirmation_email_job() -> None:
     from fastapi.testclient import TestClient
 
-    from tests.demo_guardrail_support import create_guarded_chat_app, make_guardrail_settings
+    from tests.demo_guardrail_support import (
+        create_guarded_chat_app,
+        make_chat_booking_guardrail_settings,
+    )
 
     app, _, email_jobs = create_guarded_chat_app(
-        make_guardrail_settings(DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100),
+        make_chat_booking_guardrail_settings(),
         track_email_jobs=True,
     )
 
@@ -344,13 +343,7 @@ def test_successful_booking_api_creates_confirmation_email_job() -> None:
                 "conversation_id": conversation_id,
             },
         )
-        booking = client.post(
-            "/api/v1/chat/messages",
-            json={
-                "message": FULL_IDENTITY_WITH_CONFIRM,
-                "conversation_id": conversation_id,
-            },
-        )
+        booking = _post_new_patient_booking_messages(client, conversation_id)
 
     app.dependency_overrides.clear()
 
@@ -400,7 +393,7 @@ def test_dispatch_publish_failure_does_not_rollback_booking() -> None:
     conversations = ConversationService(repository=repository)
     hold_service = FakeAppointmentHoldService()
     scheduling = create_demo_scheduling_service_with_emily_july_availability(
-        patients=[create_jane_doe_patient()],
+        patients=[],
     )
     chat_service = create_chat_receptionist_service(
         conversations=conversations,
@@ -435,13 +428,7 @@ def test_dispatch_publish_failure_does_not_rollback_booking() -> None:
                 "conversation_id": conversation_id,
             },
         )
-        booking = client.post(
-            "/api/v1/chat/messages",
-            json={
-                "message": FULL_IDENTITY_WITH_CONFIRM,
-                "conversation_id": conversation_id,
-            },
-        )
+        booking = _post_new_patient_booking_messages(client, conversation_id)
 
     app.dependency_overrides.clear()
 
@@ -460,14 +447,14 @@ def test_demo_email_quota_exceeded_keeps_booking_without_confirmation_job() -> N
     from tests.demo_guardrail_support import (
         FakeRedisClient,
         create_guarded_chat_app,
-        make_guardrail_settings,
+        make_chat_booking_guardrail_settings,
     )
 
     redis_client = FakeRedisClient()
     app, _, email_jobs = create_guarded_chat_app(
-        make_guardrail_settings(
+        make_chat_booking_guardrail_settings(
             DEMO_CONFIRMATION_EMAILS_PER_DAY_PER_IP=1,
-            DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=100,
+            DEMO_GLOBAL_CONFIRMATION_EMAILS_PER_DAY=1,
         ),
         redis_client=redis_client,
         track_email_jobs=True,
@@ -488,13 +475,7 @@ def test_demo_email_quota_exceeded_keeps_booking_without_confirmation_job() -> N
                 "conversation_id": conversation_id,
             },
         )
-        booking = client.post(
-            "/api/v1/chat/messages",
-            json={
-                "message": FULL_IDENTITY_WITH_CONFIRM,
-                "conversation_id": conversation_id,
-            },
-        )
+        booking = _post_new_patient_booking_messages(client, conversation_id)
 
     app.dependency_overrides.clear()
 
