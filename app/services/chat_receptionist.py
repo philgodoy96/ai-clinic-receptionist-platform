@@ -51,6 +51,17 @@ from app.services.appointment_holds import (
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
+from app.services.chat_appointment_cancellation import (
+    _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+    _CANCELLATION_CONFIRMATION_REPROMPT,
+    _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+    APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+    APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION,
+    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
+    APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+    CancellationFlowResult,
+    ChatAppointmentCancellationOrchestrator,
+)
 from app.services.chat_appointment_intake import (
     APPOINTMENT_AVAILABILITY_RANGE_NEXT_WEEK,
     APPOINTMENT_AVAILABILITY_RANGE_THIS_WEEK,
@@ -150,13 +161,8 @@ _EMERGENCY_KEYWORDS = [
 ]
 _CANCEL_KEYWORDS = ["cancel", "cancellation"]
 _RESCHEDULE_KEYWORDS = ["reschedule", "move appointment"]
-APPOINTMENT_MANAGEMENT_MODE_CANCEL = "cancel"
-APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY = "patient_identity"
 _CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
     "Of course. I can look it up first. What is the patient's full name and date of birth?"
-)
-_CANCELLATION_IDENTITY_REPROMPT_MESSAGE = (
-    "I still need the patient's full name and date of birth to look up the appointment."
 )
 _SPECIALTY_LIST_KEYWORDS = [
     "specialties",
@@ -374,6 +380,26 @@ def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> 
     )
 
 
+def _is_awaiting_cancellation_appointment_selection(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+
+
+def _is_awaiting_cancellation_confirmation(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+
+
+def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
+    return chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+
+
 def _resolve_contextual_fallback_reply(
     chat_context: dict[str, Any],
 ) -> tuple[ChatReceptionistIntent, str] | None:
@@ -381,6 +407,18 @@ def _resolve_contextual_fallback_reply(
         return (
             ChatReceptionistIntent.CANCEL_REQUEST,
             _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+        )
+
+    if _is_awaiting_cancellation_appointment_selection(chat_context):
+        return (
+            ChatReceptionistIntent.CANCEL_REQUEST,
+            _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+        )
+
+    if _is_awaiting_cancellation_confirmation(chat_context):
+        return (
+            ChatReceptionistIntent.CANCEL_REQUEST,
+            _CANCELLATION_CONFIRMATION_REPROMPT,
         )
 
     if chat_context.get("appointment_id"):
@@ -731,6 +769,17 @@ class ChatReceptionistService:
         self.chat_turn_understanding_records = chat_turn_understanding_records
         self._booking_identity = ChatBookingIdentityOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        )
+        effective_clinic_time = clinic_time_service or scheduling._clinic_time_service
+        if effective_clinic_time is None:
+            msg = "clinic_time_service is required for appointment cancellation"
+            raise ValueError(msg)
+        self._appointment_cancellation = ChatAppointmentCancellationOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            appointments=scheduling.appointments,
+            scheduling_metadata=scheduling,
+            clinic_time_service=effective_clinic_time,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
         )
         self._appointment_intake = ChatAppointmentIntakeOrchestrator(
@@ -1183,8 +1232,14 @@ class ChatReceptionistService:
                 )
             return reply
 
-        if _is_awaiting_cancellation_patient_identity(existing_context):
-            return finish(self._handle_cancellation_identity_intake())
+        if _is_in_cancellation_flow(existing_context):
+            return finish(
+                self._handle_cancellation_flow(
+                    message=message,
+                    conversation=conversation,
+                    chat_context=existing_context,
+                ),
+            )
 
         if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
             return finish(
@@ -1779,6 +1834,52 @@ class ChatReceptionistService:
             booking_attempted=flow.booking_attempted,
         )
 
+    def _handle_cancellation_flow(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        awaiting = chat_context.get("appointment_management_awaiting")
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY:
+            flow = self._appointment_cancellation.handle_patient_identity_intake(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+                parse_patient_fields=self._parse_booking_patient_fields,
+            )
+            return self._cancellation_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION:
+            flow = self._appointment_cancellation.reprompt_for_appointment_selection()
+            return self._cancellation_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION:
+            flow = self._appointment_cancellation.reprompt_for_cancellation_confirmation()
+            return self._cancellation_flow_result_to_reply(flow)
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.CANCEL_REQUEST,
+            content=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+            chat_context_updates={
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+                "appointment_management_awaiting": (
+                    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                ),
+            },
+        )
+
+    def _cancellation_flow_result_to_reply(
+        self,
+        flow: CancellationFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+        )
+
     def _enter_cancellation_task_frame(
         self,
         *,
@@ -1794,12 +1895,6 @@ class ChatReceptionistService:
                     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
                 ),
             },
-        )
-
-    def _handle_cancellation_identity_intake(self) -> ChatReceptionistReply:
-        return ChatReceptionistReply(
-            intent=ChatReceptionistIntent.CANCEL_REQUEST,
-            content=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
         )
 
     def _hold_booking_identity_unavailable_reply(

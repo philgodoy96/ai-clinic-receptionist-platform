@@ -23,15 +23,17 @@ from app.services.appointment_holds import (
     AppointmentSlotAlreadyHeldError,
 )
 from app.services.chat_booking_identity import ChatBookingIdentityStep
-from app.services.chat_receptionist import (
-    _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
+from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+)
+from app.services.chat_receptionist import (
     ChatMessageInput,
     ChatReceptionistIntent,
     ChatReceptionistReply,
     ChatReceptionistService,
     DeterministicChatResponder,
+    _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
     _build_contextual_fallback_reply,
     _resolve_contextual_fallback_reply,
 )

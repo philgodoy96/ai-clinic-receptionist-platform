@@ -240,6 +240,51 @@ def test_appointment_repository_lists_upcoming_patient_appointments(db_session: 
     assert [appointment.id for appointment in appointments] == [scheduled.id]
 
 
+def test_appointment_repository_lists_cancelable_patient_appointments(db_session: Session) -> None:
+    doctor = create_doctor(db_session)
+    patient = create_patient(db_session)
+    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+    scheduled = Appointment(
+        patient_id=patient.id,
+        doctor_id=doctor.id,
+        specialty_id=doctor.specialty_id,
+        start_time=start_time + timedelta(days=7),
+        end_time=start_time + timedelta(days=7, minutes=30),
+        status=AppointmentStatus.SCHEDULED,
+        reason="Annual checkup",
+    )
+    rescheduled = Appointment(
+        patient_id=patient.id,
+        doctor_id=doctor.id,
+        specialty_id=doctor.specialty_id,
+        start_time=start_time + timedelta(days=8),
+        end_time=start_time + timedelta(days=8, minutes=30),
+        status=AppointmentStatus.RESCHEDULED,
+        reason="Follow-up",
+    )
+    cancelled = Appointment(
+        patient_id=patient.id,
+        doctor_id=doctor.id,
+        specialty_id=doctor.specialty_id,
+        start_time=start_time + timedelta(days=9),
+        end_time=start_time + timedelta(days=9, minutes=30),
+        status=AppointmentStatus.CANCELLED,
+        reason="Past visit",
+        cancellation_reason="Patient cancelled",
+    )
+    db_session.add_all([scheduled, rescheduled, cancelled])
+    db_session.commit()
+
+    repository = SQLAlchemyAppointmentRepository(db_session)
+
+    appointments = repository.list_cancelable_for_patient(
+        patient_id=patient.id,
+        start_from=start_time - timedelta(minutes=1),
+    )
+
+    assert [appointment.id for appointment in appointments] == [scheduled.id, rescheduled.id]
+
+
 def create_doctor(session: Session) -> Doctor:
     specialty = Specialty(name="Primary Care", description="General care", is_active=True)
     session.add(specialty)
