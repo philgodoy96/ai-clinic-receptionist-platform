@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
+from app.domain.chat_turn_understanding import (
+    ChatTurnIntent,
+    ChatTurnUnderstandingRequest,
+    ChatTurnUnderstandingResult,
+    ConversationState,
+    ExpectedResponseType,
+    FieldIssue,
+    PatientStatusAnswer,
+)
 from app.domain.patient_identity_resolution import (
     PatientIdentityResolutionRequest,
     PatientResolutionMatchStatus,
@@ -21,10 +31,15 @@ from app.services.chat_confirmation import (
     normalize_patient_display_name,
     understand_confirmation,
 )
+from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.patient_identity_resolution import (
     PatientIdentityResolutionService,
     PatientResolutionNotFoundError,
 )
+
+logger = logging.getLogger(__name__)
+
+_CTU_LOW_CONFIDENCE_THRESHOLD = 0.5
 
 _SEEN_BEFORE_YES_PHRASES = (
     "yes",
@@ -64,6 +79,18 @@ class ChatBookingIdentityStep(StrEnum):
     BOOKING_COMPLETED = "booking_completed"
 
 
+_IDENTITY_TURN_UNDERSTANDING_STEPS = frozenset(
+    {
+        ChatBookingIdentityStep.ASK_SEEN_BEFORE,
+        ChatBookingIdentityStep.COLLECT_EXISTING_IDENTITY,
+        ChatBookingIdentityStep.COLLECT_NEW_NAME,
+        ChatBookingIdentityStep.COLLECT_NEW_DOB,
+        ChatBookingIdentityStep.COLLECT_NEW_EMAIL,
+        ChatBookingIdentityStep.COLLECT_CONFIRMATION_EMAIL,
+    },
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ParsedPatientFields:
     full_name: str | None = None
@@ -96,8 +123,10 @@ class ChatBookingIdentityOrchestrator:
         self,
         *,
         patient_identity_resolution: PatientIdentityResolutionService,
+        chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
     ) -> None:
         self.patient_identity_resolution = patient_identity_resolution
+        self.chat_turn_understanding_interpreter = chat_turn_understanding_interpreter
 
     def hold_created_context_updates(self, base_updates: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -147,7 +176,9 @@ class ChatBookingIdentityOrchestrator:
         if step is ChatBookingIdentityStep.ASK_SEEN_BEFORE:
             return self._handle_ask_seen_before(
                 message=message,
+                booking_context=booking_context,
                 updates=updates,
+                parse_patient_fields=parse_patient_fields,
                 hold_id=hold_id,
             )
 
@@ -284,6 +315,152 @@ class ChatBookingIdentityOrchestrator:
         except ValueError:
             return None
 
+    def _uses_turn_understanding(self, step: ChatBookingIdentityStep) -> bool:
+        return (
+            self.chat_turn_understanding_interpreter is not None
+            and step in _IDENTITY_TURN_UNDERSTANDING_STEPS
+        )
+
+    def _build_turn_understanding_request(
+        self,
+        *,
+        message: str,
+        step: ChatBookingIdentityStep,
+        booking_context: dict[str, Any],
+        hold_id: str,
+    ) -> ChatTurnUnderstandingRequest:
+        if step is ChatBookingIdentityStep.ASK_SEEN_BEFORE:
+            conversation_state = ConversationState.COLLECTING_PATIENT_STATUS
+            expected_response_type = ExpectedResponseType.PATIENT_STATUS
+            allowed_intents = [
+                ChatTurnIntent.PATIENT_STATUS_ANSWER,
+                ChatTurnIntent.PATIENT_IDENTITY_PROVIDED,
+                ChatTurnIntent.FALLBACK,
+            ]
+        else:
+            conversation_state = ConversationState.COLLECTING_PATIENT_IDENTITY
+            expected_response_type = ExpectedResponseType.PATIENT_IDENTITY
+            allowed_intents = [
+                ChatTurnIntent.PATIENT_IDENTITY_PROVIDED,
+                ChatTurnIntent.FALLBACK,
+            ]
+
+        current_context: dict[str, Any] = {
+            "booking_identity_step": step.value,
+            "hold_active": bool(hold_id),
+        }
+        patient_identity = booking_context.get("patient_identity")
+        if isinstance(patient_identity, dict) and patient_identity:
+            current_context["patient_identity"] = patient_identity
+        if "patient_seen_before" in booking_context:
+            current_context["patient_seen_before"] = booking_context["patient_seen_before"]
+
+        return ChatTurnUnderstandingRequest(
+            conversation_state=conversation_state,
+            expected_response_type=expected_response_type,
+            latest_user_message=message,
+            allowed_intents=allowed_intents,
+            current_context=current_context,
+        )
+
+    def _interpret_identity_turn(
+        self,
+        *,
+        message: str,
+        step: ChatBookingIdentityStep,
+        booking_context: dict[str, Any],
+        hold_id: str,
+    ) -> ChatTurnUnderstandingResult | None:
+        if not self._uses_turn_understanding(step):
+            return None
+
+        request = self._build_turn_understanding_request(
+            message=message,
+            step=step,
+            booking_context=booking_context,
+            hold_id=hold_id,
+        )
+        try:
+            return self.chat_turn_understanding_interpreter.interpret(request)  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("chat turn understanding interpreter failed during identity intake")
+            return None
+
+    def _should_use_deterministic_only(
+        self,
+        understanding: ChatTurnUnderstandingResult,
+    ) -> bool:
+        if understanding.intent is ChatTurnIntent.FALLBACK:
+            return True
+        return understanding.confidence < _CTU_LOW_CONFIDENCE_THRESHOLD
+
+    def _resolve_patient_fields(
+        self,
+        *,
+        message: str,
+        step: ChatBookingIdentityStep,
+        booking_context: dict[str, Any],
+        parse_patient_fields: Any,
+        hold_id: str,
+        understanding: ChatTurnUnderstandingResult | None = None,
+    ) -> tuple[ParsedPatientFields, FieldIssue | None]:
+        deterministic = parse_patient_fields(message, booking_context=True)
+        if understanding is None:
+            understanding = self._interpret_identity_turn(
+                message=message,
+                step=step,
+                booking_context=booking_context,
+                hold_id=hold_id,
+            )
+        if understanding is None or self._should_use_deterministic_only(understanding):
+            return deterministic, None
+
+        ctu_fields, dob_issue = self._validated_fields_from_understanding(understanding)
+        merged = _merge_parsed_fields(deterministic, ctu_fields)
+        if deterministic.phone and not merged.phone:
+            merged = ParsedPatientFields(
+                full_name=merged.full_name,
+                date_of_birth=merged.date_of_birth,
+                email=merged.email,
+                phone=deterministic.phone,
+            )
+        return merged, dob_issue
+
+    def _validated_fields_from_understanding(
+        self,
+        understanding: ChatTurnUnderstandingResult,
+    ) -> tuple[ParsedPatientFields, FieldIssue | None]:
+        extracted = understanding.extracted_fields
+        dob_issue = _dob_ambiguity_issue(understanding)
+
+        full_name: str | None = None
+        if extracted.patient_name:
+            normalized_name = normalize_patient_display_name(extracted.patient_name)
+            if normalized_name:
+                full_name = normalized_name
+
+        date_of_birth: str | None = None
+        if dob_issue is None and extracted.date_of_birth and _is_valid_iso_date(
+            extracted.date_of_birth,
+        ):
+            date_of_birth = extracted.date_of_birth
+
+        email: str | None = None
+        if extracted.email:
+            normalized_email = normalize_email_address(extracted.email)
+            if normalized_email:
+                email = normalized_email
+
+        return (
+            ParsedPatientFields(
+                full_name=full_name,
+                date_of_birth=date_of_birth,
+                email=email,
+                phone=None,
+            ),
+            dob_issue,
+        )
+
     def _already_booked_reply(
         self,
         *,
@@ -319,10 +496,33 @@ class ChatBookingIdentityOrchestrator:
         self,
         *,
         message: str,
+        booking_context: dict[str, Any],
         updates: dict[str, Any],
+        parse_patient_fields: Any,
         hold_id: str,
     ) -> BookingIdentityFlowResult:
         seen_before = _parse_seen_before_answer(message)
+        understanding = self._interpret_identity_turn(
+            message=message,
+            step=ChatBookingIdentityStep.ASK_SEEN_BEFORE,
+            booking_context=booking_context,
+            hold_id=hold_id,
+        )
+        parsed, dob_issue = self._resolve_patient_fields(
+            message=message,
+            step=ChatBookingIdentityStep.ASK_SEEN_BEFORE,
+            booking_context=booking_context,
+            parse_patient_fields=parse_patient_fields,
+            hold_id=hold_id,
+            understanding=understanding,
+        )
+
+        if understanding is not None and not self._should_use_deterministic_only(understanding):
+            if understanding.patient_status_answer is PatientStatusAnswer.EXISTING_PATIENT:
+                seen_before = True
+            elif understanding.patient_status_answer is PatientStatusAnswer.NEW_PATIENT:
+                seen_before = False
+
         if seen_before is True:
             updates["patient_seen_before"] = True
             updates["booking_identity_step"] = (
@@ -338,18 +538,85 @@ class ChatBookingIdentityOrchestrator:
             )
 
         if seen_before is False:
-            updates["patient_seen_before"] = False
-            updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_NAME.value
-            return BookingIdentityFlowResult(
-                intent="patient_identity_partial",
-                content="No problem. What name should I put on the appointment?",
-                chat_context_updates=updates,
+            return self._advance_new_patient_from_parsed_fields(
+                parsed=parsed,
+                dob_issue=dob_issue,
+                booking_context=booking_context,
+                updates=updates,
                 hold_id=hold_id,
             )
 
         return BookingIdentityFlowResult(
             intent="patient_identity_partial",
             content="Have you been seen at this clinic before? Please answer yes or no.",
+            chat_context_updates=updates,
+            hold_id=hold_id,
+        )
+
+    def _advance_new_patient_from_parsed_fields(
+        self,
+        *,
+        parsed: ParsedPatientFields,
+        dob_issue: FieldIssue | None,
+        booking_context: dict[str, Any],
+        updates: dict[str, Any],
+        hold_id: str,
+    ) -> BookingIdentityFlowResult:
+        updates["patient_seen_before"] = False
+        identity = dict(booking_context.get("patient_identity") or {})
+
+        if parsed.full_name:
+            identity["full_name"] = parsed.full_name
+        if parsed.date_of_birth:
+            identity["date_of_birth"] = parsed.date_of_birth
+        if identity:
+            updates["patient_identity"] = identity
+
+        if dob_issue is not None:
+            updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_DOB.value
+            clarification = dob_issue.clarification_question or (
+                "Please clarify your date of birth."
+            )
+            return BookingIdentityFlowResult(
+                intent="booking_identity_missing",
+                content=clarification,
+                chat_context_updates=updates,
+                hold_id=hold_id,
+            )
+
+        if parsed.email:
+            email = normalize_email_address(parsed.email)
+            updates["pending_confirmation_email"] = email
+            updates["booking_identity_step"] = ChatBookingIdentityStep.CONFIRM_NEW_EMAIL.value
+            return BookingIdentityFlowResult(
+                intent="patient_identity_partial",
+                content=f"I heard {email} — is that correct?",
+                chat_context_updates=updates,
+                hold_id=hold_id,
+            )
+
+        if parsed.full_name and parsed.date_of_birth:
+            updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_EMAIL.value
+            return BookingIdentityFlowResult(
+                intent="patient_identity_partial",
+                content="What email should we use for the confirmation?",
+                chat_context_updates=updates,
+                hold_id=hold_id,
+            )
+
+        if parsed.full_name:
+            updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_DOB.value
+            return BookingIdentityFlowResult(
+                intent="patient_identity_partial",
+                content="What is your date of birth?",
+                chat_context_updates=updates,
+                hold_id=hold_id,
+            )
+
+        updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_NAME.value
+        return BookingIdentityFlowResult(
+            intent="patient_identity_partial",
+            content="No problem. What name should I put on the appointment?",
             chat_context_updates=updates,
             hold_id=hold_id,
         )
@@ -364,7 +631,36 @@ class ChatBookingIdentityOrchestrator:
         parse_patient_fields: Any,
         hold_id: str,
     ) -> BookingIdentityFlowResult:
-        parsed = parse_patient_fields(message, booking_context=True)
+        parsed, dob_issue = self._resolve_patient_fields(
+            message=message,
+            step=ChatBookingIdentityStep.COLLECT_EXISTING_IDENTITY,
+            booking_context=booking_context,
+            parse_patient_fields=parse_patient_fields,
+            hold_id=hold_id,
+        )
+
+        if dob_issue is not None:
+            identity_updates: dict[str, Any] = {}
+            if parsed.full_name:
+                identity_updates["full_name"] = parsed.full_name
+            if parsed.email:
+                identity_updates["email"] = normalize_email_address(parsed.email)
+            if identity_updates:
+                updates["patient_identity"] = {
+                    **(booking_context.get("patient_identity") or {}),
+                    **identity_updates,
+                }
+            clarification = dob_issue.clarification_question or (
+                "Please clarify your date of birth."
+            )
+            return BookingIdentityFlowResult(
+                intent="booking_identity_missing",
+                content=clarification,
+                chat_context_updates=updates,
+                hold_id=hold_id,
+                booking_attempted=True,
+            )
+
         if parsed.full_name is None or parsed.date_of_birth is None:
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
@@ -417,7 +713,21 @@ class ChatBookingIdentityOrchestrator:
         parse_patient_fields: Any,
         hold_id: str,
     ) -> BookingIdentityFlowResult:
-        parsed = parse_patient_fields(message, booking_context=True)
+        parsed, dob_issue = self._resolve_patient_fields(
+            message=message,
+            step=ChatBookingIdentityStep.COLLECT_NEW_NAME,
+            booking_context=booking_context,
+            parse_patient_fields=parse_patient_fields,
+            hold_id=hold_id,
+        )
+        if dob_issue is not None:
+            return BookingIdentityFlowResult(
+                intent="booking_identity_missing",
+                content=dob_issue.clarification_question or "Please clarify your date of birth.",
+                chat_context_updates=updates,
+                hold_id=hold_id,
+            )
+
         raw_name = parsed.full_name or message.strip()
         name = normalize_patient_display_name(raw_name)
         if not name or _looks_like_scheduling_text(name):
@@ -449,7 +759,21 @@ class ChatBookingIdentityOrchestrator:
         parse_patient_fields: Any,
         hold_id: str,
     ) -> BookingIdentityFlowResult:
-        parsed = parse_patient_fields(message, booking_context=True)
+        parsed, dob_issue = self._resolve_patient_fields(
+            message=message,
+            step=ChatBookingIdentityStep.COLLECT_NEW_DOB,
+            booking_context=booking_context,
+            parse_patient_fields=parse_patient_fields,
+            hold_id=hold_id,
+        )
+        if dob_issue is not None:
+            return BookingIdentityFlowResult(
+                intent="booking_identity_missing",
+                content=dob_issue.clarification_question or "Please clarify your date of birth.",
+                chat_context_updates=updates,
+                hold_id=hold_id,
+            )
+
         if parsed.date_of_birth is None:
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
@@ -479,7 +803,13 @@ class ChatBookingIdentityOrchestrator:
         parse_patient_fields: Any,
         hold_id: str,
     ) -> BookingIdentityFlowResult:
-        parsed = parse_patient_fields(message, booking_context=True)
+        parsed, _dob_issue = self._resolve_patient_fields(
+            message=message,
+            step=ChatBookingIdentityStep.COLLECT_NEW_EMAIL,
+            booking_context=booking_context,
+            parse_patient_fields=parse_patient_fields,
+            hold_id=hold_id,
+        )
         if parsed.email is None:
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
@@ -587,7 +917,13 @@ class ChatBookingIdentityOrchestrator:
         parse_patient_fields: Any,
         hold_id: str,
     ) -> BookingIdentityFlowResult:
-        parsed = parse_patient_fields(message, booking_context=True)
+        parsed, _dob_issue = self._resolve_patient_fields(
+            message=message,
+            step=ChatBookingIdentityStep.COLLECT_CONFIRMATION_EMAIL,
+            booking_context=booking_context,
+            parse_patient_fields=parse_patient_fields,
+            hold_id=hold_id,
+        )
         if parsed.email is None:
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
@@ -954,6 +1290,35 @@ def _parse_seen_before_answer(message: str) -> bool | None:
     if any(phrase in normalized for phrase in _SEEN_BEFORE_YES_PHRASES):
         return True
     return None
+
+
+def _is_valid_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _dob_ambiguity_issue(
+    understanding: ChatTurnUnderstandingResult,
+) -> FieldIssue | None:
+    for issue in understanding.ambiguous_fields:
+        if issue.field == "date_of_birth":
+            return issue
+    return None
+
+
+def _merge_parsed_fields(
+    deterministic: ParsedPatientFields,
+    ctu: ParsedPatientFields,
+) -> ParsedPatientFields:
+    return ParsedPatientFields(
+        full_name=ctu.full_name or deterministic.full_name,
+        date_of_birth=ctu.date_of_birth or deterministic.date_of_birth,
+        email=ctu.email or deterministic.email,
+        phone=deterministic.phone,
+    )
 
 
 def _looks_like_scheduling_text(value: str) -> bool:

@@ -29,6 +29,7 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
     DeterministicChatResponder,
 )
+from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
 from app.services.clinic_time import ClinicTimeService
 from app.services.conversation_health import ConversationHealthService
@@ -175,6 +176,7 @@ def create_chat_receptionist_service(
     response_generation_mode: ReceptionistResponseMode = (ReceptionistResponseMode.DETERMINISTIC),
     patient_identity_resolution: PatientIdentityResolutionService | None = None,
     chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
+    chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -204,6 +206,7 @@ def create_chat_receptionist_service(
         response_generation_mode=response_generation_mode,
         patient_identity_resolution=identity_resolution,
         chat_turn_understanding_records=chat_turn_understanding_records,
+        chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
     )
 
 
