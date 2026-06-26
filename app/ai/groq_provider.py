@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from time import perf_counter
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -89,6 +90,7 @@ class GroqLLMProvider:
         max_output_tokens: int,
         response_format: GroqResponseFormat,
         http_client: GroqHttpClient | None = None,
+        json_schema_builder: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -97,6 +99,9 @@ class GroqLLMProvider:
         self._default_temperature = temperature
         self._default_max_output_tokens = max_output_tokens
         self._response_format = response_format
+        self._json_schema_builder = (
+            json_schema_builder or build_receptionist_analysis_openai_json_schema
+        )
         self._http_client = http_client if http_client is not None else UrllibGroqHttpClient()
 
     def complete(self, request: LLMRequest) -> LLMResponse:
@@ -193,7 +198,7 @@ class GroqLLMProvider:
             return {"type": "json_object"}
         return {
             "type": "json_schema",
-            "json_schema": build_receptionist_analysis_openai_json_schema(),
+            "json_schema": self._json_schema_builder(),
         }
 
     def _parse_chat_completion_response(
