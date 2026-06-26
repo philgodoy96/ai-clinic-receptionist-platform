@@ -916,6 +916,265 @@ def test_unclear_message_after_specialty_selection_reprompts_for_date_or_time() 
     assert "book, cancel, or reschedule" not in result.reply.lower()
 
 
+def _dermatology_specialty_id(service: ChatReceptionistService) -> str:
+    for specialty in service.scheduling.list_specialties():
+        if specialty.name == "Dermatology":
+            return str(specialty.id)
+    raise AssertionError("Dermatology specialty not found")
+
+
+def _scheduling_with_next_week_slots() -> object:
+    from datetime import UTC, datetime
+
+    from app.domain.scheduling.enums import AvailabilitySlotStatus
+    from tests.test_scheduling_services import _create_emily_july_demo_doctors
+
+    specialties, doctors, emily = _create_emily_july_demo_doctors()
+    reed = next(doctor for doctor in doctors if doctor.full_name == "Dr. Michael Reed")
+    # Next week relative to clinic_today 2026-07-01 is Mon 2026-07-06 .. Sun 2026-07-12.
+    slots = [
+        create_availability_slot(
+            doctor_id=reed.id,
+            start_time=datetime(2026, 7, 6, 10, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=reed.id,
+            start_time=datetime(2026, 7, 6, 11, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=reed.id,
+            start_time=datetime(2026, 7, 8, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 7, 9, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 9, 10, 30, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    return create_service(
+        specialties=specialties,
+        doctors=doctors,
+        availability_slots=slots,
+    )
+
+
+def test_next_week_follow_up_with_doctor_returns_grouped_availability() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    scheduling = _scheduling_with_next_week_slots()
+    service = _create_runtime_service_with_scheduling(
+        spy,
+        scheduling,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    reed_id = _reed_doctor_id(service)
+
+    with patch.object(
+        service.scheduling,
+        "check_availability_with_status",
+        wraps=service.scheduling.check_availability_with_status,
+    ) as doctor_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="What days do you have next week?",
+                conversation_metadata={
+                    "chat_context": {
+                        "selected_doctor_id": reed_id,
+                        "selected_doctor_name": "Dr. Michael Reed",
+                        "appointment_intake_awaiting": "date_or_time_preference",
+                    },
+                },
+            ),
+        )
+
+    doctor_availability_mock.assert_called_once()
+    call_kwargs = doctor_availability_mock.call_args.kwargs
+    assert call_kwargs["start_from"].date().isoformat() == "2026-07-06"
+    assert call_kwargs["start_to"].date().isoformat() == "2026-07-13"
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "Next week" in result.reply
+    assert "Dr. Michael Reed" in result.reply
+    assert "which time works better" in result.reply.lower()
+    assert "what day or time works best" not in result.reply.lower()
+    assert reed_id not in result.reply
+    # Deterministic range follow-up: the interpreter is never consulted.
+    assert spy.calls == []
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_intake_awaiting"] == "slot_selection"
+    assert chat_context.get("offered_slots")
+    assert chat_context["availability_range_label"] == "next_week"
+
+
+def test_next_week_follow_up_with_specialty_only_uses_specialty_search() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    scheduling = _scheduling_with_next_week_slots()
+    service = _create_runtime_service_with_scheduling(
+        spy,
+        scheduling,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    dermatology_id = _dermatology_specialty_id(service)
+
+    with patch.object(
+        service.scheduling,
+        "check_availability_for_specialty",
+        wraps=service.scheduling.check_availability_for_specialty,
+    ) as specialty_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="What do you have next week?",
+                conversation_metadata={
+                    "chat_context": {
+                        "selected_specialty_id": dermatology_id,
+                        "selected_specialty_name": "Dermatology",
+                        "appointment_intake_awaiting": "date_or_time_preference",
+                    },
+                },
+            ),
+        )
+
+    specialty_availability_mock.assert_called_once()
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "Next week" in result.reply
+    assert "Dermatology" in result.reply
+    assert "which time works better" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_intake_awaiting"] == "slot_selection"
+    assert chat_context.get("offered_slots")
+
+
+def test_next_week_follow_up_with_no_openings_returns_natural_guidance() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    service = _create_runtime_service(
+        spy,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    reed_id = _reed_doctor_id(service)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="What days do you have next week?",
+            conversation_metadata={
+                "chat_context": {
+                    "selected_doctor_id": reed_id,
+                    "selected_doctor_name": "Dr. Michael Reed",
+                    "appointment_intake_awaiting": "date_or_time_preference",
+                },
+            },
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+    assert "not seeing openings" in result.reply.lower()
+    assert "next week" in result.reply.lower()
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("offered_slots") == []
+
+
+def test_range_follow_up_without_provider_asks_for_doctor_or_specialty() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    service = _create_runtime_service(
+        spy,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="What days do you have next week?",
+            conversation_metadata={
+                "chat_context": {
+                    "appointment_intake_awaiting": "date_or_time_preference",
+                },
+            },
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "doctor or specialty" in result.reply.lower()
+
+
+def test_single_day_follow_up_still_searches_specific_day_not_range() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    scheduling = _scheduling_with_next_week_slots()
+    service = _create_runtime_service_with_scheduling(
+        spy,
+        scheduling,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    reed_id = _reed_doctor_id(service)
+
+    with patch.object(
+        service.scheduling,
+        "check_availability",
+        wraps=service.scheduling.check_availability,
+    ) as check_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="What about Wednesday?",
+                conversation_metadata={
+                    "chat_context": {
+                        "selected_doctor_id": reed_id,
+                        "selected_doctor_name": "Dr. Michael Reed",
+                        "appointment_intake_awaiting": "date_or_time_preference",
+                    },
+                },
+            ),
+        )
+
+    check_availability_mock.assert_called_once()
+    assert "Next week" not in result.reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    # Bare weekday resolves against clinic today (2026-07-01 is a Wednesday).
+    assert chat_context["requested_date"] == "2026-07-01"
+    assert chat_context.get("availability_range_label") is None
+
+
+def test_slot_selection_after_range_results_creates_hold() -> None:
+    spy = SpyChatTurnUnderstandingInterpreter()
+    scheduling = _scheduling_with_next_week_slots()
+    service = _create_runtime_service_with_scheduling(
+        spy,
+        scheduling,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    reed_id = _reed_doctor_id(service)
+
+    first = service.handle_message(
+        ChatMessageInput(
+            message="What days do you have next week?",
+            conversation_metadata={
+                "chat_context": {
+                    "selected_doctor_id": reed_id,
+                    "selected_doctor_name": "Dr. Michael Reed",
+                    "appointment_intake_awaiting": "date_or_time_preference",
+                },
+            },
+        ),
+    )
+    assert first.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+
+    second = service.handle_message(
+        ChatMessageInput(
+            message="14:00",
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    assert second.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "14:00" in second.reply
+    chat_context = second.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("hold_id")
+    assert chat_context["selected_start_time"] == "2026-07-08T14:00:00+00:00"
+
+
 def test_unclear_message_after_availability_results_asks_for_slot_selection() -> None:
     service = _create_runtime_service(None)
 

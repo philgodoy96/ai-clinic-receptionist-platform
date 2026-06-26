@@ -680,6 +680,112 @@ def test_backend_does_not_select_unoffered_appointment_time() -> None:
     assert "selected_availability_slot_id" not in result.chat_context_updates
 
 
+def _unused_fallback_interpreter() -> StubChatTurnUnderstandingInterpreter:
+    return StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.FALLBACK,
+            confidence=0.2,
+            reason="unused for range follow-up",
+        ),
+    )
+
+
+def test_next_week_range_follow_up_with_doctor_searches_next_week() -> None:
+    interpreter = _unused_fallback_interpreter()
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(
+        message="What days do you have next week?",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Michael Reed",
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+
+    assert result.intent == "appointment_intake"
+    assert result.search_criteria is not None
+    assert result.search_criteria.availability_range_label == "next_week"
+    assert result.search_criteria.search_start_date == "2026-07-06"
+    assert result.search_criteria.search_end_date == "2026-07-12"
+    assert result.chat_context_updates["availability_range_label"] == "next_week"
+    assert result.chat_context_updates["requested_date"] is None
+    assert result.chat_context_updates["offered_slots"] == []
+    # The interpreter must not be consulted for a deterministic range follow-up.
+    assert interpreter.calls == []
+
+
+def test_this_week_range_follow_up_clamps_start_to_clinic_today() -> None:
+    orchestrator = _create_orchestrator(interpreter=_unused_fallback_interpreter())
+
+    result = orchestrator.handle(
+        message="Do you have anything this week?",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Michael Reed",
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+
+    assert result.intent == "appointment_intake"
+    assert result.search_criteria is not None
+    assert result.search_criteria.availability_range_label == "this_week"
+    # Clinic today is 2026-07-01 (Wednesday); start is clamped to today.
+    assert result.search_criteria.search_start_date == "2026-07-01"
+    assert result.search_criteria.search_end_date == "2026-07-05"
+
+
+def test_next_week_range_follow_up_with_specialty_only_keeps_doctor_unset() -> None:
+    orchestrator = _create_orchestrator(interpreter=_unused_fallback_interpreter())
+
+    result = orchestrator.handle(
+        message="Any availability next week?",
+        chat_context={
+            "selected_specialty_id": "spec-1",
+            "selected_specialty_name": "Dermatology",
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+
+    assert result.intent == "appointment_intake"
+    assert result.search_criteria is not None
+    assert result.search_criteria.selected_specialty_id == "spec-1"
+    assert result.search_criteria.selected_doctor_id is None
+    assert result.search_criteria.availability_range_label == "next_week"
+
+
+def test_range_follow_up_without_provider_returns_clarification() -> None:
+    orchestrator = _create_orchestrator(interpreter=_unused_fallback_interpreter())
+
+    result = orchestrator.handle(
+        message="What days do you have next week?",
+        chat_context={
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+
+    assert result.intent == "clarification"
+    assert "doctor or specialty" in (result.content or "").lower()
+    assert result.chat_context_updates == {}
+
+
+def test_single_day_follow_up_is_not_treated_as_range() -> None:
+    orchestrator = _create_orchestrator(interpreter=_unused_fallback_interpreter())
+
+    result = orchestrator.handle(
+        message="What about Wednesday?",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Michael Reed",
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+
+    assert result.intent == "appointment_intake"
+    assert "availability_range_label" not in result.chat_context_updates
+    assert result.chat_context_updates["requested_date"] == "2026-07-01"
+
+
 def test_backend_does_not_guess_when_multiple_slots_match_time() -> None:
     context = _slot_selection_context()
     context["offered_slots"] = [
