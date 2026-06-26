@@ -233,76 +233,6 @@ def get_receptionist_response_generator(
     return build_receptionist_response_generator_from_settings(settings)
 
 
-def get_chat_receptionist_service(
-    conversation_service: Annotated[
-        ConversationService,
-        Depends(get_conversation_service),
-    ],
-    scheduling_service: Annotated[
-        SchedulingService,
-        Depends(get_scheduling_service),
-    ],
-    hold_service: Annotated[
-        AppointmentHoldService,
-        Depends(get_appointment_hold_service),
-    ],
-    booking_service: Annotated[
-        AppointmentBookingService,
-        Depends(get_appointment_booking_service),
-    ],
-    llm_analysis: Annotated[
-        LLMReceptionistAnalysisService | None,
-        Depends(get_llm_receptionist_analysis_service),
-    ],
-    slot_filling: Annotated[
-        LLMChatSlotFillingService,
-        Depends(get_llm_chat_slot_filling_service),
-    ],
-    conversation_health: Annotated[
-        ConversationHealthService,
-        Depends(get_conversation_health_service),
-    ],
-    human_escalations: Annotated[
-        HumanEscalationService,
-        Depends(get_human_escalation_service),
-    ],
-    human_handoff_notifications: Annotated[
-        HumanHandoffNotificationService,
-        Depends(get_human_handoff_notification_service),
-    ],
-    date_parser: Annotated[
-        NaturalLanguageDateParser,
-        Depends(get_natural_language_date_parser),
-    ],
-    time_preference_parser: Annotated[
-        TimePreferenceParser,
-        Depends(get_time_preference_parser),
-    ],
-    response_generator: Annotated[
-        ReceptionistResponseGenerator,
-        Depends(get_receptionist_response_generator),
-    ],
-    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> ChatReceptionistService:
-    return ChatReceptionistService(
-        conversations=conversation_service,
-        scheduling=scheduling_service,
-        appointment_holds=hold_service,
-        appointment_booking=booking_service,
-        llm_analysis=llm_analysis,
-        slot_filling=slot_filling,
-        conversation_health=conversation_health,
-        human_escalations=human_escalations,
-        human_handoff_notifications=human_handoff_notifications,
-        date_parser=date_parser,
-        time_preference_parser=time_preference_parser,
-        clinic_time_service=clinic_time_service,
-        response_generator=response_generator,
-        response_generation_mode=settings.receptionist_response_mode,
-    )
-
-
 def get_email_job_dispatch_publisher() -> EmailJobDispatchPublisher:
     settings = get_settings()
 
@@ -376,6 +306,81 @@ def get_patient_identity_resolution_service(
         resolutions=RedisPatientResolutionRepository(redis_client),
         patient_intake=patient_intake,
         resolution_ttl_seconds=settings.patient_resolution_ttl_seconds,
+    )
+
+
+def get_chat_receptionist_service(
+    conversation_service: Annotated[
+        ConversationService,
+        Depends(get_conversation_service),
+    ],
+    scheduling_service: Annotated[
+        SchedulingService,
+        Depends(get_scheduling_service),
+    ],
+    hold_service: Annotated[
+        AppointmentHoldService,
+        Depends(get_appointment_hold_service),
+    ],
+    booking_service: Annotated[
+        AppointmentBookingService,
+        Depends(get_appointment_booking_service),
+    ],
+    llm_analysis: Annotated[
+        LLMReceptionistAnalysisService | None,
+        Depends(get_llm_receptionist_analysis_service),
+    ],
+    slot_filling: Annotated[
+        LLMChatSlotFillingService,
+        Depends(get_llm_chat_slot_filling_service),
+    ],
+    conversation_health: Annotated[
+        ConversationHealthService,
+        Depends(get_conversation_health_service),
+    ],
+    human_escalations: Annotated[
+        HumanEscalationService,
+        Depends(get_human_escalation_service),
+    ],
+    human_handoff_notifications: Annotated[
+        HumanHandoffNotificationService,
+        Depends(get_human_handoff_notification_service),
+    ],
+    date_parser: Annotated[
+        NaturalLanguageDateParser,
+        Depends(get_natural_language_date_parser),
+    ],
+    time_preference_parser: Annotated[
+        TimePreferenceParser,
+        Depends(get_time_preference_parser),
+    ],
+    response_generator: Annotated[
+        ReceptionistResponseGenerator,
+        Depends(get_receptionist_response_generator),
+    ],
+    clinic_time_service: Annotated[ClinicTimeService, Depends(get_clinic_time_service)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    patient_identity_resolution: Annotated[
+        PatientIdentityResolutionService,
+        Depends(get_patient_identity_resolution_service),
+    ],
+) -> ChatReceptionistService:
+    return ChatReceptionistService(
+        conversations=conversation_service,
+        scheduling=scheduling_service,
+        appointment_holds=hold_service,
+        appointment_booking=booking_service,
+        llm_analysis=llm_analysis,
+        slot_filling=slot_filling,
+        conversation_health=conversation_health,
+        human_escalations=human_escalations,
+        human_handoff_notifications=human_handoff_notifications,
+        date_parser=date_parser,
+        time_preference_parser=time_preference_parser,
+        clinic_time_service=clinic_time_service,
+        response_generator=response_generator,
+        response_generation_mode=settings.receptionist_response_mode,
+        patient_identity_resolution=patient_identity_resolution,
     )
 
 
