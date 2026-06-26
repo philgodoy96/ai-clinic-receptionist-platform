@@ -27,6 +27,18 @@ Compared to v1, v2:
 
 When evaluating Groq with `llama-3.3-70b-versatile`, use `GROQ_RESPONSE_FORMAT=json_object` unless another model supports strict schema output.
 
+## Chat Turn Understanding v1
+
+`chat-turn-understanding-v1` is the prompt/schema foundation for state-aware chat turn interpretation.
+
+- prompt name: `chat-turn-understanding`
+- schema: `ChatTurnUnderstandingResult`
+- purpose: interpret the latest user message given conversation state and expected response type
+
+This prompt is registered in `app/ai/prompt_versions.py` and used by `LLMChatTurnUnderstandingInterpreter` in tests. It is not yet wired into `ChatReceptionistService` or Groq runtime.
+
+See: [Chat Turn Understanding Architecture](chat-turn-understanding.md).
+
 ## Current Implementation
 
 The current implementation includes:
@@ -88,4 +100,4 @@ Future implementation phases may add:
 - prompt rollback strategy
 - prompt version telemetry dashboards
 
-See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md), [Chat LLM Interpretation Reliability](chat-llm-reliability.md).
+See also: [Provider-Run Evaluation Mode](provider-run-evaluation-mode.md), [Real LLM Provider Adapter Boundary](real-llm-provider-adapter.md), [LLM Evaluation Dataset](llm-evaluation-dataset.md), [Structured-Output-Assisted Slot Filling](structured-output-slot-filling.md), [Chat Turn Understanding Architecture](chat-turn-understanding.md), [LLM Reliability Orchestration](llm-reliability-orchestration.md), [Chat LLM Interpretation Reliability](chat-llm-reliability.md).
