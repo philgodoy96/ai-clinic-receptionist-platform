@@ -10,6 +10,7 @@ from uuid import UUID
 
 from app.ai.receptionist_output import ReceptionistLLMIntent
 from app.ai.reliability import LLMFailureReason
+from app.core.request_context import get_correlation_id, get_request_id
 from app.domain.conversations.enums import (
     ConversationChannel,
     ConversationMessageRole,
@@ -58,6 +59,7 @@ from app.services.chat_confirmation import (
     normalize_email_address,
     normalize_patient_display_name,
 )
+from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
 from app.services.clinic_time import ClinicTimeService
 from app.services.conversation_health import (
     ConversationHealthResult,
@@ -494,6 +496,7 @@ class ChatReceptionistService:
             ReceptionistResponseMode.DETERMINISTIC
         ),
         patient_identity_resolution: PatientIdentityResolutionService,
+        chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -511,6 +514,7 @@ class ChatReceptionistService:
         self.response_generator = response_generator or DeterministicReceptionistResponseGenerator()
         self.response_generation_mode = response_generation_mode
         self.patient_identity_resolution = patient_identity_resolution
+        self.chat_turn_understanding_records = chat_turn_understanding_records
         self._booking_identity = ChatBookingIdentityOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
         )
@@ -686,6 +690,17 @@ class ChatReceptionistService:
                 message_metadata=assistant_metadata,
             ),
         )
+
+        if self.chat_turn_understanding_records is not None:
+            self.chat_turn_understanding_records.record_best_effort(
+                conversation_id=conversation.id,
+                user_message_id=user_message.id,
+                assistant_message_id=assistant_message.id,
+                request_id=get_request_id(),
+                correlation_id=get_correlation_id(),
+                analysis_result=llm_analysis_result,
+                slot_filling_result=slot_filling_result,
+            )
 
         booking_confirmed = reply.booking_confirmed
         appointment_id = UUID(reply.appointment_id) if reply.appointment_id is not None else None
