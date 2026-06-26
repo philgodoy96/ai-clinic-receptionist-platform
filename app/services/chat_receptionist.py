@@ -1130,6 +1130,9 @@ class ChatReceptionistService:
                 ChatReceptionistReply(
                     intent=ChatReceptionistIntent.LIST_DOCTORS,
                     content=self._format_doctors(doctors),
+                    chat_context_updates={
+                        "offered_doctors": self._serialize_offered_doctors(doctors),
+                    },
                 ),
             )
 
@@ -1157,7 +1160,15 @@ class ChatReceptionistService:
                     ),
                     matched_specialty_id=matched_specialty.id,
                     matched_specialty_name=matched_specialty.name,
-                    chat_context_updates=context_updates,
+                    chat_context_updates={
+                        **context_updates,
+                        "selected_specialty_id": str(matched_specialty.id),
+                        "selected_specialty_name": matched_specialty.name,
+                        "offered_doctors": self._serialize_offered_doctors(
+                            doctors,
+                            specialty=matched_specialty,
+                        ),
+                    },
                 ),
             )
 
@@ -1181,6 +1192,10 @@ class ChatReceptionistService:
                 )
             )
             or completing_availability
+            or self._should_enter_availability_after_intake(
+                context_updates=context_updates,
+                merged_context=merged_context,
+            )
         ):
             return finish(
                 self._handle_availability_flow(
@@ -1312,7 +1327,14 @@ class ChatReceptionistService:
 
         return context_updates
 
-    def _format_availability_missing_date_prompt(self, target_name: str) -> str:
+    def _format_availability_missing_date_prompt(
+        self,
+        target_name: str,
+        *,
+        doctor_just_selected: bool = False,
+    ) -> str:
+        if doctor_just_selected and target_name:
+            return f"Great. What day works best for {target_name}?"
         if target_name:
             return f"What day works best for {target_name}?"
         return "What day works best for your appointment?"
@@ -1980,9 +2002,16 @@ class ChatReceptionistService:
 
         if not requested_date:
             target_name = self._availability_target_name(merged_context)
+            doctor_just_selected = bool(
+                context_updates.get("selected_doctor_id")
+                and merged_context.get("offered_doctors"),
+            )
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_MISSING_DATE,
-                content=self._format_availability_missing_date_prompt(target_name),
+                content=self._format_availability_missing_date_prompt(
+                    target_name,
+                    doctor_just_selected=doctor_just_selected,
+                ),
                 chat_context_updates=context_updates,
             )
 
@@ -2370,6 +2399,40 @@ class ChatReceptionistService:
             limit=_MAX_OFFERED_SLOTS,
         )
 
+    def _serialize_offered_doctors(
+        self,
+        doctors: Sequence[Doctor],
+        *,
+        specialty: Specialty | None = None,
+    ) -> list[dict[str, Any]]:
+        specialty_names_by_id = {
+            str(item.id): item.name for item in self.scheduling.list_specialties()
+        }
+        offered: list[dict[str, Any]] = []
+        for index, doctor in enumerate(doctors, start=1):
+            specialty_id = (
+                str(specialty.id)
+                if specialty is not None
+                else (
+                    str(doctor.specialty_id) if doctor.specialty_id is not None else None
+                )
+            )
+            specialty_name = (
+                specialty.name
+                if specialty is not None
+                else specialty_names_by_id.get(specialty_id or "", None)
+            )
+            offered.append(
+                {
+                    "reference": f"doctor-{index}",
+                    "doctor_id": str(doctor.id),
+                    "doctor_name": doctor.full_name,
+                    "specialty_id": specialty_id,
+                    "specialty_name": specialty_name,
+                },
+            )
+        return offered
+
     def _serialize_offered_slots(
         self,
         slots: Sequence[AvailabilitySlot],
@@ -2709,6 +2772,24 @@ class ChatReceptionistService:
             merged_context.get("selected_doctor_id")
             or merged_context.get("selected_specialty_id")
             or merged_context.get("requested_date"),
+        )
+
+    def _should_enter_availability_after_intake(
+        self,
+        *,
+        context_updates: dict[str, Any],
+        merged_context: dict[str, Any],
+    ) -> bool:
+        if merged_context.get("requested_date"):
+            return False
+
+        provider_fields = {"selected_doctor_id", "selected_specialty_id"}
+        if not provider_fields & context_updates.keys():
+            return False
+
+        return bool(
+            merged_context.get("selected_doctor_id")
+            or merged_context.get("selected_specialty_id"),
         )
 
     def _should_complete_availability_from_context(

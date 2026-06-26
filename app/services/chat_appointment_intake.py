@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from app.domain.chat_turn_understanding import (
     ChatTurnIntent,
@@ -228,11 +228,19 @@ class ChatAppointmentIntakeOrchestrator:
         if offered_slots:
             return ConversationState.OFFERING_SLOTS, ExpectedResponseType.SLOT_SELECTION
 
+        offered_doctors = chat_context.get("offered_doctors")
+        has_offered_doctors = isinstance(offered_doctors, list) and bool(offered_doctors)
+        has_doctor = bool(chat_context.get("selected_doctor_id"))
         has_provider = bool(
             chat_context.get("selected_specialty_id") or chat_context.get("selected_doctor_id"),
         )
         has_date = bool(chat_context.get("requested_date"))
 
+        if has_offered_doctors and not has_doctor:
+            return (
+                ConversationState.COLLECTING_APPOINTMENT_REQUEST,
+                ExpectedResponseType.SPECIALTY_OR_DOCTOR,
+            )
         if not has_provider:
             return (
                 ConversationState.COLLECTING_APPOINTMENT_REQUEST,
@@ -365,6 +373,7 @@ class ChatAppointmentIntakeOrchestrator:
             doctor_name_raw=extracted.doctor_name_raw,
             normalized_message=normalized_message,
             specialty_id=specialty_result.specialty_id if specialty_result else None,
+            chat_context=chat_context,
         )
         if doctor_result.clarification is not None:
             return ChatAppointmentIntakeResult(
@@ -531,15 +540,55 @@ class ChatAppointmentIntakeOrchestrator:
         doctor_name_raw: str | None,
         normalized_message: str,
         specialty_id: str | None,
+        chat_context: dict[str, Any],
     ) -> _DoctorValidation:
         del specialty_id
-        doctors = list(self.scheduling.list_doctors())
 
         search_terms: list[str] = []
         if extracted_doctor_name:
             search_terms.append(extracted_doctor_name)
         if doctor_name_raw:
             search_terms.append(doctor_name_raw)
+
+        offered_doctors_raw = chat_context.get("offered_doctors")
+        has_offered_doctors = isinstance(offered_doctors_raw, list) and bool(offered_doctors_raw)
+        if has_offered_doctors:
+            offered_doctors = cast(list[dict[str, Any]], offered_doctors_raw)
+            search_texts = search_terms or [normalized_message]
+            offered_matches = self._find_matching_offered_doctors(
+                search_texts,
+                offered_doctors,
+            )
+            if offered_matches:
+                if len(offered_matches) > 1:
+                    names = self._join_names(
+                        [
+                            str(item["doctor_name"])
+                            for item in offered_matches
+                            if isinstance(item.get("doctor_name"), str)
+                        ],
+                    )
+                    return _DoctorValidation(
+                        clarification=f"Which doctor did you mean: {names}?",
+                    )
+                item = offered_matches[0]
+                doctor_id = item.get("doctor_id")
+                doctor_name = item.get("doctor_name")
+                if isinstance(doctor_id, str) and isinstance(doctor_name, str):
+                    return _DoctorValidation(
+                        doctor_id=doctor_id,
+                        doctor_name=doctor_name,
+                    )
+            if search_terms or self._contains_doctor_reference(normalized_message):
+                return _DoctorValidation(
+                    clarification=(
+                        "I couldn't find that doctor among the options I shared. "
+                        "Could you pick one of the doctors I listed?"
+                    ),
+                )
+            return _DoctorValidation()
+
+        doctors = list(self.scheduling.list_doctors())
 
         matches: list[Doctor] = []
         for term in search_terms:
@@ -773,6 +822,38 @@ class ChatAppointmentIntakeOrchestrator:
             name_parts = re.sub(r"^dr\.?\s+", "", doctor.full_name.lower()).split()
             if any(len(part) >= 3 and part in normalized for part in name_parts):
                 matches.append(doctor)
+
+        return matches
+
+    def _find_matching_offered_doctors(
+        self,
+        search_texts: Sequence[str],
+        offered_doctors: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for search_text in search_texts:
+            normalized = search_text.replace(".", "").lower().strip()
+            if not normalized:
+                continue
+            for item in offered_doctors:
+                if not isinstance(item, dict):
+                    continue
+                doctor_id = item.get("doctor_id")
+                doctor_name = item.get("doctor_name")
+                if not isinstance(doctor_id, str) or not isinstance(doctor_name, str):
+                    continue
+                if doctor_id in seen_ids:
+                    continue
+                if self._doctor_name_in_message(normalized, doctor_name):
+                    matches.append(item)
+                    seen_ids.add(doctor_id)
+                    continue
+                name_parts = re.sub(r"^dr\.?\s+", "", doctor_name.lower()).split()
+                if any(len(part) >= 3 and part in normalized for part in name_parts):
+                    matches.append(item)
+                    seen_ids.add(doctor_id)
 
         return matches
 
