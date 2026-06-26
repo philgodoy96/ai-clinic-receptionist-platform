@@ -4,6 +4,7 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any, cast
 
 from app.domain.chat_turn_understanding import (
@@ -43,6 +44,8 @@ _SOONEST_MARKERS = (
     "asap",
     "first available",
 )
+
+EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS = 14
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,13 +730,28 @@ class ChatAppointmentIntakeOrchestrator:
     ) -> AppointmentSearchCriteria:
         merged = {**chat_context, **context_updates}
         search_start_date: str | None = None
+        search_end_date: str | None = None
 
-        if soonest_requested and self.clinic_time_service is not None:
-            search_start_date = self.clinic_time_service.clinic_today().isoformat()
-        elif soonest_requested:
-            from app.services.date_parsing import SystemClock
+        has_provider = bool(
+            _as_str(merged.get("selected_specialty_id"))
+            or _as_str(merged.get("selected_doctor_id")),
+        )
+        has_explicit_date = bool(_as_str(merged.get("requested_date")))
+        should_search_earliest = soonest_requested or (has_provider and not has_explicit_date)
 
-            search_start_date = SystemClock().today().isoformat()
+        if should_search_earliest:
+            clinic_today: date | None = None
+            if self.clinic_time_service is not None:
+                clinic_today = self.clinic_time_service.clinic_today()
+            else:
+                from app.services.date_parsing import SystemClock
+
+                clinic_today = SystemClock().today()
+
+            search_start_date = clinic_today.isoformat()
+            search_end_date = (
+                clinic_today + timedelta(days=EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS)
+            ).isoformat()
 
         requested_window = merged.get("requested_time_window")
         window: dict[str, str] | None = None
@@ -753,6 +771,7 @@ class ChatAppointmentIntakeOrchestrator:
             requested_time_window=window,
             soonest_requested=soonest_requested,
             search_start_date=search_start_date,
+            search_end_date=search_end_date,
         )
 
     def _context_conflict(

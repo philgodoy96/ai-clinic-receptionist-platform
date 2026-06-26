@@ -20,13 +20,16 @@ from app.services.fake_chat_turn_understanding_interpreter import (
 )
 from app.services.time_preferences import TimePreferenceParser
 from tests.chat_booking_flow_support import conversation_with_active_hold, send_chat_messages
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.test_chat_receptionist_service import (
     _create_hold_service,
     create_chat_receptionist_service,
 )
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
+    create_availability_slot,
     create_demo_scheduling_service_with_emily_july_availability,
+    create_service,
 )
 
 
@@ -63,6 +66,7 @@ def _create_runtime_service(
     interpreter: object | None,
     *,
     repository: FakeConversationRepository | None = None,
+    clinic_time_service: object | None = None,
 ) -> ChatReceptionistService:
     from app.services.conversations import ConversationService
 
@@ -76,6 +80,7 @@ def _create_runtime_service(
         hold_service=_create_hold_service(),
         date_parser=date_parser,
         time_preference_parser=TimePreferenceParser(),
+        clinic_time_service=clinic_time_service,  # type: ignore[arg-type]
         chat_turn_understanding_interpreter=interpreter,  # type: ignore[arg-type]
     )
 
@@ -129,7 +134,7 @@ def test_ctu_noop_preserves_existing_deterministic_behavior() -> None:
     assert chat_context["requested_date"] == "2026-07-06"
 
 
-def test_specialty_only_message_applies_context_and_avoids_generic_fallback() -> None:
+def test_specialty_only_message_applies_context_and_returns_earliest_availability() -> None:
     interpreter = StubChatTurnUnderstandingInterpreter(
         ChatTurnUnderstandingResult(
             intent=ChatTurnIntent.APPOINTMENT_REQUEST,
@@ -140,17 +145,29 @@ def test_specialty_only_message_applies_context_and_avoids_generic_fallback() ->
             ),
         ),
     )
-    service = _create_runtime_service(interpreter)
-
-    result = service.handle_message(
-        ChatMessageInput(message="I'd like to schedule with a dermatologist"),
+    service = _create_runtime_service(
+        interpreter,
+        clinic_time_service=make_test_clinic_time_service(),
     )
+    scheduling = service.scheduling
 
-    assert result.intent == ChatReceptionistIntent.AVAILABILITY_MISSING_DATE
+    with patch.object(
+        scheduling,
+        "check_availability_with_status",
+        wraps=scheduling.check_availability_with_status,
+    ) as doctor_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="I'd like to schedule with a dermatologist"),
+        )
+
+    doctor_availability_mock.assert_called_once()
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
     assert "YYYY-MM-DD" not in result.reply
-    assert "what day works best" in result.reply.lower()
+    assert "Dr. Emily Carter" in result.reply
+    assert "which time works better" in result.reply.lower()
     chat_context = result.conversation.conversation_metadata["chat_context"]
     assert chat_context["selected_specialty_name"] == "Dermatology"
+    assert chat_context.get("offered_slots")
 
 
 def test_cardiology_next_monday_applies_context_and_reaches_availability() -> None:
@@ -387,8 +404,8 @@ def test_offered_doctor_selection_sets_doctor_and_asks_for_date() -> None:
 
     with patch.object(
         scheduling,
-        "check_availability",
-        wraps=scheduling.check_availability,
+        "check_availability_with_status",
+        wraps=scheduling.check_availability_with_status,
     ) as check_availability_mock:
         second = service.handle_message(
             ChatMessageInput(
@@ -397,10 +414,10 @@ def test_offered_doctor_selection_sets_doctor_and_asks_for_date() -> None:
             ),
         )
 
-    check_availability_mock.assert_not_called()
-    assert second.intent == ChatReceptionistIntent.AVAILABILITY_MISSING_DATE
-    assert "what day works best" in second.reply.lower()
-    assert "Dr. Michael Reed" in second.reply
+    check_availability_mock.assert_called_once()
+    assert second.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+    assert "not seeing openings" in second.reply.lower()
+    assert "what day works best" not in second.reply.lower()
     assert "YYYY-MM-DD" not in second.reply
     assert "specialty or doctor" not in second.reply.lower()
     chat_context = second.conversation.conversation_metadata["chat_context"]
@@ -438,8 +455,8 @@ def test_dermatology_offered_doctor_selection_is_contextual() -> None:
 
     with patch.object(
         scheduling,
-        "check_availability",
-        wraps=scheduling.check_availability,
+        "check_availability_with_status",
+        wraps=scheduling.check_availability_with_status,
     ) as check_availability_mock:
         second = service.handle_message(
             ChatMessageInput(
@@ -448,12 +465,13 @@ def test_dermatology_offered_doctor_selection_is_contextual() -> None:
             ),
         )
 
-    check_availability_mock.assert_not_called()
-    assert second.intent == ChatReceptionistIntent.AVAILABILITY_MISSING_DATE
+    check_availability_mock.assert_called_once()
+    assert second.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
     assert "Dr. Emily Carter" in second.reply
-    assert "what day works best" in second.reply.lower()
+    assert "which time works better" in second.reply.lower()
     chat_context = second.conversation.conversation_metadata["chat_context"]
     assert chat_context["selected_doctor_name"] == "Dr. Emily Carter"
+    assert chat_context.get("offered_slots")
 
 
 def test_offered_doctor_selection_does_not_expose_doctor_ids_in_reply() -> None:
@@ -573,3 +591,157 @@ def test_slot_selection_with_offered_slots_not_intercepted_by_intake() -> None:
     assert hold_result.intent == ChatReceptionistIntent.HOLD_CREATED
     assert interpreter.calls
     assert hold_result.conversation.conversation_metadata["chat_context"].get("hold_id")
+
+
+def _scheduling_with_reed_july_slots() -> object:
+    from datetime import UTC, datetime
+
+    from app.domain.scheduling.enums import AvailabilitySlotStatus
+
+    scheduling = create_demo_scheduling_service_with_emily_july_availability()
+    reed = next(
+        doctor
+        for doctor in scheduling.list_doctors()
+        if doctor.full_name == "Dr. Michael Reed"
+    )
+    reed_slots = [
+        create_availability_slot(
+            doctor_id=reed.id,
+            start_time=datetime(2026, 7, 3, 10, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=reed.id,
+            start_time=datetime(2026, 7, 3, 11, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    existing_slots = list(scheduling.availability_slots.slots)  # type: ignore[attr-defined]
+    return create_service(
+        specialties=list(scheduling.specialties.list_active()),
+        doctors=list(scheduling.doctors.list_active()),
+        availability_slots=[*existing_slots, *reed_slots],
+    )
+
+
+def _create_runtime_service_with_scheduling(
+    interpreter: object | None,
+    scheduling: object,
+    *,
+    clinic_time_service: object | None = None,
+) -> ChatReceptionistService:
+    from app.services.conversations import ConversationService
+
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    date_parser = NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1)))
+    return create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,  # type: ignore[arg-type]
+        hold_service=_create_hold_service(),
+        date_parser=date_parser,
+        time_preference_parser=TimePreferenceParser(),
+        clinic_time_service=clinic_time_service,  # type: ignore[arg-type]
+        chat_turn_understanding_interpreter=interpreter,  # type: ignore[arg-type]
+    )
+
+
+def test_soonest_cardiology_searches_from_clinic_today() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+            confidence=0.9,
+            reason="soonest cardiology appointment request",
+            extracted_fields=ExtractedTurnFields(
+                specialty_raw="cardiology",
+            ),
+        ),
+    )
+    scheduling = _scheduling_with_reed_july_slots()
+    service = _create_runtime_service_with_scheduling(
+        interpreter,
+        scheduling,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+
+    with patch.object(
+        service.scheduling,
+        "check_availability_with_status",
+        wraps=service.scheduling.check_availability_with_status,
+    ) as doctor_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="soonest cardiology appointment"),
+        )
+
+    doctor_availability_mock.assert_called_once()
+    call_kwargs = doctor_availability_mock.call_args.kwargs
+    assert call_kwargs["start_from"].date().isoformat() == "2026-07-01"
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "Dr. Michael Reed" in result.reply
+    assert "which time works better" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("soonest_requested") is True
+    assert chat_context.get("offered_slots")
+
+
+def test_dr_emily_soonest_searches_doctor_availability_from_clinic_today() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+            confidence=0.9,
+            reason="soonest doctor request",
+            extracted_fields=ExtractedTurnFields(
+                doctor_name_raw="Dr. Emily",
+            ),
+        ),
+    )
+    service = _create_runtime_service(
+        interpreter,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    scheduling = service.scheduling
+
+    with patch.object(
+        scheduling,
+        "check_availability_with_status",
+        wraps=scheduling.check_availability_with_status,
+    ) as doctor_availability_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="I want Dr. Emily soonest available"),
+        )
+
+    doctor_availability_mock.assert_called_once()
+    call_kwargs = doctor_availability_mock.call_args.kwargs
+    assert call_kwargs["start_from"].date().isoformat() == "2026-07-01"
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "Dr. Emily Carter" in result.reply
+    assert "which time works better" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("soonest_requested") is True
+    assert chat_context.get("offered_slots")
+
+
+def test_earliest_search_with_no_availability_returns_natural_guidance() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+            confidence=0.9,
+            reason="soonest cardiology appointment request",
+            extracted_fields=ExtractedTurnFields(
+                specialty_raw="cardiology",
+            ),
+        ),
+    )
+    service = _create_runtime_service(
+        interpreter,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="soonest cardiology appointment"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+    assert "not seeing openings" in result.reply.lower()
+    assert "YYYY-MM-DD" not in result.reply
+    assert result.conversation.conversation_metadata["chat_context"].get("offered_slots") == []

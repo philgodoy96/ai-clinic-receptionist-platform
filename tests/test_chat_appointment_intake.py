@@ -368,7 +368,35 @@ def test_soonest_cardiology_marks_soonest_requested() -> None:
     assert result.search_criteria is not None
     assert result.search_criteria.soonest_requested is True
     assert result.search_criteria.search_start_date == "2026-07-01"
+    assert result.search_criteria.search_end_date == "2026-07-15"
     assert result.chat_context_updates["selected_specialty_name"] == "Cardiology"
+
+
+def test_specialty_without_date_sets_earliest_search_window() -> None:
+    scheduling = create_demo_scheduling_service()
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.APPOINTMENT_REQUEST,
+            confidence=0.9,
+            reason="specialty request",
+            extracted_fields=ExtractedTurnFields(
+                specialty_raw="dermatology",
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter, scheduling=scheduling)
+
+    result = orchestrator.handle(
+        message="I'd like to schedule with a dermatologist",
+        chat_context={},
+    )
+
+    assert result.intent == "appointment_intake"
+    assert result.search_criteria is not None
+    assert result.search_criteria.soonest_requested is False
+    assert result.search_criteria.search_start_date == "2026-07-01"
+    assert result.search_criteria.search_end_date == "2026-07-15"
+    assert result.search_criteria.requested_date is None
 
 
 def test_existing_conflicting_doctor_is_not_overwritten_silently() -> None:
