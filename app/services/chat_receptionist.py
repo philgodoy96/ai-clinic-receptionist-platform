@@ -52,7 +52,7 @@ from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
 from app.services.chat_appointment_cancellation import (
-    _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+    _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
     _CANCELLATION_CONFIRMATION_REPROMPT,
     _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
@@ -412,7 +412,7 @@ def _resolve_contextual_fallback_reply(
     if _is_awaiting_cancellation_appointment_selection(chat_context):
         return (
             ChatReceptionistIntent.CANCEL_REQUEST,
-            _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+            _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
         )
 
     if _is_awaiting_cancellation_confirmation(chat_context):
@@ -1852,7 +1852,10 @@ class ChatReceptionistService:
             return self._cancellation_flow_result_to_reply(flow)
 
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION:
-            flow = self._appointment_cancellation.reprompt_for_appointment_selection()
+            flow = self._appointment_cancellation.handle_appointment_selection(
+                message=message,
+                chat_context=chat_context,
+            )
             return self._cancellation_flow_result_to_reply(flow)
 
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION:

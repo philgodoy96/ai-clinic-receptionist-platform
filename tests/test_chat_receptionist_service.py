@@ -22,18 +22,19 @@ from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
 )
-from app.services.chat_booking_identity import ChatBookingIdentityStep
 from app.services.chat_appointment_cancellation import (
+    APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
+from app.services.chat_booking_identity import ChatBookingIdentityStep
 from app.services.chat_receptionist import (
+    _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
     ChatMessageInput,
     ChatReceptionistIntent,
     ChatReceptionistReply,
     ChatReceptionistService,
     DeterministicChatResponder,
-    _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
     _build_contextual_fallback_reply,
     _resolve_contextual_fallback_reply,
 )
@@ -2217,6 +2218,22 @@ def test_resolve_contextual_fallback_for_cancellation_identity_intake() -> None:
     assert intent == ChatReceptionistIntent.CANCEL_REQUEST
     assert "full name" in content.lower()
     assert "date of birth" in content.lower()
+
+
+def test_resolve_contextual_fallback_for_cancellation_appointment_selection() -> None:
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+            ),
+        },
+    )
+
+    assert resolved is not None
+    intent, content = resolved
+    assert intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "Please choose one of the appointments I listed." in content
 
 
 def test_reschedule_routing_unchanged_after_cancellation_foundation(
