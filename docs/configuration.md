@@ -313,17 +313,42 @@ Controls whether chat booking identity intake uses the structured turn understan
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CHAT_TURN_UNDERSTANDING_INTERPRETER` | `disabled` | `disabled` preserves deterministic legacy parsing for patient identity. `fake` enables the deterministic fake interpreter for patient identity intake only. Groq/live LLM is not wired through this setting yet. |
+| `CHAT_TURN_UNDERSTANDING_INTERPRETER` | `disabled` | Interpreter selection for patient identity intake only: `disabled`, `fake`, or `groq` |
+
+Supported values:
+
+- `disabled` — default; preserves deterministic legacy parsing for patient identity
+- `fake` — deterministic local/demo interpreter with no provider calls
+- `groq` — real provider-backed interpreter for controlled local testing
+
+When `CHAT_TURN_UNDERSTANDING_INTERPRETER=groq`, these settings are required independently of `LLM_PRIMARY_PROVIDER` / `LLM_PROVIDER`:
+
+- `GROQ_API_KEY`
+- `GROQ_MODEL`
+
+Optional Groq settings reused by chat turn understanding:
+
+- `GROQ_BASE_URL`
+- `GROQ_REQUEST_TIMEOUT_SECONDS`
+- `GROQ_MAX_OUTPUT_TOKENS`
+- `GROQ_TEMPERATURE`
+- `GROQ_RESPONSE_FORMAT`
 
 Recommended:
 
 - **Production-like / safe default:** `disabled`
 - **Local demo / natural-language identity testing:** `fake`
+- **Controlled local Groq testing:** `groq` with credentials configured locally
 
 ```env
 CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled
 # CHAT_TURN_UNDERSTANDING_INTERPRETER=fake
+# CHAT_TURN_UNDERSTANDING_INTERPRETER=groq
+# GROQ_API_KEY=gsk_...
+# GROQ_MODEL=llama-3.3-70b-versatile
 ```
+
+Do not expose public Groq-backed chat turn understanding without authentication, rate limits, and cost controls.
 
 This setting does not change slot selection, booking confirmation, cancellation, rescheduling, or persistence behavior.
 
