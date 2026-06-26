@@ -27,6 +27,9 @@ from app.repositories.sqlalchemy.appointments import (
     SQLAlchemyAppointmentRescheduleAttemptRepository,
 )
 from app.repositories.sqlalchemy.audit_logs import SQLAlchemyAuditLogRepository
+from app.repositories.sqlalchemy.chat_turn_understandings import (
+    SQLAlchemyChatTurnUnderstandingRepository,
+)
 from app.repositories.sqlalchemy.conversations import SQLAlchemyConversationRepository
 from app.repositories.sqlalchemy.email_jobs import SQLAlchemyEmailJobRepository
 from app.repositories.sqlalchemy.human_escalations import SQLAlchemyHumanEscalationRepository
@@ -47,6 +50,7 @@ from app.services.appointment_holds import AppointmentHoldService
 from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
 from app.services.chat_receptionist import ChatReceptionistService
+from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
 from app.services.clinic_time import ClinicTimeService
 from app.services.clock import SystemClock
 from app.services.conversation_health import ConversationHealthService
@@ -309,6 +313,14 @@ def get_patient_identity_resolution_service(
     )
 
 
+def get_chat_turn_understanding_record_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> ChatTurnUnderstandingRecordService:
+    return ChatTurnUnderstandingRecordService(
+        repository=SQLAlchemyChatTurnUnderstandingRepository(db),
+    )
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -364,6 +376,10 @@ def get_chat_receptionist_service(
         PatientIdentityResolutionService,
         Depends(get_patient_identity_resolution_service),
     ],
+    chat_turn_understanding_records: Annotated[
+        ChatTurnUnderstandingRecordService,
+        Depends(get_chat_turn_understanding_record_service),
+    ],
 ) -> ChatReceptionistService:
     return ChatReceptionistService(
         conversations=conversation_service,
@@ -381,6 +397,7 @@ def get_chat_receptionist_service(
         response_generator=response_generator,
         response_generation_mode=settings.receptionist_response_mode,
         patient_identity_resolution=patient_identity_resolution,
+        chat_turn_understanding_records=chat_turn_understanding_records,
     )
 
 
