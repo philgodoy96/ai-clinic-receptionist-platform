@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.ai.llm_provider import GroqResponseFormat, LLMProviderName
+from app.domain.chat_turn_understanding import ChatTurnUnderstandingInterpreterProvider
 from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.domain.voice_patient_intake import VoicePatientIntakeMode
 
@@ -268,6 +269,10 @@ class Settings(BaseSettings):
     voice_patient_intake_mode: VoicePatientIntakeMode = Field(
         default=VoicePatientIntakeMode.LOOKUP_ONLY,
         alias="VOICE_PATIENT_INTAKE_MODE",
+    )
+    chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreterProvider = Field(
+        default=ChatTurnUnderstandingInterpreterProvider.DISABLED,
+        alias="CHAT_TURN_UNDERSTANDING_INTERPRETER",
     )
 
     model_config = SettingsConfigDict(
