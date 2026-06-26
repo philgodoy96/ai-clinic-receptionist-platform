@@ -1,6 +1,6 @@
 # Chat Appointment Intake Manual Testing
 
-Manual test guide for Chat Turn Understanding (CTU) appointment intake.
+Manual test guide for Chat Turn Understanding (CTU) appointment intake on branch `feat/chat-turn-understanding-appointment-intake`.
 
 Architecture and behavior: [Chat Turn Understanding Architecture](../architecture/chat-turn-understanding.md).
 
@@ -22,7 +22,7 @@ Configuration: [Chat turn understanding](../configuration.md).
    python -m app.scripts.generate_demo_availability
    ```
 
-3. Choose an interpreter mode in `.env` (see sections below).
+3. Choose an interpreter mode in `.env` (see [Interpreter modes](#interpreter-modes)).
 
 4. Start the API:
 
@@ -45,14 +45,62 @@ Configuration: [Chat turn understanding](../configuration.md).
 The LLM understands. The backend validates and decides. Domain services execute.
 ```
 
-The interpreter extracts candidate meaning. The backend validates specialty, doctor, date, time, and soonest intent. Scheduling services decide availability. The LLM never books, holds, cancels, or reschedules directly.
+- **CTU** extracts candidate appointment meaning (specialty, doctor, date, time window, soonest intent, slot reference).
+- **Backend** validates specialty, doctor, date, time, offered slot reference, and soonest intent against catalogs and parsers.
+- **Scheduling services** decide actual availability and return candidate slots.
+- **Hold and booking** remain controlled by existing backend flows.
+- **No appointment is booked** without explicit final confirmation after identity collection.
+
+The interpreter never books, holds, cancels, or reschedules directly.
+
+## Appointment task frame
+
+During active scheduling, `chat_context.appointment_intake_awaiting` records what the assistant is waiting for:
+
+| Value | When set | User should provide |
+| --- | --- | --- |
+| `date_or_time_preference` | Provider selected but no date, or no slots found | A day, weekday, or time-of-day preference |
+| `slot_selection` | Availability returned offered slots | One of the offered times |
+
+This prevents generic fallback during scheduling and enables contextual follow-ups such as `What about Wednesday?` or `afternoon` while preserving `selected_doctor_id` / `selected_specialty_id`.
+
+## Offered doctors and offered slots
+
+- **`offered_doctors`** — stored when the assistant lists doctors for a specialty. Later messages like `It can be Dr. Reed` resolve against this list only.
+- **`offered_slots`** — stored after availability results. Later messages like `3PM`, `15`, `15:00`, or `second one` resolve against offered slots only.
+- **IDs are never exposed** — replies must not contain doctor IDs, slot IDs, hold IDs, or raw ISO timestamps.
+
+## Time normalization
+
+Supported user clock-time formats (normalized to `HH:MM` before slot matching):
+
+| Input | Normalized |
+| --- | --- |
+| `3PM` / `3 PM` | `15:00` |
+| `2:30 PM` | `14:30` |
+| `11am` | `11:00` |
+| `15` | `15:00` (only when slot context makes bare hour 13–23 unambiguous) |
+| `15:00` | `15:00` |
+
+CTU should return normalized times in `extracted_fields.appointment_time`. The backend still validates against actually offered slots and must not hold or book an unoffered time.
+
+## State-aware fallback prompts
+
+Generic fallback is used only when there is no active task context. Otherwise reprompts are contextual:
+
+| Context | Expected reprompt |
+| --- | --- |
+| Waiting for date/time (`date_or_time_preference`) | Ask what day or time to check |
+| Waiting for slot selection (`slot_selection` or `offered_slots` present) | Ask user to choose one of the offered times |
+| Booking identity step active | Ask for the missing identity field |
+| Awaiting final booking confirmation | Ask for explicit confirmation again |
 
 ## Interpreter modes
 
 | Mode | Use case |
 | --- | --- |
-| `disabled` | Baseline — preserves deterministic fallback behavior without CTU appointment intake |
-| `fake` | Reproducible local/demo testing without provider calls |
+| `disabled` | Baseline — deterministic fallback without CTU appointment intake |
+| `fake` | Reproducible local/manual testing without provider calls (**recommended**) |
 | `groq` | Controlled local testing with a real Groq model and structured JSON output |
 
 ### Fake mode
@@ -72,77 +120,76 @@ GROQ_MODEL=llama-3.3-70b-versatile
 GROQ_RESPONSE_FORMAT=json_schema
 ```
 
-Use only for controlled local testing. Do not expose public Groq-powered demos without authentication, rate limits, and cost controls.
+Use only for controlled local testing.
 
-## Shared scenario checklist
+**Warning:** Do not expose public Groq-powered demos without authentication, rate limits, and cost controls.
 
-Run these scenarios in both `fake` and `groq` modes when validating a change.
-
-For each message, confirm:
-
-- the assistant reply is conversational and does **not** ask for `YYYY-MM-DD`
-- replies do **not** expose doctor IDs, slot IDs, hold IDs, backend internals, or raw timestamps
-- `offered_slots` appears in conversation metadata after successful availability lookup
-- no `appointment_id` or `booking_confirmed: true` until the full hold → identity → confirmation flow completes
-
-| Step | Message | Expected behavior |
-| --- | --- | --- |
-| 1 | `I'd like to schedule with a dermatologist` | Specialty resolved; earliest availability search runs; offered times returned or natural no-slots guidance |
-| 2 | `soonest cardiology appointment` | Cardiology selected; soonest search from clinic today; availability results or natural no-slots guidance |
-| 3 | `cardiology next Monday` | Specialty + natural date applied; availability lookup for that date |
-| 4 | `Dr. Reed next Monday` | Doctor + natural date applied; availability lookup |
-| 5a | `cardiology` | Doctor list for cardiology; `offered_doctors` stored in context |
-| 5b | `It can be Dr. Reed` | `selected_doctor_id` / `selected_doctor_name` updated from offered doctors; availability proceeds without re-asking for specialty |
-
-### Additional examples worth spot-checking
-
-| Message | Expected behavior |
-| --- | --- |
-| `I want Dr. Emily soonest available` | Doctor + soonest intent; earliest doctor availability search |
-| `Dr. Emily is fine` (after dermatology doctor list) | Contextual offered-doctor selection for Dr. Emily Carter |
-| `tomorrow morning` (with doctor/specialty already in context) | Natural date + morning time window applied |
-| `Sunday afternoon` (with doctor/specialty already in context) | Natural date + afternoon time window applied |
+`GROQ_API_KEY`, `GROQ_MODEL`, and `GROQ_RESPONSE_FORMAT=json_schema` are required independently of `LLM_PRIMARY_PROVIDER`.
 
 ## Fake-mode checklist
 
-1. Set `CHAT_TURN_UNDERSTANDING_INTERPRETER=fake` and restart the API.
-2. Run the [shared scenario checklist](#shared-scenario-checklist).
-3. Confirm `disabled` baseline still works by switching to `CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled`, restarting, and sending `cardiology next Monday` — deterministic parsing should still reach availability without CTU.
+Set `CHAT_TURN_UNDERSTANDING_INTERPRETER=fake`, restart the API, and run this sequence in a **single conversation** (reuse `conversation_id`). After step 4, start a **new conversation** for steps 5–10 so doctor-list context is fresh.
+
+| Step | Message | Expected behavior |
+| --- | --- | --- |
+| 1 | `I'd like to schedule with a dermatologist` | Dermatology selected; earliest availability search; offered times or natural no-slots guidance; no `YYYY-MM-DD` prompt |
+| 2 | `Wednesday` | Bare weekday resolved in active intake context; availability rechecked for Wednesday |
+| 3 | `What about afternoon?` | Afternoon time window applied; provider preserved; availability rechecked |
+| 4 | *(new conversation)* `cardiology next Monday` | Cardiology + natural date; availability lookup for that Monday |
+| 5 | `What about Wednesday?` | Contextual weekday follow-up; specialty preserved; date updated; stale slots cleared |
+| 6 | `It can be Dr. Reed` | Doctor resolved from `offered_doctors` when list was shown; availability proceeds |
+| 7 | *(after offered slots appear)* `3PM` | Time normalized to `15:00`; unique offered slot selected; hold flow begins when match is valid |
+| 8 | *(after offered slots appear)* `15` | Bare hour normalized to `15:00` when unambiguous; same validation as step 7 |
+| 9 | Unclear message during slot selection (for example `maybe later`) | Slot-selection reprompt — not generic fallback |
+| 10 | Complete booking identity through hold | Final booking requires explicit confirmation; no `booking_confirmed: true` until confirmation step succeeds |
+
+**Also verify:** `CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled` still reaches availability via deterministic parsing (for example `cardiology next Monday`).
 
 ## Groq-mode checklist
 
-1. Set:
+1. Set Groq env vars (see [Groq mode](#groq-mode)) and restart the API.
+2. Repeat the [Fake-mode checklist](#fake-mode-checklist) steps 1–10.
+3. Explicitly confirm for every reply:
+   - no UUIDs or internal IDs exposed
+   - no `availability_slot_id`, `hold_id`, or `doctor_id` in user-visible text
+   - no raw ISO timestamps such as `2026-07-03T14:00:00+00:00`
+   - no backend error details or provider diagnostics
+   - no unoffered times selected or held
+   - booking still requires explicit final confirmation after identity collection
+4. Confirm ambiguous or low-confidence Groq output falls back safely (clarification or state-aware reprompt) without unsafe context mutation.
 
-   ```env
-   CHAT_TURN_UNDERSTANDING_INTERPRETER=groq
-   GROQ_API_KEY=...
-   GROQ_MODEL=...
-   GROQ_RESPONSE_FORMAT=json_schema
-   ```
+## Additional spot-check examples
 
-2. Restart the API.
-3. Repeat the [shared scenario checklist](#shared-scenario-checklist).
-4. Explicitly verify replies contain **no**:
-   - UUIDs or internal IDs
-   - `availability_slot_id`, `hold_id`, or `doctor_id` values
-   - raw ISO timestamps such as `2026-07-03T14:00:00+00:00`
-   - backend error details or provider diagnostics
-5. Confirm ambiguous or low-confidence Groq output falls back safely (clarification or deterministic continuation) without unsafe context mutation.
+| Message | Expected behavior |
+| --- | --- |
+| `soonest cardiology appointment` | Cardiology + soonest search from clinic today |
+| `Dr. Reed next Monday` | Doctor + natural date |
+| `I want Dr. Emily soonest available` | Doctor + soonest intent |
+| `Dr. Emily is fine` (after dermatology doctor list) | Contextual offered-doctor selection |
+| `tomorrow morning` (provider already in context) | Natural date + morning window |
+| `Sunday afternoon` (provider already in context) | Natural date + afternoon window |
+| `15:00` (after offered slots) | Direct `HH:MM` match against offered display times |
 
-## Safety boundaries to verify
+## Safety boundaries
 
-- **Cancel / reschedule / emergency** messages still route through top-level deterministic flows, not appointment intake CTU.
+- **Cancel / reschedule / emergency** messages route through top-level deterministic flows, not appointment intake CTU.
 - **Active hold + booking identity** turns do not invoke appointment intake CTU.
-- **Slot selection after offered slots** still reaches hold creation through the existing flow.
+- **Slot selection after offered slots** reaches hold creation through the existing flow only after backend validation passes.
 - **No booking** occurs without explicit confirmation after identity collection.
 
-## Known follow-up
+## Out of scope / follow-ups
 
-There is a known follow-up to audit demo availability timezone/seed behavior. Displayed availability may appear several hours later than expected when UTC storage and clinic-local presentation are not aligned. Do not treat this as fixed in the appointment-intake slice.
+- **Cancel/reschedule contextual task frame** — future slice; current cancel/reschedule paths unchanged.
+- **Timezone/seed audit** — future slice; demo availability display may be offset if UTC storage and clinic-local time are not aligned. Do not treat as fixed in this branch.
+- **No second LLM response composer** — reply phrasing remains deterministic by default.
+- **Retell voice flow** — not modified.
+- **Public demos with real LLM providers** — require auth, rate limits, and cost controls.
 
 ## Automated coverage
 
 Related automated tests:
 
-- `tests/test_chat_appointment_intake.py` — orchestrator validation and search-criteria behavior
-- `tests/test_chat_appointment_intake_runtime.py` — `ChatReceptionistService` wiring and reply safety
+- `tests/test_chat_appointment_intake.py` — orchestrator validation, contextual follow-ups, slot reference validation, time normalization integration
+- `tests/test_chat_appointment_intake_runtime.py` — `ChatReceptionistService` wiring, state-aware fallback, reply safety
+- `tests/test_appointment_time_normalization.py` — clock-time normalization unit tests
+- `tests/test_chat_receptionist_service.py` — end-to-end receptionist behavior including `appointment_intake_awaiting`
