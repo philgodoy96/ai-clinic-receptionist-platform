@@ -7,9 +7,11 @@ import pytest
 from app.models.conversations import Conversation
 from app.models.scheduling import Patient
 from app.services.appointment_booking import AppointmentBookingService
-from app.services.chat_receptionist import (
+from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+)
+from app.services.chat_receptionist import (
     ChatMessageInput,
     ChatReceptionistIntent,
     ChatReceptionistService,
