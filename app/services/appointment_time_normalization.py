@@ -20,6 +20,10 @@ _AMPM_TIME_PATTERN = re.compile(
 )
 # ``15:00`` / ``9:30`` style 24-hour (or 12-hour) clock expressions.
 _COLON_TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+# ``10h`` / ``10 h`` / ``10hs`` / ``10h30`` / ``10 h 30`` style clock
+# expressions. The ``h`` (optionally ``hs``) makes the intent explicit, so this
+# is treated as a confident time even when bare hours are disallowed.
+_H_SUFFIX_TIME_PATTERN = re.compile(r"\b(\d{1,2})\s*hs?\s*(\d{2})?\b", re.IGNORECASE)
 # A bare number that stands alone as the whole expression, e.g. ``15``.
 _BARE_NUMBER_PATTERN = re.compile(r"\d{1,2}")
 
@@ -50,6 +54,9 @@ def normalize_appointment_time_expression(
     Supported forms:
         * ``3PM`` / ``3 PM`` / ``2:30 PM`` -> ``15:00`` / ``15:00`` / ``14:30``
         * ``15:00`` -> ``15:00``
+        * ``10h`` / ``10 h`` / ``10hs`` / ``10h30`` / ``10 h 30`` -> ``10:00``
+          / ``10:00`` / ``10:00`` / ``10:30`` / ``10:30`` (the explicit ``h``
+          marker is honored regardless of ``allow_bare_hour``)
         * ``15`` -> ``15:00`` (only when ``allow_bare_hour`` is True and the
           whole expression is an unambiguous 24-hour hour, 13-23)
 
@@ -86,6 +93,16 @@ def normalize_appointment_time_expression(
             return NormalizedAppointmentTime(
                 value=f"{hour:02d}:{minute:02d}",
                 raw=colon.group(0),
+            )
+
+    h_suffix = _H_SUFFIX_TIME_PATTERN.search(candidate)
+    if h_suffix is not None:
+        hour = int(h_suffix.group(1))
+        minute = int(h_suffix.group(2)) if h_suffix.group(2) is not None else 0
+        if hour <= 23 and minute <= 59:
+            return NormalizedAppointmentTime(
+                value=f"{hour:02d}:{minute:02d}",
+                raw=h_suffix.group(0),
             )
 
     if allow_bare_hour:
