@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -1474,6 +1474,45 @@ def test_reschedule_first_offered_slot_creates_hold_and_requests_confirmation() 
     assert len(hold_service.create_hold_calls) == 1
     assert hold_service.create_hold_calls[0]["owner_id"] == str(result.conversation.id)
     assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
+
+
+def test_reschedule_hold_creation_uses_chat_ttl() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    hold_service = FakeAppointmentHoldService(ttl_seconds=300)
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    scheduling = service.scheduling
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=hold_service,
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+        chat_appointment_hold_ttl_seconds=600,
+    )
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="1", conversation_id=conversation_id),
+    )
+
+    assert len(hold_service.create_hold_calls) == 1
+    assert hold_service.create_hold_calls[0]["ttl_seconds"] == 600
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    hold_expires_at = datetime.fromisoformat(chat_context["reschedule_hold_expires_at"])
+    hold = hold_service.repository.get_by_hold_id(UUID(chat_context["reschedule_hold_id"]))
+    assert hold is not None
+    assert hold_expires_at == hold.created_at + timedelta(seconds=600)
 
 
 @pytest.mark.parametrize("message", ["1", "number 1"])

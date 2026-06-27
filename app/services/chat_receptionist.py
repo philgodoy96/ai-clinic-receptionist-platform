@@ -975,6 +975,7 @@ class ChatReceptionistService:
         chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
         post_booking_turn_classifier: PostBookingTurnClassifier | None = None,
+        chat_appointment_hold_ttl_seconds: int = 600,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -1020,6 +1021,7 @@ class ChatReceptionistService:
         self._post_booking_turn_classifier = (
             post_booking_turn_classifier or DeterministicPostBookingTurnClassifier()
         )
+        self._chat_appointment_hold_ttl_seconds = chat_appointment_hold_ttl_seconds
         self._appointment_rescheduling = ChatAppointmentReschedulingOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
             appointments=scheduling.appointments,
@@ -1031,6 +1033,7 @@ class ChatReceptionistService:
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
             appointment_holds=appointment_holds,
             appointment_rescheduling=appointment_rescheduling,
+            chat_appointment_hold_ttl_seconds=chat_appointment_hold_ttl_seconds,
         )
 
     def _clinic_timezone(self) -> ZoneInfo:
@@ -2969,6 +2972,7 @@ class ChatReceptionistService:
                 start_time=slot.start_time,
                 end_time=slot.end_time,
                 owner_id=owner_id,
+                ttl_seconds=self._chat_appointment_hold_ttl_seconds,
             )
         except (
             AvailabilitySlotNotFoundError,
@@ -2979,7 +2983,7 @@ class ChatReceptionistService:
             return self._unrecoverable_hold_reply(identity_updates=identity_updates)
 
         hold_expires_at = refreshed_hold.created_at + timedelta(
-            seconds=self.appointment_holds.ttl_seconds,
+            seconds=self._chat_appointment_hold_ttl_seconds,
         )
         refreshed_hold_context = {
             "selected_availability_slot_id": str(slot.id),
@@ -4753,6 +4757,7 @@ class ChatReceptionistService:
                 start_time=slot.start_time,
                 end_time=slot.end_time,
                 owner_id=owner_id,
+                ttl_seconds=self._chat_appointment_hold_ttl_seconds,
             )
         except AvailabilitySlotNotFoundError:
             return ChatReceptionistReply(
@@ -4786,7 +4791,7 @@ class ChatReceptionistService:
             )
 
         hold_expires_at = hold.created_at + timedelta(
-            seconds=self.appointment_holds.ttl_seconds,
+            seconds=self._chat_appointment_hold_ttl_seconds,
         )
         display_time = str(
             selected_slot.get(

@@ -95,6 +95,7 @@ class FakeAppointmentHoldService(AppointmentHoldService):
         start_time: datetime,
         end_time: datetime,
         owner_id: str,
+        ttl_seconds: int | None = None,
     ) -> AppointmentHold:
         self.create_hold_calls.append(
             {
@@ -103,6 +104,7 @@ class FakeAppointmentHoldService(AppointmentHoldService):
                 "start_time": start_time,
                 "end_time": end_time,
                 "owner_id": owner_id,
+                "ttl_seconds": ttl_seconds,
             }
         )
         if self.create_hold_error is not None:
@@ -114,6 +116,7 @@ class FakeAppointmentHoldService(AppointmentHoldService):
             start_time=start_time,
             end_time=end_time,
             owner_id=owner_id,
+            ttl_seconds=ttl_seconds,
         )
 
 
@@ -237,6 +240,7 @@ def create_chat_receptionist_service(
     appointment_rescheduling: AppointmentReschedulingService | None = None,
     chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
     chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
+    chat_appointment_hold_ttl_seconds: int = 600,
 ) -> ChatReceptionistService:
     holds = hold_service or _create_hold_service()
     booking = appointment_booking or create_appointment_booking_service_for_scheduling(
@@ -283,6 +287,7 @@ def create_chat_receptionist_service(
         appointment_rescheduling=rescheduling,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        chat_appointment_hold_ttl_seconds=chat_appointment_hold_ttl_seconds,
     )
 
 
