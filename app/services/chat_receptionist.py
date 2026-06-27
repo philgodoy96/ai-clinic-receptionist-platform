@@ -116,6 +116,10 @@ from app.services.post_booking_turn import (
     PostBookingTurnDecision,
     PostBookingTurnUnderstanding,
 )
+from app.services.post_cancellation_turn import (
+    PostCancellationTurnDecision,
+    classify_post_cancellation_turn,
+)
 from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
     ReceptionistResponseGenerator,
@@ -269,6 +273,10 @@ _POST_BOOKING_UNKNOWN_MESSAGE = (
     "Your appointment is confirmed. Would you like to schedule, cancel, "
     "or reschedule anything else?"
 )
+_POST_CANCELLATION_UNKNOWN_MESSAGE = (
+    "Your appointment has been cancelled. Would you like to schedule, cancel, "
+    "or reschedule anything else?"
+)
 
 
 def _format_offered_slot_selection_reprompt(offered_slots: list[Any]) -> str:
@@ -396,6 +404,28 @@ def _is_awaiting_cancellation_confirmation(chat_context: dict[str, Any]) -> bool
         and chat_context.get("appointment_management_awaiting")
         == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
     )
+
+
+def _is_in_post_cancellation_frame(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_CANCEL:
+        return False
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return False
+    if chat_context.get("cancellation_status") != "cancelled":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    booking_step = chat_context.get("booking_identity_step")
+    if isinstance(booking_step, str) and booking_step != (
+        ChatBookingIdentityStep.BOOKING_COMPLETED.value
+    ):
+        return False
+    return True
 
 
 def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
@@ -1228,6 +1258,14 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return self.responder.generate_reply(message=message)
 
+        if _is_in_post_cancellation_frame(existing_context):
+            post_cancellation_reply = self._handle_post_cancellation_message(
+                message=message,
+                merged_context=existing_context,
+            )
+            if post_cancellation_reply is not None:
+                return post_cancellation_reply
+
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
 
@@ -1930,6 +1968,60 @@ class ChatReceptionistService:
             chat_context_updates=context_updates,
             hold_id=hold_id,
             booking_attempted=booking_attempted,
+        )
+
+    def _resolve_post_cancellation_decision(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> PostCancellationTurnDecision:
+        return classify_post_cancellation_turn(
+            message=message,
+            chat_context=chat_context,
+        ).decision
+
+    def _post_cancellation_reply_for_decision(
+        self,
+        *,
+        decision: PostCancellationTurnDecision,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostCancellationTurnDecision.CANCEL_REQUEST,
+            PostCancellationTurnDecision.RESCHEDULE_REQUEST,
+        }:
+            return None
+
+        content_by_decision = {
+            PostCancellationTurnDecision.END_CONVERSATION: _POST_BOOKING_CLOSING_MESSAGE,
+            PostCancellationTurnDecision.NEEDS_MORE_HELP: _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+            PostCancellationTurnDecision.UNKNOWN: _POST_CANCELLATION_UNKNOWN_MESSAGE,
+        }
+        content = content_by_decision.get(decision)
+        if content is None:
+            return None
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.CANCEL_REQUEST,
+            content=content,
+            chat_context_updates=context_updates,
+        )
+
+    def _handle_post_cancellation_message(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        decision = self._resolve_post_cancellation_decision(
+            message=message,
+            chat_context=merged_context,
+        )
+        return self._post_cancellation_reply_for_decision(
+            decision=decision,
+            context_updates={},
         )
 
     def _resolve_post_booking_decision(
