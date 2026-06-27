@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import pytest
+
+from app.services.dob_ambiguity import (
+    AMBIGUOUS_NUMERIC_DOB_REASON,
+    detect_ambiguous_numeric_dob,
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "us_iso", "international_iso"),
+    [
+        ("09/08/1980", "1980-09-08", "1980-08-09"),
+        ("9/8/1980", "1980-09-08", "1980-08-09"),
+        ("08/09/1980", "1980-08-09", "1980-09-08"),
+        ("03/04/1985", "1985-03-04", "1985-04-03"),
+        ("Jane Doe, 09/08/1980", "1980-09-08", "1980-08-09"),
+    ],
+)
+def test_detects_ambiguous_numeric_dob(
+    text: str,
+    us_iso: str,
+    international_iso: str,
+) -> None:
+    issue = detect_ambiguous_numeric_dob(text)
+
+    assert issue is not None
+    assert issue.field == "date_of_birth"
+    assert issue.reason == AMBIGUOUS_NUMERIC_DOB_REASON
+    assert issue.candidates == [us_iso, international_iso]
+    assert issue.clarification_question is not None
+
+
+def test_clarification_names_both_candidate_dates_in_natural_language() -> None:
+    issue = detect_ambiguous_numeric_dob("09/08/1980")
+
+    assert issue is not None
+    assert (
+        issue.clarification_question
+        == "That date could mean September 8, 1980 or August 9, 1980. "
+        "Which one is correct?"
+    )
+
+
+def test_iso_date_is_not_ambiguous() -> None:
+    assert detect_ambiguous_numeric_dob("1980-09-08") is None
+
+
+def test_month_name_date_is_not_ambiguous() -> None:
+    assert detect_ambiguous_numeric_dob("September 8, 1980") is None
+    assert detect_ambiguous_numeric_dob("Sep 8 1980") is None
+
+
+@pytest.mark.parametrize("text", ["13/08/1980", "08/13/1980", "31/12/1990", "12/31/1990"])
+def test_numeric_date_with_component_over_twelve_is_not_ambiguous(text: str) -> None:
+    assert detect_ambiguous_numeric_dob(text) is None
+
+
+def test_identical_interpretations_are_not_ambiguous() -> None:
+    # 05/05/1980 reads the same as MM/DD or DD/MM, so there is nothing to clarify.
+    assert detect_ambiguous_numeric_dob("05/05/1980") is None
+
+
+def test_empty_or_missing_text_is_not_ambiguous() -> None:
+    assert detect_ambiguous_numeric_dob(None) is None
+    assert detect_ambiguous_numeric_dob("") is None
+    assert detect_ambiguous_numeric_dob("no date here") is None
