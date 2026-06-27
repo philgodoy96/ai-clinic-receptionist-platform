@@ -850,7 +850,15 @@ class ChatAppointmentIntakeOrchestrator:
         if parse_result.status == DateParseStatus.PARSED and parse_result.normalized_date:
             return _DateValidation(requested_date=parse_result.normalized_date)
 
-        if parse_result.status == DateParseStatus.NOT_FOUND:
+        # NOT_FOUND and UNSUPPORTED are both treated as "no clear date yet" so a
+        # contextual follow-up like "And Tuesday morning?" is not lost just
+        # because a time-preference marker (morning/afternoon/evening) makes the
+        # whole phrase UNSUPPORTED. We retry after stripping those markers and
+        # then fall back to a bare weekday, mirroring the reschedule flow.
+        if parse_result.status in {
+            DateParseStatus.NOT_FOUND,
+            DateParseStatus.UNSUPPORTED,
+        }:
             stripped = self._strip_time_preference_markers(parse_text)
             if stripped != parse_text:
                 retry = self.date_parser.parse(stripped)
@@ -862,6 +870,8 @@ class ChatAppointmentIntakeOrchestrator:
                     return _DateValidation(requested_date=bare_weekday)
             return _DateValidation()
 
+        # AMBIGUOUS or INVALID: keep the existing clarification behavior and
+        # never weekday-guess when the parser flags genuine ambiguity/invalidity.
         if date_raw or extracted_date:
             return _DateValidation(
                 clarification="Could you tell me which date works for you?",
