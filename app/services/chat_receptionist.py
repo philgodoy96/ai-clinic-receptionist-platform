@@ -50,6 +50,7 @@ from app.services.appointment_holds import (
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
@@ -138,6 +139,10 @@ from app.services.post_booking_turn import (
 from app.services.post_cancellation_turn import (
     PostCancellationTurnDecision,
     classify_post_cancellation_turn,
+)
+from app.services.post_reschedule_turn import (
+    PostRescheduleTurnDecision,
+    classify_post_reschedule_turn,
 )
 from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
@@ -319,6 +324,10 @@ _POST_BOOKING_UNKNOWN_MESSAGE = (
 )
 _POST_CANCELLATION_UNKNOWN_MESSAGE = (
     "Your appointment has been cancelled. Would you like to schedule, cancel, "
+    "or reschedule anything else?"
+)
+_POST_RESCHEDULE_UNKNOWN_MESSAGE = (
+    "Your appointment has been rescheduled. Would you like to schedule, cancel, "
     "or reschedule anything else?"
 )
 
@@ -547,9 +556,34 @@ def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
 
 
 def _is_in_reschedule_flow(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE:
+        return False
     return (
-        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
     )
+
+
+def _is_in_post_reschedule_frame(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE:
+        return False
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return False
+    if chat_context.get("reschedule_status") != "rescheduled":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    booking_step = chat_context.get("booking_identity_step")
+    if isinstance(booking_step, str) and booking_step != (
+        ChatBookingIdentityStep.BOOKING_COMPLETED.value
+    ):
+        return False
+    return True
 
 
 def _resolve_contextual_fallback_reply(
@@ -920,6 +954,7 @@ class ChatReceptionistService:
         ),
         patient_identity_resolution: PatientIdentityResolutionService,
         appointment_cancellation: AppointmentCancellationService,
+        appointment_rescheduling: AppointmentReschedulingService,
         chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
         post_booking_turn_classifier: PostBookingTurnClassifier | None = None,
@@ -978,6 +1013,7 @@ class ChatReceptionistService:
             time_preference_parser=time_preference_parser,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
             appointment_holds=appointment_holds,
+            appointment_rescheduling=appointment_rescheduling,
         )
 
     def _clinic_timezone(self) -> ZoneInfo:
@@ -1419,6 +1455,14 @@ class ChatReceptionistService:
             )
             if post_cancellation_reply is not None:
                 return post_cancellation_reply
+
+        if _is_in_post_reschedule_frame(existing_context):
+            post_reschedule_reply = self._handle_post_reschedule_message(
+                message=message,
+                merged_context=existing_context,
+            )
+            if post_reschedule_reply is not None:
+                return post_reschedule_reply
 
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
@@ -2175,6 +2219,7 @@ class ChatReceptionistService:
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION:
             flow = self._appointment_rescheduling.handle_reschedule_confirmation(
                 message=message,
+                conversation=conversation,
                 chat_context=chat_context,
             )
             return self._reschedule_flow_result_to_reply(flow)
@@ -2277,6 +2322,60 @@ class ChatReceptionistService:
             chat_context=merged_context,
         )
         return self._post_cancellation_reply_for_decision(
+            decision=decision,
+            context_updates={},
+        )
+
+    def _resolve_post_reschedule_decision(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> PostRescheduleTurnDecision:
+        return classify_post_reschedule_turn(
+            message=message,
+            chat_context=chat_context,
+        ).decision
+
+    def _post_reschedule_reply_for_decision(
+        self,
+        *,
+        decision: PostRescheduleTurnDecision,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostRescheduleTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostRescheduleTurnDecision.CANCEL_REQUEST,
+            PostRescheduleTurnDecision.RESCHEDULE_REQUEST,
+        }:
+            return None
+
+        content_by_decision = {
+            PostRescheduleTurnDecision.END_CONVERSATION: _POST_BOOKING_CLOSING_MESSAGE,
+            PostRescheduleTurnDecision.NEEDS_MORE_HELP: _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+            PostRescheduleTurnDecision.UNKNOWN: _POST_RESCHEDULE_UNKNOWN_MESSAGE,
+        }
+        content = content_by_decision.get(decision)
+        if content is None:
+            return None
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            content=content,
+            chat_context_updates=context_updates,
+        )
+
+    def _handle_post_reschedule_message(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        decision = self._resolve_post_reschedule_decision(
+            message=message,
+            chat_context=merged_context,
+        )
+        return self._post_reschedule_reply_for_decision(
             decision=decision,
             context_updates={},
         )

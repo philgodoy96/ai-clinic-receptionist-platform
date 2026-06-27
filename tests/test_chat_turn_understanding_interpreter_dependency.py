@@ -223,6 +223,7 @@ def test_get_chat_receptionist_service_receives_configured_interpreter(
         settings=settings,
         patient_identity_resolution=MagicMock(),
         appointment_cancellation=MagicMock(),
+        appointment_rescheduling=MagicMock(),
         chat_turn_understanding_records=MagicMock(),
         chat_turn_understanding_interpreter=interpreter,
     )
@@ -256,6 +257,7 @@ def test_get_chat_receptionist_service_without_interpreter_when_disabled(
         settings=settings,
         patient_identity_resolution=MagicMock(),
         appointment_cancellation=MagicMock(),
+        appointment_rescheduling=MagicMock(),
         chat_turn_understanding_records=MagicMock(),
         chat_turn_understanding_interpreter=None,
     )

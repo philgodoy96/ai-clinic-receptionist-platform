@@ -114,6 +114,64 @@ def test_cancellation_confirmation_maybe_is_unclear() -> None:
     assert result.decision is ConfirmationDecision.UNCLEAR
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "yes",
+        "yes, reschedule it",
+        "please reschedule it",
+        "confirm",
+        "yes, move it",
+        "move it",
+    ],
+)
+def test_reschedule_confirmation_phrases_are_confirmed(message: str) -> None:
+    result = understand_confirmation(
+        confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
+        message=message,
+    )
+    assert result.decision is ConfirmationDecision.CONFIRMED
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "no",
+        "don't reschedule",
+        "do not reschedule",
+        "keep it",
+        "never mind",
+        "not anymore",
+    ],
+)
+def test_reschedule_confirmation_phrases_are_rejected(message: str) -> None:
+    result = understand_confirmation(
+        confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
+        message=message,
+    )
+    assert result.decision is ConfirmationDecision.REJECTED
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "maybe",
+        "not sure",
+        "wait",
+        "hmm",
+    ],
+)
+def test_reschedule_confirmation_ambiguous_phrases_are_unclear(message: str) -> None:
+    result = understand_confirmation(
+        confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
+        message=message,
+    )
+    assert result.decision in {
+        ConfirmationDecision.UNCLEAR,
+        ConfirmationDecision.WANTS_CHANGE,
+    }
+
+
 def test_yes_does_not_globally_book_outside_final_state() -> None:
     assert not is_confirmation_confirmed(
         confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,

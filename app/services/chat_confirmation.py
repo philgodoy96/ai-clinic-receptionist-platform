@@ -52,6 +52,19 @@ _CANCELLATION_REJECTED_PHRASES = (
     "nevermind",
 )
 
+_RESCHEDULE_CONFIRMED_PHRASES = (
+    "yes, reschedule it",
+    "please reschedule it",
+    "yes, move it",
+    "move it",
+)
+
+_RESCHEDULE_REJECTED_PHRASES = (
+    "don't reschedule",
+    "do not reschedule",
+    "not anymore",
+)
+
 _WANTS_CHANGE_PHRASES = (
     "change",
     "change it",
@@ -72,6 +85,7 @@ class ConfirmationType(StrEnum):
     FINAL_BOOKING_CONFIRMATION = "final_booking_confirmation"
     POSSIBLE_PATIENT_MATCH_CONFIRMATION = "possible_patient_match_confirmation"
     CANCELLATION_CONFIRMATION = "cancellation_confirmation"
+    RESCHEDULE_CONFIRMATION = "reschedule_confirmation"
 
 
 class ConfirmationDecision(StrEnum):
@@ -178,6 +192,8 @@ def _confirmed_phrases_for_type(
 ) -> tuple[str, ...]:
     if confirmation_type is ConfirmationType.CANCELLATION_CONFIRMATION:
         return _CONFIRMED_PHRASES + _CANCELLATION_CONFIRMED_PHRASES
+    if confirmation_type is ConfirmationType.RESCHEDULE_CONFIRMATION:
+        return _CONFIRMED_PHRASES + _RESCHEDULE_CONFIRMED_PHRASES
     return _CONFIRMED_PHRASES
 
 
@@ -186,6 +202,8 @@ def _rejected_phrases_for_type(
 ) -> tuple[str, ...]:
     if confirmation_type is ConfirmationType.CANCELLATION_CONFIRMATION:
         return _REJECTED_PHRASES + _CANCELLATION_REJECTED_PHRASES
+    if confirmation_type is ConfirmationType.RESCHEDULE_CONFIRMATION:
+        return _REJECTED_PHRASES + _CANCELLATION_REJECTED_PHRASES + _RESCHEDULE_REJECTED_PHRASES
     return _REJECTED_PHRASES
 
 

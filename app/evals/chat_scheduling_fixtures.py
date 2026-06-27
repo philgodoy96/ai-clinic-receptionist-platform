@@ -531,10 +531,14 @@ def _create_chat_receptionist_service(
     )
     from typing import cast
 
+    from app.services.appointment_rescheduling import AppointmentReschedulingService
     from app.services.audit_logs import AuditLogService
     from tests.test_appointment_booking_api import FakeAuditLogService
     from tests.test_appointment_cancellation_service import (
         FakeAppointmentCancellationAttemptRepository,
+    )
+    from tests.test_appointment_rescheduling_service import (
+        FakeAppointmentRescheduleAttemptRepository,
     )
 
     cancellation = AppointmentCancellationService(
@@ -542,6 +546,15 @@ def _create_chat_receptionist_service(
         cancellation_attempts=FakeAppointmentCancellationAttemptRepository(),
         audit_logs=cast(AuditLogService, FakeAuditLogService()),
         availability_slots=scheduling.availability_slots,
+    )
+    rescheduling = AppointmentReschedulingService(
+        appointments=scheduling.appointments,
+        availability_slots=scheduling.availability_slots,
+        doctors=scheduling.doctors,
+        hold_service=holds,
+        reschedule_attempts=FakeAppointmentRescheduleAttemptRepository(),
+        audit_logs=cast(AuditLogService, FakeAuditLogService()),
+        conversations=conversations,
     )
     return ChatReceptionistService(
         conversations=conversations,
@@ -562,6 +575,7 @@ def _create_chat_receptionist_service(
             ),
         ),
         appointment_cancellation=cancellation,
+        appointment_rescheduling=rescheduling,
     )
 
 

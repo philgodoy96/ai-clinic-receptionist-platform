@@ -23,6 +23,7 @@ from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
@@ -187,6 +188,32 @@ def create_appointment_cancellation_service_for_scheduling(
     )
 
 
+def create_appointment_rescheduling_service_for_scheduling(
+    scheduling: SchedulingService,
+    hold_service: AppointmentHoldService,
+    *,
+    conversations: ConversationService | None = None,
+) -> AppointmentReschedulingService:
+    from typing import cast
+
+    from app.services.appointment_rescheduling import AppointmentReschedulingService
+    from app.services.audit_logs import AuditLogService
+    from tests.test_appointment_booking_api import FakeAuditLogService
+    from tests.test_appointment_rescheduling_service import (
+        FakeAppointmentRescheduleAttemptRepository,
+    )
+
+    return AppointmentReschedulingService(
+        appointments=scheduling.appointments,
+        availability_slots=scheduling.availability_slots,
+        doctors=scheduling.doctors,
+        hold_service=hold_service,
+        reschedule_attempts=FakeAppointmentRescheduleAttemptRepository(),
+        audit_logs=cast(AuditLogService, FakeAuditLogService()),
+        conversations=conversations,
+    )
+
+
 def create_chat_receptionist_service(
     *,
     conversations: ConversationService,
@@ -206,6 +233,7 @@ def create_chat_receptionist_service(
     response_generation_mode: ReceptionistResponseMode = (ReceptionistResponseMode.DETERMINISTIC),
     patient_identity_resolution: PatientIdentityResolutionService | None = None,
     appointment_cancellation: AppointmentCancellationService | None = None,
+    appointment_rescheduling: AppointmentReschedulingService | None = None,
     chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
     chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
 ) -> ChatReceptionistService:
@@ -223,6 +251,15 @@ def create_chat_receptionist_service(
         appointment_cancellation
         if appointment_cancellation is not None
         else create_appointment_cancellation_service_for_scheduling(scheduling)
+    )
+    rescheduling = (
+        appointment_rescheduling
+        if appointment_rescheduling is not None
+        else create_appointment_rescheduling_service_for_scheduling(
+            scheduling,
+            holds,
+            conversations=conversations,
+        )
     )
     return ChatReceptionistService(
         conversations=conversations,
@@ -242,6 +279,7 @@ def create_chat_receptionist_service(
         response_generation_mode=response_generation_mode,
         patient_identity_resolution=identity_resolution,
         appointment_cancellation=cancellation,
+        appointment_rescheduling=rescheduling,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
     )
