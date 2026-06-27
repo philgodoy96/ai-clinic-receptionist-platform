@@ -34,7 +34,11 @@ from app.services.chat_confirmation import (
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import format_clinic_local_time_label
-from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
+from app.services.dob_ambiguity import (
+    detect_ambiguous_numeric_dob,
+    merge_dob_ambiguity_context_updates,
+    try_resolve_pending_dob_ambiguity,
+)
 from app.services.patient_identity_resolution import (
     PatientIdentityResolutionService,
     PatientResolutionNotFoundError,
@@ -535,6 +539,13 @@ class ChatBookingIdentityOrchestrator:
         hold_id: str,
         understanding: ChatTurnUnderstandingResult | None = None,
     ) -> tuple[ParsedPatientFields, FieldIssue | None]:
+        confirmed_iso, rejection_issue = try_resolve_pending_dob_ambiguity(
+            message,
+            booking_context,
+        )
+        if rejection_issue is not None:
+            return ParsedPatientFields(), rejection_issue
+
         deterministic = parse_patient_fields(message, booking_context=True)
         if understanding is None:
             understanding = self._interpret_identity_turn(
@@ -544,6 +555,16 @@ class ChatBookingIdentityOrchestrator:
                 hold_id=hold_id,
             )
         if understanding is None or self._should_use_deterministic_only(understanding):
+            if confirmed_iso is not None:
+                return (
+                    ParsedPatientFields(
+                        full_name=deterministic.full_name,
+                        date_of_birth=confirmed_iso,
+                        email=deterministic.email,
+                        phone=deterministic.phone,
+                    ),
+                    None,
+                )
             return deterministic, detect_ambiguous_numeric_dob(message)
 
         ctu_fields, dob_issue = self._validated_fields_from_understanding(understanding)
@@ -557,6 +578,14 @@ class ChatBookingIdentityOrchestrator:
                 email=merged.email,
                 phone=deterministic.phone,
             )
+        if confirmed_iso is not None:
+            merged = ParsedPatientFields(
+                full_name=merged.full_name,
+                date_of_birth=confirmed_iso,
+                email=merged.email,
+                phone=merged.phone,
+            )
+            dob_issue = None
         return merged, dob_issue
 
     def _validated_fields_from_understanding(
@@ -723,6 +752,11 @@ class ChatBookingIdentityOrchestrator:
 
         if dob_issue is not None:
             updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_DOB.value
+            merge_dob_ambiguity_context_updates(
+                updates,
+                dob_issue=dob_issue,
+                date_of_birth=None,
+            )
             clarification = dob_issue.clarification_question or (
                 "Please clarify your date of birth."
             )
@@ -735,6 +769,13 @@ class ChatBookingIdentityOrchestrator:
 
         has_name = isinstance(identity.get("full_name"), str)
         has_dob = isinstance(identity.get("date_of_birth"), str)
+        merge_dob_ambiguity_context_updates(
+            updates,
+            dob_issue=None,
+            date_of_birth=identity.get("date_of_birth")
+            if isinstance(identity.get("date_of_birth"), str)
+            else None,
+        )
 
         if has_name and has_dob and email:
             return self._resolve_new_patient_with_email(
@@ -848,6 +889,11 @@ class ChatBookingIdentityOrchestrator:
             updates["patient_identity"] = identity
 
         if dob_issue is not None:
+            merge_dob_ambiguity_context_updates(
+                updates,
+                dob_issue=dob_issue,
+                date_of_birth=None,
+            )
             clarification = dob_issue.clarification_question or (
                 "Please clarify your date of birth."
             )
@@ -861,6 +907,11 @@ class ChatBookingIdentityOrchestrator:
 
         full_name = identity.get("full_name")
         date_of_birth = identity.get("date_of_birth")
+        merge_dob_ambiguity_context_updates(
+            updates,
+            dob_issue=None,
+            date_of_birth=date_of_birth if isinstance(date_of_birth, str) else None,
+        )
         if not isinstance(full_name, str) or not isinstance(date_of_birth, str):
             prompt = appointment_management_missing_identity_prompt(
                 identity,
@@ -926,6 +977,11 @@ class ChatBookingIdentityOrchestrator:
             hold_id=hold_id,
         )
         if dob_issue is not None:
+            merge_dob_ambiguity_context_updates(
+                updates,
+                dob_issue=dob_issue,
+                date_of_birth=None,
+            )
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
                 content=dob_issue.clarification_question or "Please clarify your date of birth.",
@@ -972,6 +1028,11 @@ class ChatBookingIdentityOrchestrator:
             hold_id=hold_id,
         )
         if dob_issue is not None:
+            merge_dob_ambiguity_context_updates(
+                updates,
+                dob_issue=dob_issue,
+                date_of_birth=None,
+            )
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
                 content=dob_issue.clarification_question or "Please clarify your date of birth.",
@@ -991,6 +1052,11 @@ class ChatBookingIdentityOrchestrator:
             **(booking_context.get("patient_identity") or {}),
             "date_of_birth": parsed.date_of_birth,
         }
+        merge_dob_ambiguity_context_updates(
+            updates,
+            dob_issue=None,
+            date_of_birth=parsed.date_of_birth,
+        )
         updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_EMAIL.value
         return BookingIdentityFlowResult(
             intent="patient_identity_partial",

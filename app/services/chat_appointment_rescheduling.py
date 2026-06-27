@@ -82,7 +82,11 @@ from app.services.clinic_time import (
     to_clinic_local_datetime,
 )
 from app.services.date_parsing import DateParseStatus, NaturalLanguageDateParser
-from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
+from app.services.dob_ambiguity import (
+    detect_ambiguous_numeric_dob,
+    merge_dob_ambiguity_context_updates,
+    try_resolve_pending_dob_ambiguity,
+)
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
@@ -401,6 +405,11 @@ class ChatAppointmentReschedulingOrchestrator:
         base_updates = {**base_updates, APPOINTMENT_MANAGEMENT_IDENTITY_KEY: identity}
 
         if dob_issue is not None:
+            merge_dob_ambiguity_context_updates(
+                base_updates,
+                dob_issue=dob_issue,
+                date_of_birth=None,
+            )
             return RescheduleFlowResult(
                 intent="reschedule_request",
                 content=dob_issue.clarification_question or (
@@ -411,6 +420,11 @@ class ChatAppointmentReschedulingOrchestrator:
 
         full_name = identity.get("full_name")
         date_of_birth = identity.get("date_of_birth")
+        merge_dob_ambiguity_context_updates(
+            base_updates,
+            dob_issue=None,
+            date_of_birth=date_of_birth if isinstance(date_of_birth, str) else None,
+        )
         if not isinstance(full_name, str) or not isinstance(date_of_birth, str):
             prompt = appointment_management_missing_identity_prompt(
                 identity,
@@ -1961,6 +1975,13 @@ class ChatAppointmentReschedulingOrchestrator:
         chat_context: dict[str, Any],
         parse_patient_fields: Callable[..., ParsedPatientFields],
     ) -> tuple[ParsedPatientFields, FieldIssue | None]:
+        confirmed_iso, rejection_issue = try_resolve_pending_dob_ambiguity(
+            message,
+            chat_context,
+        )
+        if rejection_issue is not None:
+            return ParsedPatientFields(), rejection_issue
+
         deterministic = parse_patient_fields(message, booking_context=True)
         understanding = self._interpret_identity_turn(
             message=message,
@@ -1980,6 +2001,14 @@ class ChatAppointmentReschedulingOrchestrator:
                 email=merged.email,
                 phone=deterministic.phone,
             )
+        if confirmed_iso is not None:
+            merged = ParsedPatientFields(
+                full_name=merged.full_name,
+                date_of_birth=confirmed_iso,
+                email=merged.email,
+                phone=merged.phone,
+            )
+            dob_issue = None
         return merged, dob_issue
 
     def _interpret_identity_turn(
