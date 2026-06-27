@@ -1994,6 +1994,72 @@ def test_hold_at_exact_time_after_tomorrow_morning_filtered_availability() -> No
     assert hold_service.create_hold_calls[0]["availability_slot_id"] == EMILY_JULY_SLOT_1_ID
 
 
+def _create_contextual_followup_service() -> ChatReceptionistService:
+    from tests.clinic_time_test_support import make_test_clinic_time_service
+
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    return create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=create_demo_scheduling_service_with_emily_july_availability(),
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+
+
+def test_contextual_weekday_follow_up_updates_date_not_reuses_previous_monday() -> None:
+    service = _create_contextual_followup_service()
+
+    first = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter next Monday"),
+    )
+    first_context = first.conversation.conversation_metadata["chat_context"]
+    assert first_context["requested_date"] == "2026-07-06"
+
+    second = service.handle_message(
+        ChatMessageInput(
+            message="And Tuesday morning?",
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    second_context = second.conversation.conversation_metadata["chat_context"]
+    # Clinic today is Wednesday 2026-07-01, so a bare "Tuesday" resolves to the
+    # next Tuesday (2026-07-07); it must not silently reuse Monday (2026-07-06).
+    assert second_context["requested_date"] == "2026-07-07"
+    assert second_context["requested_date"] != "2026-07-06"
+    assert second_context["requested_time_window"]["label"] == "morning"
+    assert "2026-07-06" not in second.reply
+
+
+def test_contextual_weekday_follow_up_updates_again_to_wednesday_afternoon() -> None:
+    service = _create_contextual_followup_service()
+
+    first = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter next Monday"),
+    )
+    second = service.handle_message(
+        ChatMessageInput(
+            message="And Tuesday morning?",
+            conversation_id=first.conversation.id,
+        ),
+    )
+    third = service.handle_message(
+        ChatMessageInput(
+            message="Wednesday afternoon",
+            conversation_id=second.conversation.id,
+        ),
+    )
+
+    third_context = third.conversation.conversation_metadata["chat_context"]
+    # Clinic today is Wednesday 2026-07-01, so a bare "Wednesday" resolves to today.
+    assert third_context["requested_date"] == "2026-07-01"
+    assert third_context["requested_date"] != "2026-07-06"
+    assert third_context["requested_time_window"]["label"] == "afternoon"
+    assert "2026-07-06" not in third.reply
+
+
 class SpyDeterministicChatResponder(DeterministicChatResponder):
     def __init__(self) -> None:
         super().__init__()

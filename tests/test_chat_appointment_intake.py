@@ -786,6 +786,154 @@ def test_single_day_follow_up_is_not_treated_as_range() -> None:
     assert result.chat_context_updates["requested_date"] == "2026-07-01"
 
 
+def _active_intake_context(**overrides: object) -> dict[str, object]:
+    context: dict[str, object] = {
+        "selected_doctor_id": "doctor-1",
+        "selected_doctor_name": "Dr. Emily Carter",
+        "appointment_intake_awaiting": "date_or_time_preference",
+    }
+    context.update(overrides)
+    return context
+
+
+def test_weekday_with_time_window_updates_both_and_clears_stale_selection() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="Tuesday morning",
+        chat_context=_active_intake_context(
+            requested_date="2026-06-29",
+            appointment_intake_awaiting="slot_selection",
+            offered_slots=[
+                {
+                    "availability_slot_id": "slot-1",
+                    "start_time": "2026-06-29T13:00:00+00:00",
+                },
+            ],
+            selected_availability_slot_id="slot-1",
+            selected_start_time="2026-06-29T13:00:00+00:00",
+        ),
+    )
+
+    # Bare weekday "Tuesday" resolves to the next Tuesday after Wed 2026-07-01.
+    assert updates["requested_date"] == "2026-07-07"
+    assert updates["requested_time_window"] == {
+        "label": "morning",
+        "start_time": "08:00",
+        "end_time": "12:00",
+    }
+    assert updates["offered_slots"] == []
+    assert updates["selected_availability_slot_id"] is None
+    assert updates["selected_start_time"] is None
+
+
+def test_leading_conjunction_and_punctuation_still_resolve_weekday_and_morning() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="And Tuesday morning?",
+        chat_context=_active_intake_context(requested_date="2026-06-29"),
+    )
+
+    assert updates["requested_date"] == "2026-07-07"
+    assert updates["requested_time_window"]["label"] == "morning"
+
+
+def test_wednesday_afternoon_resolves_weekday_and_afternoon() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="Wednesday afternoon",
+        chat_context=_active_intake_context(requested_date="2026-06-29"),
+    )
+
+    assert updates["requested_date"] == "2026-07-01"
+    assert updates["requested_time_window"]["label"] == "afternoon"
+
+
+def test_tomorrow_morning_resolves_via_strip_retry() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="tomorrow morning",
+        chat_context=_active_intake_context(requested_date="2026-06-29"),
+    )
+
+    assert updates["requested_date"] == "2026-07-02"
+    assert updates["requested_time_window"]["label"] == "morning"
+
+
+def test_tomorrow_afternoon_resolves_via_strip_retry() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="tomorrow afternoon",
+        chat_context=_active_intake_context(requested_date="2026-06-29"),
+    )
+
+    assert updates["requested_date"] == "2026-07-02"
+    assert updates["requested_time_window"]["label"] == "afternoon"
+
+
+def test_what_about_wednesday_still_resolves() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="What about Wednesday?",
+        chat_context=_active_intake_context(),
+    )
+
+    assert updates["requested_date"] == "2026-07-01"
+
+
+def test_this_friday_afternoon_resolves_via_strip_retry() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="this Friday afternoon",
+        chat_context=_active_intake_context(requested_date="2026-06-29"),
+    )
+
+    assert updates["requested_date"] == "2026-07-03"
+    assert updates["requested_time_window"]["label"] == "afternoon"
+
+
+def test_next_tuesday_afternoon_resolves_via_strip_retry() -> None:
+    orchestrator = _create_orchestrator(
+        interpreter=_unused_fallback_interpreter(),
+        reference_date=date(2026, 7, 1),
+    )
+
+    updates = orchestrator.extract_contextual_follow_up_updates(
+        message="next Tuesday afternoon",
+        chat_context=_active_intake_context(requested_date="2026-06-29"),
+    )
+
+    assert updates["requested_date"] == "2026-07-07"
+    assert updates["requested_time_window"]["label"] == "afternoon"
+
+
 def test_backend_does_not_guess_when_multiple_slots_match_time() -> None:
     context = _slot_selection_context()
     context["offered_slots"] = [
