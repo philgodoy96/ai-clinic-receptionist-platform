@@ -9,6 +9,15 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
+from app.domain.appointment_rescheduling import (
+    AppointmentReschedulingHoldExpiredError,
+    AppointmentReschedulingNotFoundError,
+    AppointmentReschedulingNotReschedulableError,
+    AppointmentReschedulingRequest,
+    AppointmentReschedulingSlotUnavailableError,
+    is_appointment_reschedulable,
+)
+from app.domain.audit.enums import AuditActorType
 from app.domain.chat_turn_understanding import (
     ChatTurnIntent,
     ChatTurnUnderstandingRequest,
@@ -21,6 +30,7 @@ from app.domain.patient_identity_resolution import (
     PatientIdentityResolutionRequest,
     PatientResolutionMatchStatus,
 )
+from app.domain.scheduling.enums import AppointmentStatus
 from app.domain.scheduling.expressions import DateExpressionKind
 from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Specialty
@@ -32,6 +42,7 @@ from app.services.appointment_holds import (
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
@@ -88,6 +99,9 @@ APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE = "reschedule"
 APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE = "new_time_preference"
 APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION = "new_slot_selection"
 APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION = "reschedule_confirmation"
+APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED = "completed"
+
+CHAT_RESCHEDULE_SOURCE = "chat_reschedule"
 
 _MAX_RESCHEDULE_OFFERED_SLOTS = 5
 
@@ -187,6 +201,22 @@ RESCHEDULE_NEW_SLOT_SELECTION_PREFERENCE_HINT = (
 RESCHEDULE_HOLD_UNAVAILABLE_MESSAGE = (
     "That time is no longer available. Would you like to choose another time?"
 )
+RESCHEDULE_HOLD_EXPIRED_MESSAGE = (
+    "That time is no longer being held. Would you like to choose another time?"
+)
+RESCHEDULE_SLOT_UNAVAILABLE_MESSAGE = (
+    "That time is no longer available. Would you like to choose another time?"
+)
+RESCHEDULE_APPOINTMENT_NOT_RESCHEDULABLE_MESSAGE = (
+    "I'm sorry, that appointment can no longer be rescheduled."
+)
+RESCHEDULE_OWNERSHIP_MISMATCH_MESSAGE = (
+    "I'm sorry, I can't reschedule that appointment with the information provided."
+)
+RESCHEDULE_UNEXPECTED_FAILURE_MESSAGE = (
+    "I couldn't complete the reschedule right now. Please try again or contact the clinic."
+)
+RESCHEDULE_SUCCESS_FOLLOW_UP_SUFFIX = " Is there anything else I can help with?"
 RESCHEDULE_CONFIRMATION_REPROMPT_STUB = (
     "Please confirm whether you want me to reschedule your appointment."
 )
@@ -305,6 +335,7 @@ class ChatAppointmentReschedulingOrchestrator:
         time_preference_parser: TimePreferenceParser | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
         appointment_holds: AppointmentHoldService | None = None,
+        appointment_rescheduling: AppointmentReschedulingService | None = None,
     ) -> None:
         self.patient_identity_resolution = patient_identity_resolution
         self.appointments = appointments
@@ -318,6 +349,10 @@ class ChatAppointmentReschedulingOrchestrator:
             msg = "appointment_holds is required for reschedule slot holds"
             raise ValueError(msg)
         self.appointment_holds = appointment_holds
+        if appointment_rescheduling is None:
+            msg = "appointment_rescheduling is required for reschedule confirmation"
+            raise ValueError(msg)
+        self.appointment_rescheduling = appointment_rescheduling
 
     def handle_patient_identity_intake(
         self,
@@ -715,14 +750,375 @@ class ChatAppointmentReschedulingOrchestrator:
         self,
         *,
         message: str,
+        conversation: Conversation,
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
-        del message
+        understanding = understand_confirmation(
+            confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
+            message=message,
+        )
+
+        if understanding.decision is ConfirmationDecision.REJECTED:
+            return self._handle_reschedule_rejection(
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+
+        if understanding.decision in {
+            ConfirmationDecision.UNCLEAR,
+            ConfirmationDecision.WANTS_CHANGE,
+        }:
+            return self._reprompt_reschedule_confirmation(chat_context)
+
+        return self._execute_reschedule_confirmation(
+            conversation=conversation,
+            chat_context=chat_context,
+        )
+
+    def _handle_reschedule_rejection(
+        self,
+        *,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        self._release_reschedule_hold_best_effort(
+            conversation=conversation,
+            chat_context=chat_context,
+        )
         return RescheduleFlowResult(
             intent="reschedule_request",
-            content=RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
+            content=RESCHEDULE_APPOINTMENT_REJECTED_MESSAGE,
+            chat_context_updates=self._reschedule_confirmation_declined_context_updates(
+                chat_context,
+            ),
+        )
+
+    def _reprompt_reschedule_confirmation(
+        self,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        original_summary = chat_context.get("selected_appointment_summary")
+        new_slot_summary = self._resolve_selected_new_slot_summary(chat_context)
+        if isinstance(original_summary, str) and new_slot_summary:
+            confirmation_summary = _confirmation_summary_from_list_summary(original_summary)
+            content = (
+                f"Please confirm whether you want me to reschedule your "
+                f"{confirmation_summary} to {new_slot_summary}."
+            )
+        else:
+            content = RESCHEDULE_CONFIRMATION_REPROMPT_STUB
+
+        return RescheduleFlowResult(
+            intent="reschedule_request",
+            content=content,
             chat_context_updates=self._reschedule_confirmation_context_updates(chat_context),
         )
+
+    def _execute_reschedule_confirmation(
+        self,
+        *,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        validation = self._validate_reschedule_confirmation_context(
+            conversation=conversation,
+            chat_context=chat_context,
+        )
+        if validation is not None:
+            return validation
+
+        selected_appointment_id = str(chat_context["selected_appointment_id"])
+        selected_slot_id = str(chat_context["reschedule_selected_availability_slot_id"])
+        hold_id = str(chat_context["reschedule_hold_id"])
+        selected_summary = str(chat_context.get("selected_appointment_summary") or "")
+        new_slot_summary = self._resolve_selected_new_slot_summary(chat_context) or (
+            "the selected time"
+        )
+        confirmation_summary = _confirmation_summary_from_list_summary(selected_summary)
+
+        appointment_id = UUID(selected_appointment_id)
+        idempotency_key = (
+            f"chat-reschedule:{conversation.id}:{selected_appointment_id}:{selected_slot_id}"
+        )
+        rescheduling_reason = chat_context.get("rescheduling_reason")
+        request = AppointmentReschedulingRequest(
+            appointment_id=appointment_id,
+            explicit_confirmation=True,
+            idempotency_key=idempotency_key,
+            hold_id=UUID(hold_id),
+            new_slot_id=UUID(selected_slot_id),
+            owner_id=str(conversation.id),
+            rescheduling_reason=(
+                rescheduling_reason if isinstance(rescheduling_reason, str) else None
+            ),
+            source=CHAT_RESCHEDULE_SOURCE,
+            actor_type=AuditActorType.CHAT,
+            actor_id=str(conversation.id),
+            conversation_id=str(conversation.id),
+        )
+
+        try:
+            result = self.appointment_rescheduling.reschedule_appointment(request)
+        except AppointmentReschedulingNotFoundError:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_OWNERSHIP_MISMATCH_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+        except AppointmentReschedulingNotReschedulableError:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_APPOINTMENT_NOT_RESCHEDULABLE_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+        except AppointmentReschedulingHoldExpiredError:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_HOLD_EXPIRED_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_retry_slot_selection_context_updates(
+                    chat_context,
+                ),
+            )
+        except AppointmentReschedulingSlotUnavailableError:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_SLOT_UNAVAILABLE_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_retry_slot_selection_context_updates(
+                    chat_context,
+                ),
+            )
+        except Exception:
+            logger.exception("Unexpected chat reschedule confirmation failure")
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_UNEXPECTED_FAILURE_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_context_updates(
+                    chat_context,
+                ),
+            )
+
+        content = (
+            f"Your {confirmation_summary} has been rescheduled to {new_slot_summary}."
+            f"{RESCHEDULE_SUCCESS_FOLLOW_UP_SUFFIX}"
+        )
+        return RescheduleFlowResult(
+            intent="reschedule_request",
+            content=content,
+            chat_context_updates=self._reschedule_confirmation_succeeded_context_updates(
+                chat_context,
+                original_appointment_id=selected_appointment_id,
+                new_appointment_id=str(result.new_appointment_id),
+                rescheduled_appointment_summary=new_slot_summary,
+            ),
+        )
+
+    def _validate_reschedule_confirmation_context(
+        self,
+        *,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult | None:
+        resolved_patient_id = chat_context.get("resolved_patient_id")
+        selected_appointment_id = chat_context.get("selected_appointment_id")
+        selected_slot_id = chat_context.get("reschedule_selected_availability_slot_id")
+        hold_id = chat_context.get("reschedule_hold_id")
+        hold_owner_id = chat_context.get("reschedule_hold_owner_id")
+
+        if (
+            not isinstance(resolved_patient_id, str)
+            or not isinstance(selected_appointment_id, str)
+            or not isinstance(selected_slot_id, str)
+            or not isinstance(hold_id, str)
+            or not isinstance(hold_owner_id, str)
+        ):
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_UNEXPECTED_FAILURE_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if hold_owner_id != str(conversation.id):
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_HOLD_EXPIRED_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_retry_slot_selection_context_updates(
+                    chat_context,
+                ),
+            )
+
+        try:
+            appointment_id = UUID(selected_appointment_id)
+            patient_id = UUID(resolved_patient_id)
+            UUID(selected_slot_id)
+            UUID(hold_id)
+        except ValueError:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_OWNERSHIP_MISMATCH_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        appointment = self.appointments.get_by_id(appointment_id)
+        if appointment is None:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_OWNERSHIP_MISMATCH_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if appointment.patient_id != patient_id:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_OWNERSHIP_MISMATCH_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if (
+            not is_appointment_reschedulable(appointment.status)
+            and appointment.status != AppointmentStatus.RESCHEDULED
+        ):
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_APPOINTMENT_NOT_RESCHEDULABLE_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if appointment.status == AppointmentStatus.RESCHEDULED:
+            return None
+
+        hold = self.appointment_holds.get_hold_by_id(UUID(hold_id))
+        if hold is None:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_HOLD_EXPIRED_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_retry_slot_selection_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if str(hold.availability_slot_id) != selected_slot_id:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_HOLD_EXPIRED_MESSAGE,
+                chat_context_updates=self._reschedule_confirmation_retry_slot_selection_context_updates(
+                    chat_context,
+                ),
+            )
+
+        return None
+
+    def _resolve_selected_new_slot_summary(self, chat_context: dict[str, Any]) -> str | None:
+        selected_slot_id = chat_context.get("reschedule_selected_availability_slot_id")
+        if isinstance(selected_slot_id, str):
+            offered = self._load_offered_reschedule_slot_views(chat_context)
+            for slot in offered:
+                if slot.availability_slot_id == selected_slot_id:
+                    return slot.summary
+
+        start_time = chat_context.get("reschedule_selected_start_time")
+        doctor_name = chat_context.get("reschedule_selected_doctor_name")
+        if isinstance(start_time, str):
+            parsed_start = datetime.fromisoformat(start_time)
+            clinic_tz = self.clinic_time_service.timezone
+            summary = format_clinic_local_slot_summary(parsed_start, clinic_tz)
+            if isinstance(doctor_name, str) and doctor_name.strip():
+                return f"{summary} with {doctor_name.strip()}"
+            return summary
+
+        return None
+
+    def _release_reschedule_hold_best_effort(
+        self,
+        *,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> None:
+        hold_id = chat_context.get("reschedule_hold_id")
+        hold_owner_id = chat_context.get("reschedule_hold_owner_id")
+        if not isinstance(hold_id, str) or not isinstance(hold_owner_id, str):
+            return
+        if hold_owner_id != str(conversation.id):
+            return
+
+        try:
+            self.appointment_holds.release_hold_by_id(
+                hold_id=UUID(hold_id),
+                owner_id=hold_owner_id,
+            )
+        except Exception:
+            logger.exception("Failed to release reschedule hold on rejection")
+
+    def _reschedule_confirmation_retry_slot_selection_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **self._new_slot_selection_context_updates(chat_context),
+            **self._clear_stale_reschedule_slot_hold_state(),
+        }
+
+    def _reschedule_confirmation_declined_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **self._reschedule_confirmation_completed_context_updates(chat_context),
+            "reschedule_status": "declined",
+        }
+
+    def _reschedule_confirmation_succeeded_context_updates(
+        self,
+        chat_context: dict[str, Any],
+        *,
+        original_appointment_id: str,
+        new_appointment_id: str,
+        rescheduled_appointment_summary: str,
+    ) -> dict[str, Any]:
+        return {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
+            "reschedule_status": "rescheduled",
+            "rescheduled_from_appointment_id": original_appointment_id,
+            "new_appointment_id": new_appointment_id,
+            "rescheduled_appointment_summary": rescheduled_appointment_summary,
+            "resolved_patient_id": chat_context.get("resolved_patient_id"),
+            "resolved_patient_name": chat_context.get("resolved_patient_name"),
+            "patient_resolution_id": chat_context.get("patient_resolution_id"),
+            "selected_appointment_id": None,
+            "selected_appointment_summary": None,
+            "offered_appointments": None,
+            **self._clear_stale_reschedule_slot_hold_state(),
+        }
+
+    def _reschedule_confirmation_completed_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
+            "resolved_patient_id": chat_context.get("resolved_patient_id"),
+            "resolved_patient_name": chat_context.get("resolved_patient_name"),
+            "patient_resolution_id": chat_context.get("patient_resolution_id"),
+            "selected_appointment_id": None,
+            "selected_appointment_summary": None,
+            "offered_appointments": None,
+            **self._clear_stale_reschedule_slot_hold_state(),
+        }
 
     def resolve_reschedule_slot_selection(
         self,
