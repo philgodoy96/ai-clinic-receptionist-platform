@@ -331,6 +331,18 @@ def get_chat_turn_understanding_interpreter(
     return build_chat_turn_understanding_interpreter_from_settings(settings)
 
 
+def get_appointment_cancellation_service(
+    db: Annotated[Session, Depends(get_db)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
+) -> AppointmentCancellationService:
+    return AppointmentCancellationService(
+        appointments=SQLAlchemyAppointmentRepository(db),
+        cancellation_attempts=SQLAlchemyAppointmentCancellationAttemptRepository(db),
+        audit_logs=audit_logs,
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+    )
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -386,6 +398,10 @@ def get_chat_receptionist_service(
         PatientIdentityResolutionService,
         Depends(get_patient_identity_resolution_service),
     ],
+    appointment_cancellation: Annotated[
+        AppointmentCancellationService,
+        Depends(get_appointment_cancellation_service),
+    ],
     chat_turn_understanding_records: Annotated[
         ChatTurnUnderstandingRecordService,
         Depends(get_chat_turn_understanding_record_service),
@@ -411,6 +427,7 @@ def get_chat_receptionist_service(
         response_generator=response_generator,
         response_generation_mode=settings.receptionist_response_mode,
         patient_identity_resolution=patient_identity_resolution,
+        appointment_cancellation=appointment_cancellation,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
     )
@@ -453,18 +470,6 @@ def get_voice_booking_confirmation_service(
         demo_guardrails=demo_guardrails,
         patient_intake=patient_intake,
         patient_identity_resolution=patient_identity_resolution,
-    )
-
-
-def get_appointment_cancellation_service(
-    db: Annotated[Session, Depends(get_db)],
-    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
-) -> AppointmentCancellationService:
-    return AppointmentCancellationService(
-        appointments=SQLAlchemyAppointmentRepository(db),
-        cancellation_attempts=SQLAlchemyAppointmentCancellationAttemptRepository(db),
-        audit_logs=audit_logs,
-        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
     )
 
 

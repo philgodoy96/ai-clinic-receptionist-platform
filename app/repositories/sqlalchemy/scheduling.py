@@ -171,6 +171,29 @@ class SQLAlchemyAppointmentRepository:
 
         return list(self.session.scalars(statement).all())
 
+    def list_cancelable_for_patient(
+        self,
+        *,
+        patient_id: UUID,
+        start_from: datetime,
+    ) -> Sequence[Appointment]:
+        statement = (
+            select(Appointment)
+            .where(
+                Appointment.patient_id == patient_id,
+                Appointment.status.in_(
+                    (
+                        AppointmentStatus.SCHEDULED,
+                        AppointmentStatus.RESCHEDULED,
+                    ),
+                ),
+                Appointment.start_time >= start_from,
+            )
+            .order_by(Appointment.start_time)
+        )
+
+        return list(self.session.scalars(statement).all())
+
     def find_scheduled_conflict(
         self,
         *,
