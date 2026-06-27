@@ -105,6 +105,7 @@ _CANCELLATION_MISSING_SELECTION_MESSAGE = (
     "I don't have an appointment selected to cancel. "
     "Please tell me which appointment you'd like to cancel."
 )
+_CANCELLATION_SUCCESS_FOLLOW_UP_SUFFIX = " Is there anything else I can help with?"
 _CANCEL_KEYWORDS = ("cancel", "cancellation")
 _ORDINAL_APPOINTMENT_KEYWORDS: dict[str, int] = {
     "the first one": 0,
@@ -567,9 +568,13 @@ class ChatAppointmentCancellationOrchestrator:
         if result.already_cancelled:
             content = (
                 f"Your {confirmation_summary} has already been cancelled."
+                f"{_CANCELLATION_SUCCESS_FOLLOW_UP_SUFFIX}"
             )
         else:
-            content = f"Your {confirmation_summary} has been cancelled."
+            content = (
+                f"Your {confirmation_summary} has been cancelled."
+                f"{_CANCELLATION_SUCCESS_FOLLOW_UP_SUFFIX}"
+            )
 
         return CancellationFlowResult(
             intent="cancel_request",

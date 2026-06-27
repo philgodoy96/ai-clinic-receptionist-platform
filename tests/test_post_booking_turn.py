@@ -15,7 +15,6 @@ from app.services.post_booking_turn import (
         ("nah", PostBookingTurnDecision.END_CONVERSATION),
         ("that's all", PostBookingTurnDecision.END_CONVERSATION),
         ("I'm good", PostBookingTurnDecision.END_CONVERSATION),
-        ("era isso", PostBookingTurnDecision.END_CONVERSATION),
         ("yes", PostBookingTurnDecision.NEEDS_MORE_HELP),
         ("yes please", PostBookingTurnDecision.NEEDS_MORE_HELP),
         ("I need help", PostBookingTurnDecision.NEEDS_MORE_HELP),
@@ -26,6 +25,10 @@ from app.services.post_booking_turn import (
         ),
         (
             "I want to schedule another appointment",
+            PostBookingTurnDecision.NEW_SCHEDULING_REQUEST,
+        ),
+        (
+            "I want to schedule an appointment",
             PostBookingTurnDecision.NEW_SCHEDULING_REQUEST,
         ),
         ("Can I book another one?", PostBookingTurnDecision.NEW_SCHEDULING_REQUEST),

@@ -5,6 +5,8 @@ from typing import cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
+import pytest
+
 from app.domain.scheduling.enums import AppointmentStatus
 from app.models.scheduling import Appointment, Doctor, Patient
 from app.services.appointment_cancellation import AppointmentCancellationService
@@ -22,6 +24,10 @@ from app.services.chat_receptionist import (
     ChatReceptionistService,
 )
 from app.services.conversations import ConversationService
+from app.services.post_cancellation_turn import (
+    PostCancellationTurnDecision,
+    classify_post_cancellation_turn,
+)
 from tests.clinic_time_test_support import REFERENCE_CLINIC_NOW_UTC
 from tests.test_chat_receptionist_service import (
     create_chat_receptionist_service,
@@ -776,7 +782,7 @@ def test_cancellation_confirmation_success_message_format() -> None:
 
     assert (
         "Your Dermatology appointment with Dr. Emily Carter on Wednesday at 10:00 "
-        "has been cancelled."
+        "has been cancelled. Is there anything else I can help with?"
     ) in result.reply
     chat_context = result.conversation.conversation_metadata["chat_context"]
     assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
@@ -1026,6 +1032,243 @@ def test_cancellation_confirmation_duplicate_is_idempotent() -> None:
     assert appointment.status == AppointmentStatus.CANCELLED
     assert "cancelled" in first.reply.lower()
     assert "already been cancelled" in second.reply.lower()
+
+
+def _complete_cancellation(
+    service: ChatReceptionistService,
+    *,
+    appointments: list[Appointment],
+) -> tuple[ChatMessageResult, UUID, Appointment]:
+    _reach_result, conversation_id, appointment = _reach_cancellation_confirmation(
+        service,
+        appointments=appointments,
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="yes", conversation_id=conversation_id),
+    )
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["cancellation_status"] == "cancelled"
+    return result, conversation_id, appointment
+
+
+def test_cancellation_success_response_includes_follow_up_prompt() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    result, _conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    assert "has been cancelled" in result.reply
+    assert "Is there anything else I can help with?" in result.reply
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "no",
+        "nah",
+        "no thanks",
+        "that's all",
+        "nothing else",
+        "I'm good",
+    ],
+)
+def test_post_cancellation_end_conversation_decision_closes_politely(
+    message: str,
+) -> None:
+    assert (
+        classify_post_cancellation_turn(message=message).decision
+        is PostCancellationTurnDecision.END_CONVERSATION
+    )
+
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message=message, conversation_id=conversation_id),
+    )
+
+    assert "You're all set. Have a great day!" in result.reply
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "yes",
+        "yes please",
+        "I need help",
+        "actually yes",
+    ],
+)
+def test_post_cancellation_needs_more_help_decision_prompts_next_action(
+    message: str,
+) -> None:
+    assert (
+        classify_post_cancellation_turn(message=message).decision
+        is PostCancellationTurnDecision.NEEDS_MORE_HELP
+    )
+
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message=message, conversation_id=conversation_id),
+    )
+
+    assert "schedule, cancel, or reschedule" in result.reply.lower()
+    assert "You're all set" not in result.reply
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I want to schedule an appointment",
+        "I need another appointment",
+    ],
+)
+def test_post_cancellation_new_scheduling_decision_allows_normal_routing(
+    message: str,
+) -> None:
+    assert (
+        classify_post_cancellation_turn(message=message).decision
+        is PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST
+    )
+
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message=message, conversation_id=conversation_id),
+    )
+
+    assert result.intent != ChatReceptionistIntent.FALLBACK
+    assert "You're all set" not in result.reply
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("appointment_intake_awaiting") or "appointment" in result.reply.lower()
+
+
+def test_post_cancellation_cancel_request_decision_enters_cancellation_frame() -> None:
+    message = "I want to cancel another appointment"
+    assert (
+        classify_post_cancellation_turn(message=message).decision
+        is PostCancellationTurnDecision.CANCEL_REQUEST
+    )
+
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message=message, conversation_id=conversation_id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+    assert "full name" in result.reply.lower()
+
+
+def test_post_cancellation_unknown_decision_returns_gentle_help_prompt() -> None:
+    message = "Can you tell me a joke?"
+    assert (
+        classify_post_cancellation_turn(message=message).decision
+        is PostCancellationTurnDecision.UNKNOWN
+    )
+
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message=message, conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "has been cancelled" in result.reply.lower()
+    assert "schedule, cancel, or reschedule" in result.reply.lower()
+
+
+def test_post_cancellation_completed_flow_does_not_reexecute_cancellation_service() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        service.handle_message(
+            ChatMessageInput(message="no thanks", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
 
 
 def test_cancellation_flow_does_not_call_cancellation_service() -> None:
