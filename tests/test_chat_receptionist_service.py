@@ -28,6 +28,7 @@ from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
+from app.services.chat_appointment_rescheduling import APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
 from app.services.chat_booking_identity import ChatBookingIdentityStep
 from app.services.chat_receptionist import (
     _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
@@ -2263,7 +2264,7 @@ def test_resolve_contextual_fallback_for_cancellation_appointment_selection() ->
     assert "Please choose one of the appointments I listed." in content
 
 
-def test_reschedule_routing_unchanged_after_cancellation_foundation(
+def test_reschedule_request_enters_reschedule_task_frame(
     scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
     service, _repository = scheduling_chat_service
@@ -2271,9 +2272,15 @@ def test_reschedule_routing_unchanged_after_cancellation_foundation(
     result = service.handle_message(ChatMessageInput(message="I need to reschedule"))
 
     assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
-    assert "rescheduling" in result.reply.lower()
+    assert "full name" in result.reply.lower()
+    assert "date of birth" in result.reply.lower()
+    assert "preferred new time" not in result.reply.lower()
     chat_context = result.conversation.conversation_metadata.get("chat_context", {})
-    assert chat_context.get("appointment_management_mode") is None
+    assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
 
 
 def test_cancellation_task_frame_does_not_call_cancellation_service(

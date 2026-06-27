@@ -11,6 +11,7 @@ from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
+from app.services.chat_appointment_rescheduling import APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
 from app.services.chat_receptionist import (
     ChatMessageInput,
     ChatReceptionistIntent,
@@ -464,5 +465,14 @@ def test_post_booking_reschedule_request_routes_to_reschedule() -> None:
 
     reply = result.reply.lower()
     assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert "full name" in reply
+    assert "date of birth" in reply
     assert "already confirmed" not in reply
+    assert "preferred new time" not in reply
     assert len(tracking_booking.book_calls) == 1
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+    assert (
+        context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
