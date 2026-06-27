@@ -5,6 +5,8 @@ import pytest
 from app.services.dob_ambiguity import (
     AMBIGUOUS_NUMERIC_DOB_REASON,
     detect_ambiguous_numeric_dob,
+    parse_dob_ambiguity_confirmation,
+    try_resolve_pending_dob_ambiguity,
 )
 
 
@@ -32,14 +34,60 @@ def test_detects_ambiguous_numeric_dob(
     assert issue.clarification_question is not None
 
 
-def test_clarification_names_both_candidate_dates_in_natural_language() -> None:
+def test_clarification_proposes_us_style_interpretation_with_iso_fallback() -> None:
     issue = detect_ambiguous_numeric_dob("09/08/1980")
 
     assert issue is not None
     assert (
         issue.clarification_question
-        == "That date could mean September 8, 1980 or August 9, 1980. "
-        "Which one is correct?"
+        == "Just to confirm, did you mean September 8, 1980? If not, please send the "
+        "date of birth using YYYY-MM-DD, for example 1980-08-09."
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("yes", True),
+        ("Yes that's correct", True),
+        ("correct", True),
+        ("no", False),
+        ("not that one", False),
+        ("September 8, 1980", None),
+    ],
+)
+def test_parse_dob_ambiguity_confirmation(message: str, expected: bool | None) -> None:
+    assert parse_dob_ambiguity_confirmation(message) is expected
+
+
+def test_try_resolve_pending_dob_ambiguity_accepts_yes() -> None:
+    context = {
+        "pending_dob_ambiguity": {
+            "proposed_iso": "1980-09-08",
+            "alternative_iso": "1980-08-09",
+        },
+    }
+
+    confirmed, rejection = try_resolve_pending_dob_ambiguity("yes", context)
+
+    assert confirmed == "1980-09-08"
+    assert rejection is None
+
+
+def test_try_resolve_pending_dob_ambiguity_rejects_no_with_format_reprompt() -> None:
+    context = {
+        "pending_dob_ambiguity": {
+            "proposed_iso": "1980-09-08",
+            "alternative_iso": "1980-08-09",
+        },
+    }
+
+    confirmed, rejection = try_resolve_pending_dob_ambiguity("no", context)
+
+    assert confirmed is None
+    assert rejection is not None
+    assert rejection.clarification_question == (
+        "Please send the date of birth using YYYY-MM-DD, for example 1980-08-09."
     )
 
 

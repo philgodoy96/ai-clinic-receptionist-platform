@@ -385,8 +385,11 @@ def test_reschedule_ambiguous_numeric_dob_asks_clarification_without_listing() -
 
     reply = result.reply.lower()
     assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert "just to confirm" in reply
     assert "september 8, 1980" in reply
-    assert "august 9, 1980" in reply
+    assert "yyyy-mm-dd" in reply
+    assert "1980-08-09" in reply
+    assert "august 9, 1980 or" not in reply
     chat_context = result.conversation.conversation_metadata["chat_context"]
     # No patient lookup happened, so no appointments were listed.
     assert chat_context.get("offered_appointments") is None
@@ -396,6 +399,7 @@ def test_reschedule_ambiguous_numeric_dob_asks_clarification_without_listing() -
         chat_context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
+    assert chat_context["pending_dob_ambiguity"]["proposed_iso"] == "1980-09-08"
 
 
 def test_reschedule_single_appointment_reply_asks_for_confirmation() -> None:

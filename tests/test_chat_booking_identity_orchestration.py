@@ -461,8 +461,11 @@ def test_new_patient_ambiguous_numeric_dob_asks_for_clarification() -> None:
 
     reply = result.reply.lower()
     assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+    assert "just to confirm" in reply
     assert "september 8, 1980" in reply
-    assert "august 9, 1980" in reply
+    assert "yyyy-mm-dd" in reply
+    assert "1980-08-09" in reply
+    assert "august 9, 1980 or" not in reply
     # The flow stays on the DOB step; no patient is created or looked up and no
     # booking is attempted while the ambiguity is unresolved.
     assert tracking_booking.book_calls == []
@@ -471,6 +474,7 @@ def test_new_patient_ambiguous_numeric_dob_asks_for_clarification() -> None:
         chat_context["booking_identity_step"]
         == ChatBookingIdentityStep.COLLECT_NEW_DOB.value
     )
+    assert chat_context["pending_dob_ambiguity"]["proposed_iso"] == "1980-09-08"
     patients_repo = cast(FakePatientRepository, scheduling.patients)
     assert patients_repo.patients == []
 
@@ -495,6 +499,53 @@ def test_new_patient_ambiguous_dob_clarification_preserves_name_and_proceeds() -
     assert "full name and date of birth" not in reply
     assert "email" in reply
     assert tracking_booking.book_calls == []
+
+
+def test_new_patient_ambiguous_dob_accepts_yes_to_proposed_us_interpretation() -> None:
+    service, tracking_booking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Jane Doe."))
+    ambiguous = service.handle_message(
+        ChatMessageInput(message="09/08/1980", conversation_id=conversation.id),
+    )
+    assert ambiguous.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+    ambiguous_context = ambiguous.conversation.conversation_metadata["chat_context"]
+    assert ambiguous_context["pending_dob_ambiguity"]["proposed_iso"] == "1980-09-08"
+    assert ambiguous_context["patient_identity"]["full_name"] == "Jane Doe"
+    assert "date_of_birth" not in ambiguous_context["patient_identity"]
+
+    confirmed = service.handle_message(
+        ChatMessageInput(message="yes that's correct", conversation_id=conversation.id),
+    )
+    reply = confirmed.reply.lower()
+    assert "full name and date of birth" not in reply
+    assert "email" in reply
+    confirmed_context = confirmed.conversation.conversation_metadata["chat_context"]
+    assert confirmed_context["patient_identity"]["date_of_birth"] == "1980-09-08"
+    assert confirmed_context.get("pending_dob_ambiguity") is None
+    assert tracking_booking.book_calls == []
+
+
+def test_new_patient_ambiguous_dob_no_asks_for_iso_format() -> None:
+    service, _tracking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Jane Doe."))
+    service.handle_message(
+        ChatMessageInput(message="09/08/1980", conversation_id=conversation.id),
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="no", conversation_id=conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+    assert "yyyy-mm-dd" in reply
+    assert "1980-08-09" in reply
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("pending_dob_ambiguity") is None
+    assert "date_of_birth" not in context["patient_identity"]
 
 
 def test_new_patient_name_only_asks_for_dob() -> None:
@@ -528,8 +579,11 @@ def test_existing_patient_ambiguous_numeric_dob_does_not_look_up_patient() -> No
 
     reply = result.reply.lower()
     assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+    assert "just to confirm" in reply
     assert "september 8, 1980" in reply
-    assert "august 9, 1980" in reply
+    assert "yyyy-mm-dd" in reply
+    assert "1980-08-09" in reply
+    assert "august 9, 1980 or" not in reply
     assert tracking_booking.book_calls == []
     chat_context = result.conversation.conversation_metadata["chat_context"]
     # The already-collected name is preserved, but no resolution happened.
