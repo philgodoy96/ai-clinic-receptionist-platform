@@ -75,6 +75,7 @@ from app.services.chat_appointment_intake import (
 )
 from app.services.chat_appointment_rescheduling import (
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+    RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
     RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
     ChatAppointmentReschedulingOrchestrator,
@@ -227,6 +228,26 @@ _ORDINAL_SLOT_KEYWORDS = {
 _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\s\-().]{6,}\d|\b\d{10,14}\b)")
 _MY_NAME_IS_PATTERN = re.compile(r"my name is\s+(.+)", re.IGNORECASE)
+_NATURAL_DOB_PATTERN = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})\b",
+    re.IGNORECASE,
+)
+_MONTH_TOKEN_TO_NUMBER = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
 _PATIENT_IDENTITY_FIELD_LABELS = {
     "full_name": "full name",
     "date_of_birth": "date of birth",
@@ -392,6 +413,26 @@ def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None
     if resolved is None:
         return None
     return resolved[1]
+
+
+def _parse_natural_date_of_birth(message: str) -> str | None:
+    match = _NATURAL_DOB_PATTERN.search(message)
+    if match is None:
+        return None
+
+    month_token = match.group(1).lower()[:3]
+    month = _MONTH_TOKEN_TO_NUMBER.get(month_token)
+    if month is None:
+        return None
+
+    day = int(match.group(2))
+    year = int(match.group(3))
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+
+    return f"{year}-{month:02d}-{day:02d}"
 
 
 def _is_awaiting_reschedule_patient_identity(chat_context: dict[str, Any]) -> bool:
@@ -855,7 +896,13 @@ class ChatReceptionistService:
         self._post_booking_turn_classifier = (
             post_booking_turn_classifier or DeterministicPostBookingTurnClassifier()
         )
-        self._appointment_rescheduling = ChatAppointmentReschedulingOrchestrator()
+        self._appointment_rescheduling = ChatAppointmentReschedulingOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            appointments=scheduling.appointments,
+            scheduling_metadata=scheduling,
+            clinic_time_service=effective_clinic_time,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        )
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -1314,6 +1361,7 @@ class ChatReceptionistService:
             return finish(
                 self._handle_reschedule_flow(
                     message=message,
+                    conversation=conversation,
                     chat_context=existing_context,
                 ),
             )
@@ -1777,12 +1825,25 @@ class ChatReceptionistService:
         booking_context: bool = False,
     ) -> str | None:
         match = _ISO_DATE_PATTERN.search(message)
-        if match is None:
-            return None
+        if match is not None:
+            try:
+                date.fromisoformat(match.group(1))
+            except ValueError:
+                return None
 
-        try:
-            date.fromisoformat(match.group(1))
-        except ValueError:
+            has_dob_cue = bool(
+                re.search(r"\b(dob|date of birth|born)\b", message, re.IGNORECASE)
+                or "," in message
+                or _MY_NAME_IS_PATTERN.search(message)
+                or booking_context
+            )
+            if not has_dob_cue:
+                return None
+
+            return match.group(1)
+
+        natural = _parse_natural_date_of_birth(message)
+        if natural is None:
             return None
 
         has_dob_cue = bool(
@@ -1794,7 +1855,7 @@ class ChatReceptionistService:
         if not has_dob_cue:
             return None
 
-        return match.group(1)
+        return natural
 
     def _extract_full_name(
         self,
@@ -1835,6 +1896,7 @@ class ChatReceptionistService:
 
             if cut_points:
                 remainder = remainder[: min(cut_points)].strip()
+                remainder = re.sub(r"\s+and\s+my$", "", remainder, flags=re.IGNORECASE).strip()
 
             normalized = normalize_patient_display_name(remainder) if remainder else None
             return normalized or None
@@ -1990,15 +2052,25 @@ class ChatReceptionistService:
         self,
         *,
         message: str,
+        conversation: Conversation,
         chat_context: dict[str, Any],
     ) -> ChatReceptionistReply:
         awaiting = chat_context.get("appointment_management_awaiting")
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY:
             flow = self._appointment_rescheduling.handle_patient_identity_intake(
                 message=message,
+                conversation=conversation,
                 chat_context=chat_context,
+                parse_patient_fields=self._parse_booking_patient_fields,
             )
             return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
+                content=RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
+                chat_context_updates={},
+            )
 
         return self._enter_reschedule_task_frame(context_updates={})
 

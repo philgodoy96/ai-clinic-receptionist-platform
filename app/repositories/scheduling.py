@@ -88,6 +88,14 @@ class AppointmentRepository(Protocol):
     ) -> Sequence[Appointment]:
         raise NotImplementedError
 
+    def list_reschedulable_for_patient(
+        self,
+        *,
+        patient_id: UUID,
+        start_from: datetime,
+    ) -> Sequence[Appointment]:
+        raise NotImplementedError
+
     def find_scheduled_conflict(
         self,
         *,
