@@ -827,6 +827,12 @@ class _TimePreferenceExtraction:
 
 
 @dataclass(frozen=True, slots=True)
+class _OfferedSlotSelection:
+    slot: dict[str, Any] | None = None
+    ambiguous: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ChatReceptionistReply:
     intent: ChatReceptionistIntent
     content: str
@@ -3245,12 +3251,11 @@ class ChatReceptionistService:
 
         if slots:
             shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
-            slot_date = shown_slots[0].start_time.date().isoformat()
             offered_slots = self._serialize_offered_slots(
                 shown_slots,
                 doctor_names={slot.doctor_id: doctor_name for slot in shown_slots},
                 specialty_name=merged_context.get("selected_specialty_name"),
-                display_date=slot_date,
+                use_slot_date=True,
             )
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
@@ -3680,19 +3685,26 @@ class ChatReceptionistService:
             return _EARLIEST_NO_AVAILABILITY_MESSAGE
 
         clinic_tz = self._clinic_timezone()
-        local_start = to_clinic_local_datetime(slots[0].start_time, clinic_tz)
-        slot_date = local_start.date()
-        date_label = self._format_availability_date_label(slot_date)
-        times = [
-            format_clinic_local_time_label(slot.start_time, clinic_tz) for slot in slots
-        ]
-        times_text = self._join_names(times)
+        grouped: dict[date, list[datetime]] = {}
+        for slot in slots:
+            local_start = to_clinic_local_datetime(slot.start_time, clinic_tz)
+            grouped.setdefault(local_start.date(), []).append(local_start)
+
+        day_parts: list[str] = []
+        for slot_date in sorted(grouped):
+            date_label = self._format_availability_date_label(slot_date)
+            times_text = self._join_names(
+                [start.strftime("%H:%M") for start in sorted(grouped[slot_date])],
+            )
+            day_parts.append(f"{date_label} at {times_text}")
+
+        body = "; ".join(day_parts)
         suffix = ""
         if len(slots) > _MAX_OFFERED_SLOTS:
             suffix = f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
 
         return (
-            f"I found openings with {doctor_name} {date_label} at {times_text}. "
+            f"I found openings with {doctor_name} {body}. "
             f"Which time works better?{suffix}"
         )
 
@@ -4423,11 +4435,24 @@ class ChatReceptionistService:
                 hold_created=False,
             )
 
-        selected_slot = self._select_offered_slot(
+        selection = self._select_offered_slot(
             message,
             normalized_message,
             offered_slots,
         )
+
+        if selection.ambiguous:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND,
+                content=(
+                    "I found more than one matching time. "
+                    "Please choose by option number or day."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+
+        selected_slot = selection.slot
 
         if selected_slot is None:
             if self._message_has_slot_selection_attempt(normalized_message, message):
@@ -4540,24 +4565,31 @@ class ChatReceptionistService:
         message: str,
         normalized_message: str,
         offered_slots: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
+    ) -> _OfferedSlotSelection:
         for keyword, index in _ORDINAL_SLOT_KEYWORDS.items():
             if keyword in normalized_message and index < len(offered_slots):
-                return offered_slots[index]
-
-        normalized_time = self._extract_offered_time(message)
-        if normalized_time is not None:
-            for offered_slot in offered_slots:
-                if offered_slot.get("display_time") == normalized_time:
-                    return offered_slot
+                return _OfferedSlotSelection(slot=offered_slots[index])
 
         iso_datetime = self._extract_iso_datetime(message)
         if iso_datetime is not None:
             for offered_slot in offered_slots:
                 if offered_slot.get("start_time") == iso_datetime.isoformat():
-                    return offered_slot
+                    return _OfferedSlotSelection(slot=offered_slot)
 
-        return None
+        normalized_time = self._extract_offered_time(message)
+        if normalized_time is not None:
+            matches = [
+                offered_slot
+                for offered_slot in offered_slots
+                if offered_slot.get("display_time") == normalized_time
+            ]
+            distinct_starts = {match.get("start_time") for match in matches}
+            if len(distinct_starts) > 1:
+                return _OfferedSlotSelection(ambiguous=True)
+            if matches:
+                return _OfferedSlotSelection(slot=matches[0])
+
+        return _OfferedSlotSelection()
 
     def _message_has_slot_selection_attempt(
         self,
