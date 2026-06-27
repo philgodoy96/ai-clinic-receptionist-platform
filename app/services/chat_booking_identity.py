@@ -181,6 +181,7 @@ class ChatBookingIdentityOrchestrator:
         if step is ChatBookingIdentityStep.ASK_SEEN_BEFORE:
             return self._handle_ask_seen_before(
                 message=message,
+                conversation=conversation,
                 booking_context=booking_context,
                 updates=updates,
                 parse_patient_fields=parse_patient_fields,
@@ -218,6 +219,7 @@ class ChatBookingIdentityOrchestrator:
         if step is ChatBookingIdentityStep.COLLECT_NEW_EMAIL:
             return self._handle_collect_new_email(
                 message=message,
+                conversation=conversation,
                 booking_context=booking_context,
                 updates=updates,
                 parse_patient_fields=parse_patient_fields,
@@ -506,6 +508,7 @@ class ChatBookingIdentityOrchestrator:
         self,
         *,
         message: str,
+        conversation: Conversation,
         booking_context: dict[str, Any],
         updates: dict[str, Any],
         parse_patient_fields: Any,
@@ -551,6 +554,7 @@ class ChatBookingIdentityOrchestrator:
             return self._advance_new_patient_from_parsed_fields(
                 parsed=parsed,
                 dob_issue=dob_issue,
+                conversation=conversation,
                 booking_context=booking_context,
                 updates=updates,
                 hold_id=hold_id,
@@ -568,6 +572,7 @@ class ChatBookingIdentityOrchestrator:
         *,
         parsed: ParsedPatientFields,
         dob_issue: FieldIssue | None,
+        conversation: Conversation,
         booking_context: dict[str, Any],
         updates: dict[str, Any],
         hold_id: str,
@@ -579,6 +584,16 @@ class ChatBookingIdentityOrchestrator:
             identity["full_name"] = parsed.full_name
         if parsed.date_of_birth:
             identity["date_of_birth"] = parsed.date_of_birth
+
+        # Written chat: the patient typed their email, so treat a valid address
+        # as confirmed immediately instead of asking "I heard ... is that
+        # correct?". Voice keeps explicit confirmation because transcription can
+        # mishear an address; that path lives outside this orchestrator.
+        email = normalize_email_address(parsed.email) if parsed.email else None
+        if email:
+            identity["email"] = email
+            updates["confirmed_booking_email"] = email
+
         if identity:
             updates["patient_identity"] = identity
 
@@ -594,18 +609,18 @@ class ChatBookingIdentityOrchestrator:
                 hold_id=hold_id,
             )
 
-        if parsed.email:
-            email = normalize_email_address(parsed.email)
-            updates["pending_confirmation_email"] = email
-            updates["booking_identity_step"] = ChatBookingIdentityStep.CONFIRM_NEW_EMAIL.value
-            return BookingIdentityFlowResult(
-                intent="patient_identity_partial",
-                content=f"I heard {email} — is that correct?",
-                chat_context_updates=updates,
+        has_name = isinstance(identity.get("full_name"), str)
+        has_dob = isinstance(identity.get("date_of_birth"), str)
+
+        if has_name and has_dob and email:
+            return self._resolve_new_patient_with_email(
+                conversation=conversation,
+                booking_context=booking_context,
+                updates=updates,
                 hold_id=hold_id,
             )
 
-        if parsed.full_name and parsed.date_of_birth:
+        if has_name and has_dob:
             updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_EMAIL.value
             return BookingIdentityFlowResult(
                 intent="patient_identity_partial",
@@ -614,7 +629,7 @@ class ChatBookingIdentityOrchestrator:
                 hold_id=hold_id,
             )
 
-        if parsed.full_name:
+        if has_name:
             updates["booking_identity_step"] = ChatBookingIdentityStep.COLLECT_NEW_DOB.value
             return BookingIdentityFlowResult(
                 intent="patient_identity_partial",
@@ -629,6 +644,55 @@ class ChatBookingIdentityOrchestrator:
             content="No problem. What name should I put on the appointment?",
             chat_context_updates=updates,
             hold_id=hold_id,
+        )
+
+    def _resolve_new_patient_with_email(
+        self,
+        *,
+        conversation: Conversation,
+        booking_context: dict[str, Any],
+        updates: dict[str, Any],
+        hold_id: str,
+    ) -> BookingIdentityFlowResult:
+        identity = {
+            **(booking_context.get("patient_identity") or {}),
+            **(updates.get("patient_identity") or {}),
+        }
+        full_name = identity.get("full_name")
+        date_of_birth = identity.get("date_of_birth")
+        email = updates.get("confirmed_booking_email") or identity.get("email")
+        if (
+            not isinstance(full_name, str)
+            or not isinstance(date_of_birth, str)
+            or not isinstance(email, str)
+        ):
+            return BookingIdentityFlowResult(
+                intent="booking_identity_missing",
+                content="I still need your name and date of birth before we continue.",
+                chat_context_updates=updates,
+                hold_id=hold_id,
+                booking_attempted=True,
+            )
+
+        result = self.patient_identity_resolution.resolve(
+            PatientIdentityResolutionRequest(
+                patient_name=full_name,
+                patient_date_of_birth=date.fromisoformat(date_of_birth),
+                conversation_id=conversation.id,
+                patient_email=email,
+                patient_phone=identity.get("phone"),
+                caller_claims_existing_patient=False,
+                allow_demo_patient_creation=True,
+            ),
+        )
+
+        return self._handle_resolution_result(
+            result=result,
+            booking_context={**booking_context, **updates},
+            updates=updates,
+            hold_id=hold_id,
+            patient_display_name=full_name,
+            confirmed_email=email,
         )
 
     def _handle_collect_existing_identity(
@@ -808,6 +872,7 @@ class ChatBookingIdentityOrchestrator:
         self,
         *,
         message: str,
+        conversation: Conversation,
         booking_context: dict[str, Any],
         updates: dict[str, Any],
         parse_patient_fields: Any,
@@ -828,13 +893,20 @@ class ChatBookingIdentityOrchestrator:
                 hold_id=hold_id,
             )
 
+        # Written chat: accept the typed email without a separate confirmation
+        # turn. The final booking summary still echoes the address so the user
+        # can catch any mistake before the appointment is booked.
         email = normalize_email_address(parsed.email)
-        updates["pending_confirmation_email"] = email
-        updates["booking_identity_step"] = ChatBookingIdentityStep.CONFIRM_NEW_EMAIL.value
-        return BookingIdentityFlowResult(
-            intent="patient_identity_partial",
-            content=f"I heard {email} — is that correct?",
-            chat_context_updates=updates,
+        updates["confirmed_booking_email"] = email
+        updates["patient_identity"] = {
+            **(booking_context.get("patient_identity") or {}),
+            "email": email,
+        }
+        updates.pop("pending_confirmation_email", None)
+        return self._resolve_new_patient_with_email(
+            conversation=conversation,
+            booking_context=booking_context,
+            updates=updates,
             hold_id=hold_id,
         )
 
@@ -942,15 +1014,18 @@ class ChatBookingIdentityOrchestrator:
                 hold_id=hold_id,
             )
 
+        # Written chat: accept the typed email immediately and move to the final
+        # booking summary, which still shows the address for a last check.
         email = normalize_email_address(parsed.email)
-        updates["pending_confirmation_email"] = email
-        updates["booking_identity_step"] = (
-            ChatBookingIdentityStep.CONFIRM_CONFIRMATION_EMAIL.value
-        )
-        return BookingIdentityFlowResult(
-            intent="patient_identity_partial",
-            content=f"I heard {email} — is that correct?",
-            chat_context_updates=updates,
+        updates["confirmed_booking_email"] = email
+        updates["patient_identity"] = {
+            **(booking_context.get("patient_identity") or {}),
+            "email": email,
+        }
+        updates.pop("pending_confirmation_email", None)
+        return self._build_final_summary_reply(
+            booking_context={**booking_context, **updates},
+            updates=updates,
             hold_id=hold_id,
         )
 

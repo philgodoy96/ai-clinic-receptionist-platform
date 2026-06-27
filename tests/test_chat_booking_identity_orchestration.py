@@ -147,14 +147,14 @@ def test_unknown_jane_doe_succeeds_as_new_patient_with_demo_creation() -> None:
     assert len(tracking_booking.book_calls) == 1
 
 
-def test_booking_does_not_happen_before_email_confirmation() -> None:
+def test_booking_does_not_happen_before_email_is_provided() -> None:
     service, tracking_booking, _scheduling = _create_service()
     conversation = conversation_with_active_hold(service)
 
     send_chat_messages(
         service,
         conversation.id,
-        ("No.", "Jane Doe", "1990-05-15", "jane.doe@example.com"),
+        ("No.", "Jane Doe", "1990-05-15"),
     )
     result = service.handle_message(
         ChatMessageInput(message="Yes, please book it.", conversation_id=conversation.id),
@@ -162,6 +162,7 @@ def test_booking_does_not_happen_before_email_confirmation() -> None:
 
     assert result.intent != ChatReceptionistIntent.BOOKING_CONFIRMED
     assert tracking_booking.book_calls == []
+    assert "email" in result.reply.lower()
 
 
 def test_booking_does_not_happen_before_final_confirmation() -> None:
@@ -561,3 +562,112 @@ def test_post_booking_reschedule_request_routes_to_reschedule() -> None:
         context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
+
+
+def test_new_patient_email_step_skips_confirmation_and_advances() -> None:
+    service, tracking_booking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Jane Doe", "1990-05-15"))
+    result = service.handle_message(
+        ChatMessageInput(message="jane.doe@example.com", conversation_id=conversation.id),
+    )
+
+    reply = result.reply.lower()
+    # Written chat does not ask "I heard ... is that correct?".
+    assert "is that correct" not in reply
+    assert "i heard" not in reply
+    # The typed email is treated as confirmed and the flow advances to the
+    # final booking summary (which still echoes the email) without booking yet.
+    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "jane.doe@example.com" in reply
+    assert tracking_booking.book_calls == []
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["confirmed_booking_email"] == "jane.doe@example.com"
+    assert context["patient_identity"]["email"] == "jane.doe@example.com"
+    assert "pending_confirmation_email" not in context
+    assert context["booking_identity_step"] == (
+        ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
+    )
+
+
+def test_new_patient_invalid_email_reprompts_without_advancing() -> None:
+    service, tracking_booking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Jane Doe", "1990-05-15"))
+
+    for invalid_email in ("joe.cole", "joe@", "not an email"):
+        result = service.handle_message(
+            ChatMessageInput(message=invalid_email, conversation_id=conversation.id),
+        )
+
+        reply = result.reply.lower()
+        assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+        assert "email" in reply
+        assert tracking_booking.book_calls == []
+        context = result.conversation.conversation_metadata["chat_context"]
+        assert "confirmed_booking_email" not in context
+        assert context["booking_identity_step"] == (
+            ChatBookingIdentityStep.COLLECT_NEW_EMAIL.value
+        )
+
+    # A subsequent valid email still proceeds normally.
+    accepted = service.handle_message(
+        ChatMessageInput(message="jane.doe@example.com", conversation_id=conversation.id),
+    )
+    assert accepted.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    accepted_context = accepted.conversation.conversation_metadata["chat_context"]
+    assert accepted_context["confirmed_booking_email"] == "jane.doe@example.com"
+
+
+def test_existing_patient_email_step_skips_confirmation() -> None:
+    john = create_patient()
+    service, tracking_booking, _scheduling = _create_service(patients=[john])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("Yes.", "John Miller, 1985-04-12"))
+    result = service.handle_message(
+        ChatMessageInput(
+            message="john.miller@example.test",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    reply = result.reply.lower()
+    assert "is that correct" not in reply
+    assert "i heard" not in reply
+    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "john.miller@example.test" in reply
+    assert tracking_booking.book_calls == []
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["confirmed_booking_email"] == "john.miller@example.test"
+    assert "pending_confirmation_email" not in context
+    assert context["booking_identity_step"] == (
+        ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
+    )
+
+
+def test_final_booking_confirmation_preserves_typed_email_end_to_end() -> None:
+    service, tracking_booking, scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    summary = send_chat_messages(
+        service,
+        conversation.id,
+        ("No.", "Jane Doe", "1990-05-15", "jane.doe@example.com"),
+    )
+    assert summary.intent == ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "jane.doe@example.com" in summary.reply.lower()
+
+    booked = service.handle_message(
+        ChatMessageInput(message="Yes, please book it.", conversation_id=conversation.id),
+    )
+    assert booked.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
+    assert booked.booking_confirmed is True
+    assert len(tracking_booking.book_calls) == 1
+    booked_patient_id = booked.booked_patient_id
+    assert booked_patient_id is not None
+    patient = scheduling.patients.get_by_id(booked_patient_id)
+    assert patient is not None
+    assert patient.email == "jane.doe@example.com"

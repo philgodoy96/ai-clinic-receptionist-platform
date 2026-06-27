@@ -153,7 +153,7 @@ def test_existing_patient_identity_still_accepts_iso_dob_without_ctu() -> None:
     assert identity["date_of_birth"] == "1985-04-12"
 
 
-def test_new_patient_bundled_answer_stores_fields_and_requires_email_confirmation() -> None:
+def test_new_patient_bundled_answer_accepts_typed_email_without_confirmation() -> None:
     interpreter = FakeChatTurnUnderstandingInterpreter()
     service, tracking = _create_service_with_interpreter(interpreter)
     conversation = conversation_with_active_hold(service)
@@ -172,9 +172,16 @@ def test_new_patient_bundled_answer_stores_fields_and_requires_email_confirmatio
     assert context["patient_seen_before"] is False
     assert context["patient_identity"]["full_name"] == "Felipe Marques"
     assert context["patient_identity"]["date_of_birth"] == "1996-09-19"
-    assert context["pending_confirmation_email"] == "felipe@example.com"
-    assert context["booking_identity_step"] == ChatBookingIdentityStep.CONFIRM_NEW_EMAIL.value
-    assert "is that correct" in result.reply.lower()
+    # Written chat accepts the typed email immediately: no confirmation turn.
+    assert context["patient_identity"]["email"] == "felipe@example.com"
+    assert context["confirmed_booking_email"] == "felipe@example.com"
+    assert "pending_confirmation_email" not in context
+    assert context["booking_identity_step"] == (
+        ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
+    )
+    assert "is that correct" not in result.reply.lower()
+    assert "felipe@example.com" in result.reply.lower()
+    # Email acceptance still requires a final booking confirmation before booking.
     assert tracking.book_calls == []
 
 
@@ -273,7 +280,7 @@ def test_existing_identity_happy_path_still_passes_with_ctu_enabled() -> None:
     send_chat_messages(
         service,
         conversation.id,
-        ("Yes.", "John Miller, 1985-04-12", "john.miller@example.test", "Yes"),
+        ("Yes.", "John Miller, 1985-04-12", "john.miller@example.test"),
     )
     booked = service.handle_message(
         ChatMessageInput(message="Yes", conversation_id=conversation.id),
