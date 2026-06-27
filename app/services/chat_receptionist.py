@@ -76,8 +76,10 @@ from app.services.chat_appointment_intake import (
 from app.services.chat_appointment_rescheduling import (
     APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
+    APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION,
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
     RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+    RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
     RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
     RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
@@ -475,6 +477,15 @@ def _is_awaiting_reschedule_new_slot_selection(chat_context: dict[str, Any]) -> 
     )
 
 
+def _is_awaiting_reschedule_confirmation(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION
+    )
+
+
 def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> bool:
     return (
         chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
@@ -561,6 +572,12 @@ def _resolve_contextual_fallback_reply(
         return (
             ChatReceptionistIntent.RESCHEDULE_REQUEST,
             RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
+        )
+
+    if _is_awaiting_reschedule_confirmation(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
         )
 
     if _is_awaiting_cancellation_patient_identity(chat_context):
@@ -954,6 +971,7 @@ class ChatReceptionistService:
             date_parser=date_parser,
             time_preference_parser=time_preference_parser,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+            appointment_holds=appointment_holds,
         )
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
@@ -2133,6 +2151,15 @@ class ChatReceptionistService:
 
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION:
             flow = self._appointment_rescheduling.handle_new_slot_selection(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION:
+            flow = self._appointment_rescheduling.handle_reschedule_confirmation(
+                message=message,
                 chat_context=chat_context,
             )
             return self._reschedule_flow_result_to_reply(flow)
