@@ -174,6 +174,9 @@ from app.services.time_preferences import (
 
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+# A message that is exactly an integer (e.g. ``1`` or ``10``), used for
+# slot-aware option-number / clock-time interpretation during slot selection.
+_BARE_INTEGER_PATTERN = re.compile(r"\d{1,2}")
 _DR_MENTION_PATTERN = re.compile(r"\bdr\.?\s+[a-z]", re.IGNORECASE)
 _SPECIALTY_MENTION_PATTERN = re.compile(
     r"\b\w+(?:ology|iatry|surgery|ologist)\b",
@@ -4412,6 +4415,9 @@ class ChatReceptionistService:
         if offered_slots and self._extract_offered_time(message) is not None:
             return True
 
+        if offered_slots and _BARE_INTEGER_PATTERN.fullmatch(message.strip()):
+            return True
+
         return self._extract_iso_datetime(message) is not None
 
     def _handle_hold_flow(
@@ -4576,19 +4582,63 @@ class ChatReceptionistService:
                 if offered_slot.get("start_time") == iso_datetime.isoformat():
                     return _OfferedSlotSelection(slot=offered_slot)
 
+        bare_number_selection = self._select_offered_slot_by_bare_number(
+            message,
+            offered_slots,
+        )
+        if bare_number_selection is not None:
+            return bare_number_selection
+
         normalized_time = self._extract_offered_time(message)
         if normalized_time is not None:
-            matches = [
-                offered_slot
-                for offered_slot in offered_slots
-                if offered_slot.get("display_time") == normalized_time
-            ]
-            distinct_starts = {match.get("start_time") for match in matches}
-            if len(distinct_starts) > 1:
-                return _OfferedSlotSelection(ambiguous=True)
-            if matches:
-                return _OfferedSlotSelection(slot=matches[0])
+            return self._match_offered_slots_by_time(normalized_time, offered_slots)
 
+        return _OfferedSlotSelection()
+
+    def _select_offered_slot_by_bare_number(
+        self,
+        message: str,
+        offered_slots: list[dict[str, Any]],
+    ) -> _OfferedSlotSelection | None:
+        """Resolve a bare integer message against offered slots.
+
+        Returns ``None`` when the message is not a bare integer, so the caller
+        can fall back to the regular clock-time interpretation. Slot-aware
+        interpretation lives here (rather than in the context-free normalizer)
+        because this layer knows the offered options:
+
+            * a bare integer that maps to an offered option index keeps the
+              existing option-number selection behavior; otherwise
+            * the integer is treated as an ``HH:00`` clock time and matched
+              against offered ``display_time`` values (preserving the
+              ambiguity-safe behavior when more than one slot matches).
+        """
+        candidate = message.strip()
+        if not _BARE_INTEGER_PATTERN.fullmatch(candidate):
+            return None
+
+        number = int(candidate)
+
+        if 1 <= number <= len(offered_slots):
+            return _OfferedSlotSelection(slot=offered_slots[number - 1])
+
+        return self._match_offered_slots_by_time(f"{number:02d}:00", offered_slots)
+
+    def _match_offered_slots_by_time(
+        self,
+        normalized_time: str,
+        offered_slots: list[dict[str, Any]],
+    ) -> _OfferedSlotSelection:
+        matches = [
+            offered_slot
+            for offered_slot in offered_slots
+            if offered_slot.get("display_time") == normalized_time
+        ]
+        distinct_starts = {match.get("start_time") for match in matches}
+        if len(distinct_starts) > 1:
+            return _OfferedSlotSelection(ambiguous=True)
+        if matches:
+            return _OfferedSlotSelection(slot=matches[0])
         return _OfferedSlotSelection()
 
     def _message_has_slot_selection_attempt(
@@ -4603,6 +4653,9 @@ class ChatReceptionistService:
             return True
 
         if self._extract_offered_time(message) is not None:
+            return True
+
+        if _BARE_INTEGER_PATTERN.fullmatch(message.strip()):
             return True
 
         return self._extract_iso_datetime(message) is not None

@@ -1522,6 +1522,62 @@ def test_reschedule_unique_time_match_selects_slot_and_creates_hold() -> None:
     assert chat_context.get("reschedule_hold_id")
 
 
+def test_reschedule_h_suffix_time_match_selects_slot_and_creates_hold() -> None:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    patient = _felipe_patient()
+    afternoon_slot = create_availability_slot(
+        doctor_id=emily.id,
+        start_time=datetime(2026, 7, 1, 18, 0, tzinfo=UTC),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        patients=[patient],
+        availability_slots=[afternoon_slot],
+    )
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=FakeAppointmentHoldService(),
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+    )
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+        preference_message="Wednesday",
+    )
+
+    # ``14h`` is the explicit-clock form of "2 PM" (18:00 UTC -> 14:00 EDT).
+    result = service.handle_message(
+        ChatMessageInput(message="14h", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION
+    )
+    assert chat_context.get("reschedule_hold_id")
+
+
 def test_reschedule_ambiguous_time_match_does_not_create_hold() -> None:
     service, _repository, emily, patient = _reschedule_wednesday_pm_service()
     hold_service = service.appointment_holds

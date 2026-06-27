@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -1517,6 +1518,185 @@ def test_bare_ambiguous_number_3_does_not_create_hold() -> None:
 
     assert result.intent != ChatReceptionistIntent.HOLD_CREATED
     assert hold_service.create_hold_calls == []
+
+
+def _morning_dermatology_scheduling() -> SchedulingService:
+    """Offers slots displaying 10:00, 11:00 and 14:00 (America/New_York, EDT)."""
+
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    return create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=availability_slots,
+    )
+
+
+@pytest.mark.parametrize("selection_message", ["10h", "10 h", "10hs"])
+def test_hold_h_suffix_selects_offered_10_00_slot(selection_message: str) -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    offered_slots = availability.conversation.conversation_metadata["chat_context"][
+        "offered_slots"
+    ]
+    assert [slot["display_time"] for slot in offered_slots] == ["10:00", "11:00", "14:00"]
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=selection_message,
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "10:00" in result.reply
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-02T14:00:00+00:00"
+
+
+def test_hold_bare_10_selects_10_00_slot_when_no_option_10() -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="10",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "10:00" in result.reply
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-02T14:00:00+00:00"
+
+
+def test_hold_bare_1_selects_first_option_not_a_time() -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    offered_slots = availability.conversation.conversation_metadata["chat_context"][
+        "offered_slots"
+    ]
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="1",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    # ``1`` is option 1, not ``01:00`` (which matches no slot).
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == offered_slots[0]["start_time"]
+    # The internal availability slot id must never leak into the user reply.
+    assert offered_slots[0]["availability_slot_id"] not in result.reply
+
+
+def _offered_slot(
+    *,
+    display_time: str,
+    start_time: str,
+    availability_slot_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "availability_slot_id": availability_slot_id or str(uuid4()),
+        "doctor_id": str(uuid4()),
+        "doctor_name": "Dr. Emily Carter",
+        "specialty_name": "Dermatology",
+        "start_time": start_time,
+        "display_time": display_time,
+        "display_date": "2026-07-02",
+    }
+
+
+def test_select_offered_slot_bare_number_matches_unique_display_time() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+    offered_slots = [
+        _offered_slot(display_time="10:00", start_time="2026-07-02T14:00:00+00:00"),
+        _offered_slot(display_time="11:00", start_time="2026-07-02T15:00:00+00:00"),
+        _offered_slot(display_time="14:00", start_time="2026-07-02T18:00:00+00:00"),
+    ]
+
+    selection = service._select_offered_slot("10", "10", offered_slots)
+
+    assert selection.ambiguous is False
+    assert selection.slot is offered_slots[0]
+
+
+def test_select_offered_slot_bare_number_prefers_option_index() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+    offered_slots = [
+        _offered_slot(display_time="10:00", start_time="2026-07-02T14:00:00+00:00"),
+        _offered_slot(display_time="11:00", start_time="2026-07-02T15:00:00+00:00"),
+    ]
+
+    selection = service._select_offered_slot("1", "1", offered_slots)
+
+    assert selection.ambiguous is False
+    assert selection.slot is offered_slots[0]
+
+
+def test_select_offered_slot_duplicate_display_time_is_ambiguous() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+    offered_slots = [
+        _offered_slot(display_time="10:00", start_time="2026-07-02T14:00:00+00:00"),
+        _offered_slot(display_time="10:00", start_time="2026-07-03T14:00:00+00:00"),
+        _offered_slot(display_time="14:00", start_time="2026-07-02T18:00:00+00:00"),
+    ]
+
+    selection = service._select_offered_slot("10", "10", offered_slots)
+
+    assert selection.ambiguous is True
+    assert selection.slot is None
 
 
 def test_hold_generic_request_returns_hold_request(
