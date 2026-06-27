@@ -641,13 +641,15 @@ def test_cancellation_incomplete_identity_reprompts() -> None:
         ChatMessageInput(message="Felipe Godoy", conversation_id=started.conversation.id),
     )
 
-    assert "full name" in result.reply.lower()
-    assert "date of birth" in result.reply.lower()
+    reply = result.reply.lower()
+    assert "date of birth" in reply
+    assert "full name and date of birth" not in reply
     chat_context = result.conversation.conversation_metadata["chat_context"]
     assert (
         chat_context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
+    assert chat_context["appointment_management_identity"]["full_name"] == "Felipe Godoy"
 
 
 def test_cancellation_patient_not_found_does_not_list_appointments() -> None:
@@ -1248,7 +1250,12 @@ def test_post_cancellation_cancel_request_decision_enters_cancellation_frame() -
         context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
-    assert "full name" in result.reply.lower()
+    # The resolved patient is reused, so we don't re-ask for name + DOB. The only
+    # appointment was just cancelled, so there are no upcoming ones left.
+    reply = result.reply.lower()
+    assert "full name and date of birth" not in reply
+    assert "not seeing any upcoming appointments" in reply
+    assert context.get("resolved_patient_id") == str(patient.id)
 
 
 def test_post_cancellation_unknown_decision_returns_gentle_help_prompt() -> None:
@@ -1443,3 +1450,70 @@ def chat_context_id_not_exposed(reply: str, *, chat_context: dict[str, object]) 
         if value and str(value) in reply:
             return False
     return True
+
+
+def test_cancellation_dob_only_asks_for_name() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+    result = service.handle_message(
+        ChatMessageInput(message="1996-09-19", conversation_id=started.conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert "full name" in reply
+    assert "full name and date of birth" not in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_management_identity"]["date_of_birth"] == "1996-09-19"
+
+
+def test_cancellation_ambiguous_dob_clarification_preserves_name_and_proceeds() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _add_appointments(
+        service,
+        [
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+    ambiguous = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 09/08/1980",
+            conversation_id=started.conversation.id,
+        ),
+    )
+    assert "september 8, 1980" in ambiguous.reply.lower()
+    ambiguous_context = ambiguous.conversation.conversation_metadata["chat_context"]
+    assert ambiguous_context["appointment_management_identity"]["full_name"] == "Felipe Godoy"
+    assert "date_of_birth" not in ambiguous_context["appointment_management_identity"]
+
+    clarified = service.handle_message(
+        ChatMessageInput(message="September 19, 1996", conversation_id=started.conversation.id),
+    )
+    reply = clarified.reply.lower()
+    assert "full name and date of birth" not in reply
+    assert "appointment you want to cancel" in reply
+    clarified_context = clarified.conversation.conversation_metadata["chat_context"]
+    assert clarified_context.get("resolved_patient_id") == str(patient.id)
+    assert chat_context_id_not_exposed(clarified.reply, chat_context=clarified_context)
+
+
+def test_cancellation_without_resolved_patient_still_asks_for_identity() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    result = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+
+    reply = result.reply.lower()
+    assert "full name" in reply
+    assert "date of birth" in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+    assert chat_context.get("resolved_patient_id") is None

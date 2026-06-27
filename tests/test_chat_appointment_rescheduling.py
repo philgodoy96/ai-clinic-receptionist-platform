@@ -216,6 +216,23 @@ def test_resolve_contextual_fallback_for_reschedule_patient_identity() -> None:
     assert "date of birth" in content.lower()
 
 
+def test_resolve_contextual_fallback_for_reschedule_partial_identity_asks_dob_only() -> None:
+    from app.services.chat_booking_identity import APPOINTMENT_MANAGEMENT_IDENTITY_KEY
+
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
+            APPOINTMENT_MANAGEMENT_IDENTITY_KEY: {"full_name": "Felipe Godoy"},
+        },
+    )
+
+    assert resolved is not None
+    _intent, content = resolved
+    assert "date of birth" in content.lower()
+    assert "full name and date of birth" not in content.lower()
+
+
 def test_reschedule_task_frame_does_not_call_rescheduling_service(
     scheduling_chat_service: tuple[ChatReceptionistService, object],
 ) -> None:
@@ -246,17 +263,13 @@ def test_post_booking_reschedule_request_enters_reschedule_task_frame() -> None:
 
     reply = result.reply.lower()
     assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
-    assert "full name" in reply
-    assert "date of birth" in reply
+    assert "full name and date of birth" not in reply
     assert "already confirmed" not in reply
     assert "preferred new time" not in reply
     assert len(tracking_booking.book_calls) == 1
     context = result.conversation.conversation_metadata["chat_context"]
     assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
-    assert (
-        context["appointment_management_awaiting"]
-        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
-    )
+    assert context.get("resolved_patient_id")
 
 
 def test_post_cancellation_reschedule_request_enters_reschedule_task_frame() -> None:
@@ -283,14 +296,11 @@ def test_post_cancellation_reschedule_request_enters_reschedule_task_frame() -> 
     )
 
     assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
-    assert "full name" in result.reply.lower()
-    assert "date of birth" in result.reply.lower()
+    reply = result.reply.lower()
+    assert "full name and date of birth" not in reply
     context = result.conversation.conversation_metadata["chat_context"]
     assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
-    assert (
-        context["appointment_management_awaiting"]
-        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
-    )
+    assert context.get("resolved_patient_id") == str(patient.id)
 
 
 def test_cancellation_routing_unchanged_when_not_rescheduling(
@@ -517,13 +527,15 @@ def test_reschedule_incomplete_identity_reprompts() -> None:
         ChatMessageInput(message="Felipe Godoy", conversation_id=started.conversation.id),
     )
 
-    assert "full name" in result.reply.lower()
-    assert "date of birth" in result.reply.lower()
+    reply = result.reply.lower()
+    assert "date of birth" in reply
+    assert "full name and date of birth" not in reply
     chat_context = result.conversation.conversation_metadata["chat_context"]
     assert (
         chat_context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
+    assert chat_context["appointment_management_identity"]["full_name"] == "Felipe Godoy"
 
 
 def test_reschedule_patient_not_found_does_not_list_appointments() -> None:
@@ -2341,3 +2353,78 @@ def test_post_reschedule_new_scheduling_request_enters_normal_routing() -> None:
     )
 
     assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+
+
+def test_reschedule_dob_only_asks_for_name() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(ChatMessageInput(message="I need to reschedule"))
+    result = service.handle_message(
+        ChatMessageInput(message="1996-09-19", conversation_id=started.conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert "full name" in reply
+    assert "full name and date of birth" not in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_management_identity"]["date_of_birth"] == "1996-09-19"
+
+
+def test_reschedule_ambiguous_dob_clarification_preserves_name_and_proceeds() -> None:
+    service, _repository, patient, _emily, reed = _create_chat_service_with_patient()
+    _add_appointments(
+        service,
+        [
+            _monday_cardiology_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+            ),
+        ],
+    )
+
+    started = service.handle_message(ChatMessageInput(message="I need to reschedule"))
+    ambiguous = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 09/08/1980",
+            conversation_id=started.conversation.id,
+        ),
+    )
+    assert "september 8, 1980" in ambiguous.reply.lower()
+    ambiguous_context = ambiguous.conversation.conversation_metadata["chat_context"]
+    assert ambiguous_context["appointment_management_identity"]["full_name"] == "Felipe Godoy"
+
+    clarified = service.handle_message(
+        ChatMessageInput(message="September 19, 1996", conversation_id=started.conversation.id),
+    )
+    reply = clarified.reply.lower()
+    assert "full name and date of birth" not in reply
+    assert (
+        "appointment you want to reschedule" in reply
+        or "which one would you like to reschedule" in reply
+    )
+    clarified_context = clarified.conversation.conversation_metadata["chat_context"]
+    assert clarified_context.get("resolved_patient_id") == str(patient.id)
+    assert chat_context_id_not_exposed(clarified.reply, chat_context=clarified_context)
+
+
+def test_post_booking_reschedule_reuses_resolved_patient_without_identity_intake() -> None:
+    service, tracking_booking, _scheduling = _create_service(mixed_slots=True)
+    conversation = _book_appointment_and_get_conversation(service)
+
+    result = service.handle_message(
+        ChatMessageInput(message="I need to reschedule", conversation_id=conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert "full name and date of birth" not in reply
+    assert (
+        "appointment you want to reschedule" in reply
+        or "which one would you like to reschedule" in reply
+        or "not seeing any upcoming" in reply
+    )
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("resolved_patient_id")
+    assert str(context["resolved_patient_id"]) not in result.reply
+    assert len(tracking_booking.book_calls) == 1

@@ -121,6 +121,130 @@ class _SummaryFacts:
     confirmed_email: str
 
 
+# Conversation-level resolved patient memory. Once written chat resolves (or
+# creates) a patient, these keys let booking/cancellation/reschedule flows reuse
+# that identity without asking for name + date of birth again. The backend still
+# validates ownership before any cancel/reschedule executes; this is UX state.
+RESOLVED_PATIENT_ID_KEY = "resolved_patient_id"
+RESOLVED_PATIENT_NAME_KEY = "resolved_patient_name"
+RESOLVED_PATIENT_DOB_KEY = "resolved_patient_date_of_birth"
+RESOLVED_PATIENT_EMAIL_KEY = "resolved_patient_email"
+PATIENT_RESOLUTION_ID_KEY = "patient_resolution_id"
+
+RESOLVED_PATIENT_CONTEXT_KEYS = (
+    RESOLVED_PATIENT_ID_KEY,
+    RESOLVED_PATIENT_NAME_KEY,
+    RESOLVED_PATIENT_DOB_KEY,
+    RESOLVED_PATIENT_EMAIL_KEY,
+    PATIENT_RESOLUTION_ID_KEY,
+)
+
+# Partial identity collected during a cancellation/reschedule identity intake.
+# Keeps already-known fields (e.g. the name) so we only re-ask for the missing
+# field and so an ambiguous-DOB clarification can resume without re-asking name.
+APPOINTMENT_MANAGEMENT_IDENTITY_KEY = "appointment_management_identity"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPatientContext:
+    patient_id: str
+    name: str | None = None
+    date_of_birth: str | None = None
+    email: str | None = None
+    patient_resolution_id: str | None = None
+
+
+def read_resolved_patient_context(
+    chat_context: dict[str, Any],
+) -> ResolvedPatientContext | None:
+    """Read a previously resolved patient identity from chat context, if any."""
+    patient_id = chat_context.get(RESOLVED_PATIENT_ID_KEY)
+    if not isinstance(patient_id, str) or not patient_id.strip():
+        return None
+
+    def _clean(value: Any) -> str | None:
+        return value if isinstance(value, str) and value.strip() else None
+
+    return ResolvedPatientContext(
+        patient_id=patient_id,
+        name=_clean(chat_context.get(RESOLVED_PATIENT_NAME_KEY)),
+        date_of_birth=_clean(chat_context.get(RESOLVED_PATIENT_DOB_KEY)),
+        email=_clean(chat_context.get(RESOLVED_PATIENT_EMAIL_KEY)),
+        patient_resolution_id=_clean(chat_context.get(PATIENT_RESOLUTION_ID_KEY)),
+    )
+
+
+def build_resolved_patient_context_updates(
+    *,
+    patient_id: str,
+    name: str | None = None,
+    date_of_birth: str | None = None,
+    email: str | None = None,
+    patient_resolution_id: str | None = None,
+) -> dict[str, Any]:
+    """Build chat-context updates that persist a resolved patient identity."""
+    updates: dict[str, Any] = {RESOLVED_PATIENT_ID_KEY: patient_id}
+    if name:
+        updates[RESOLVED_PATIENT_NAME_KEY] = name
+    if date_of_birth:
+        updates[RESOLVED_PATIENT_DOB_KEY] = date_of_birth
+    if email:
+        updates[RESOLVED_PATIENT_EMAIL_KEY] = email
+    if patient_resolution_id:
+        updates[PATIENT_RESOLUTION_ID_KEY] = patient_resolution_id
+    return updates
+
+
+def merge_appointment_management_identity(
+    existing: Any,
+    parsed: ParsedPatientFields,
+    *,
+    include_date_of_birth: bool,
+) -> dict[str, Any]:
+    """Merge newly parsed identity fields into the partial identity store.
+
+    Existing values win so we never clobber a field the patient already gave.
+    The date of birth is only merged when ``include_date_of_birth`` is True so an
+    ambiguous numeric DOB does not get stored before it is disambiguated.
+    """
+    merged: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+    if parsed.full_name and not merged.get("full_name"):
+        normalized = normalize_patient_display_name(parsed.full_name)
+        if normalized:
+            merged["full_name"] = normalized
+    if include_date_of_birth and parsed.date_of_birth and not merged.get("date_of_birth"):
+        merged["date_of_birth"] = parsed.date_of_birth
+    if parsed.email and not merged.get("email"):
+        normalized_email = normalize_email_address(parsed.email)
+        if normalized_email:
+            merged["email"] = normalized_email
+    if parsed.phone and not merged.get("phone"):
+        merged["phone"] = parsed.phone
+    return merged
+
+
+def appointment_management_missing_identity_prompt(
+    identity: dict[str, Any],
+    *,
+    both_prompt: str,
+    name_prompt: str,
+    dob_prompt: str,
+) -> str | None:
+    """Pick the right re-prompt based on which identity fields are still missing.
+
+    Returns ``None`` when both name and date of birth are present.
+    """
+    has_name = bool(identity.get("full_name"))
+    has_dob = bool(identity.get("date_of_birth"))
+    if has_name and has_dob:
+        return None
+    if has_name and not has_dob:
+        return dob_prompt
+    if has_dob and not has_name:
+        return name_prompt
+    return both_prompt
+
+
 class ChatBookingIdentityOrchestrator:
     def __init__(
         self,
@@ -713,17 +837,17 @@ class ChatBookingIdentityOrchestrator:
             hold_id=hold_id,
         )
 
+        # Preserve any identity fields collected so far so the patient never has
+        # to repeat a value. The DOB is only merged when it is unambiguous.
+        identity = merge_appointment_management_identity(
+            booking_context.get("patient_identity"),
+            parsed,
+            include_date_of_birth=dob_issue is None,
+        )
+        if identity:
+            updates["patient_identity"] = identity
+
         if dob_issue is not None:
-            identity_updates: dict[str, Any] = {}
-            if parsed.full_name:
-                identity_updates["full_name"] = parsed.full_name
-            if parsed.email:
-                identity_updates["email"] = normalize_email_address(parsed.email)
-            if identity_updates:
-                updates["patient_identity"] = {
-                    **(booking_context.get("patient_identity") or {}),
-                    **identity_updates,
-                }
             clarification = dob_issue.clarification_question or (
                 "Please clarify your date of birth."
             )
@@ -735,36 +859,43 @@ class ChatBookingIdentityOrchestrator:
                 booking_attempted=True,
             )
 
-        if parsed.full_name is None or parsed.date_of_birth is None:
-            return BookingIdentityFlowResult(
-                intent="booking_identity_missing",
-                content=(
+        full_name = identity.get("full_name")
+        date_of_birth = identity.get("date_of_birth")
+        if not isinstance(full_name, str) or not isinstance(date_of_birth, str):
+            prompt = appointment_management_missing_identity_prompt(
+                identity,
+                both_prompt=(
                     "I still need your full name and date of birth to look up your profile. "
                     "Your hold is still active."
                 ),
+                name_prompt=(
+                    "Thanks. I still need your full name to look up your profile. "
+                    "Your hold is still active."
+                ),
+                dob_prompt=(
+                    "Thanks. I still need your date of birth to look up your profile. "
+                    "Your hold is still active."
+                ),
+            )
+            return BookingIdentityFlowResult(
+                intent="booking_identity_missing",
+                content=prompt or "I still need your full name and date of birth.",
                 chat_context_updates=updates,
                 hold_id=hold_id,
                 booking_attempted=True,
             )
 
-        full_name = normalize_patient_display_name(parsed.full_name)
-        updates["patient_identity"] = {
-            **(booking_context.get("patient_identity") or {}),
-            "full_name": full_name,
-            "date_of_birth": parsed.date_of_birth,
-        }
-        if parsed.phone:
-            updates["patient_identity"]["phone"] = parsed.phone
-        if parsed.email:
-            updates["patient_identity"]["email"] = normalize_email_address(parsed.email)
+        full_name = normalize_patient_display_name(full_name)
+        identity = {**identity, "full_name": full_name}
+        updates["patient_identity"] = identity
 
         result = self.patient_identity_resolution.resolve(
             PatientIdentityResolutionRequest(
                 patient_name=full_name,
-                patient_date_of_birth=date.fromisoformat(parsed.date_of_birth),
+                patient_date_of_birth=date.fromisoformat(date_of_birth),
                 conversation_id=conversation.id,
-                patient_email=parsed.email,
-                patient_phone=parsed.phone,
+                patient_email=identity.get("email"),
+                patient_phone=identity.get("phone"),
                 caller_claims_existing_patient=True,
                 allow_demo_patient_creation=False,
             ),
