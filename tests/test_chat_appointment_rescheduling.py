@@ -350,6 +350,44 @@ def test_reschedule_identity_resolves_patient_and_lists_one_appointment() -> Non
     assert "summary" in offered[0]
 
 
+def test_reschedule_ambiguous_numeric_dob_asks_clarification_without_listing() -> None:
+    service, _repository, patient, _emily, reed = _create_chat_service_with_patient()
+    _add_appointments(
+        service,
+        [
+            _monday_cardiology_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+            ),
+        ],
+    )
+
+    started = service.handle_message(
+        ChatMessageInput(message="I need to reschedule my appointment"),
+    )
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 09/08/1980",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert "september 8, 1980" in reply
+    assert "august 9, 1980" in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    # No patient lookup happened, so no appointments were listed.
+    assert chat_context.get("offered_appointments") is None
+    assert chat_context.get("selected_appointment_id") is None
+    assert chat_context.get("resolved_patient_id") is None
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
 def test_reschedule_single_appointment_reply_asks_for_confirmation() -> None:
     service, _repository, patient, _emily, reed = _create_chat_service_with_patient()
     _add_appointments(

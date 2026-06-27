@@ -76,6 +76,7 @@ from app.services.clinic_time import (
     to_clinic_local_datetime,
 )
 from app.services.date_parsing import DateParseStatus, NaturalLanguageDateParser
+from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
@@ -1865,9 +1866,11 @@ class ChatAppointmentReschedulingOrchestrator:
             chat_context=chat_context,
         )
         if understanding is None or self._should_use_deterministic_only(understanding):
-            return deterministic, None
+            return deterministic, detect_ambiguous_numeric_dob(message)
 
         ctu_fields, dob_issue = self._validated_fields_from_understanding(understanding)
+        if dob_issue is None:
+            dob_issue = detect_ambiguous_numeric_dob(message)
         merged = _merge_parsed_fields(deterministic, ctu_fields)
         if deterministic.phone and not merged.phone:
             merged = ParsedPatientFields(

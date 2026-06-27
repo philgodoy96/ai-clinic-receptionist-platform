@@ -34,6 +34,7 @@ from app.services.chat_confirmation import (
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import format_clinic_local_time_label
+from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
 from app.services.patient_identity_resolution import (
     PatientIdentityResolutionService,
     PatientResolutionNotFoundError,
@@ -417,9 +418,11 @@ class ChatBookingIdentityOrchestrator:
                 hold_id=hold_id,
             )
         if understanding is None or self._should_use_deterministic_only(understanding):
-            return deterministic, None
+            return deterministic, detect_ambiguous_numeric_dob(message)
 
         ctu_fields, dob_issue = self._validated_fields_from_understanding(understanding)
+        if dob_issue is None:
+            dob_issue = detect_ambiguous_numeric_dob(message)
         merged = _merge_parsed_fields(deterministic, ctu_fields)
         if deterministic.phone and not merged.phone:
             merged = ParsedPatientFields(
@@ -1311,10 +1314,19 @@ def _is_valid_iso_date(value: str) -> bool:
 def _dob_ambiguity_issue(
     understanding: ChatTurnUnderstandingResult,
 ) -> FieldIssue | None:
+    """Decide whether the interpreted turn carries an ambiguous date of birth.
+
+    The backend is authoritative: when the interpreter flags an ambiguous
+    numeric DOB we regenerate the clarification wording from the raw source so it
+    always names the correct candidate dates, and we independently re-validate
+    the extracted raw DOB so an interpreter that silently normalized an ambiguous
+    value still triggers clarification.
+    """
     for issue in understanding.ambiguous_fields:
         if issue.field == "date_of_birth":
-            return issue
-    return None
+            refreshed = detect_ambiguous_numeric_dob(issue.source_text)
+            return refreshed if refreshed is not None else issue
+    return detect_ambiguous_numeric_dob(understanding.extracted_fields.date_of_birth_raw)
 
 
 def _merge_parsed_fields(

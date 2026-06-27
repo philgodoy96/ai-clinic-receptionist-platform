@@ -19,6 +19,7 @@ from app.domain.chat_turn_understanding import (
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
+from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
 
 _MONTH_TOKEN_TO_NUMBER: dict[str, int] = {
     "jan": 1,
@@ -608,18 +609,13 @@ class FakeChatTurnUnderstandingInterpreter:
         numeric = self._parse_numeric_date(dob_raw)
         if numeric is not None:
             extracted.date_of_birth_raw = numeric.raw
-            if numeric.is_ambiguous:
-                ambiguous_fields.append(
-                    FieldIssue(
-                        field="date_of_birth",
-                        source_text=numeric.raw,
-                        reason="ambiguous_numeric_date_format",
-                        candidates=numeric.candidates,
-                        clarification_question=(
-                            "Did you mean September 10, 1996 or October 9, 1996?"
-                        ),
-                    ),
-                )
+            ambiguous_issue = (
+                detect_ambiguous_numeric_dob(numeric.raw)
+                if numeric.is_ambiguous
+                else None
+            )
+            if ambiguous_issue is not None:
+                ambiguous_fields.append(ambiguous_issue)
             else:
                 extracted.date_of_birth = numeric.normalized
             return _IdentityParseResult(

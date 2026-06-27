@@ -680,6 +680,42 @@ def test_cancellation_patient_not_found_does_not_list_appointments() -> None:
     )
 
 
+def test_cancellation_ambiguous_numeric_dob_asks_clarification_without_listing() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _add_appointments(
+        service,
+        [
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 09/08/1980",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "september 8, 1980" in reply
+    assert "august 9, 1980" in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    # No patient lookup happened, so no appointments were listed.
+    assert chat_context.get("offered_appointments") is None
+    assert chat_context.get("selected_appointment_id") is None
+    assert chat_context.get("resolved_patient_id") is None
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
 def _reach_cancellation_confirmation(
     service: ChatReceptionistService,
     *,
