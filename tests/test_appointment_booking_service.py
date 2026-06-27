@@ -360,8 +360,7 @@ class FakeAppointmentRepository:
                 appointment
                 for appointment in self.appointments
                 if appointment.patient_id == patient_id
-                and appointment.status
-                in (AppointmentStatus.SCHEDULED, AppointmentStatus.RESCHEDULED)
+                and appointment.status == AppointmentStatus.SCHEDULED
                 and appointment.start_time >= start_from
             ),
             key=lambda appointment: appointment.start_time,

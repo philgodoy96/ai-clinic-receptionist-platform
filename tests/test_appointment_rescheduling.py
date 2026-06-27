@@ -168,13 +168,21 @@ def test_normalize_rescheduling_reason_trims_and_rejects_blank() -> None:
 
 def test_active_appointment_statuses_remain_cancelable_regression() -> None:
     assert is_appointment_cancelable(AppointmentStatus.SCHEDULED) is True
-    assert is_appointment_cancelable(AppointmentStatus.RESCHEDULED) is True
+    assert is_appointment_cancelable(AppointmentStatus.RESCHEDULED) is False
     assert is_appointment_cancelable(AppointmentStatus.CANCELLED) is False
     assert is_appointment_cancelable(AppointmentStatus.COMPLETED) is False
 
 
-def test_reschedulable_statuses_match_cancelable_active_statuses_regression() -> None:
+def test_rescheduled_status_is_reschedulable_but_not_cancelable_regression() -> None:
+    # A RESCHEDULED appointment is a superseded historical record: it must not be
+    # treated as an active/cancelable appointment, even though reschedule execution
+    # semantics still recognize it as a reschedule predecessor.
+    assert is_appointment_reschedulable(AppointmentStatus.RESCHEDULED) is True
+    assert is_appointment_cancelable(AppointmentStatus.RESCHEDULED) is False
+
     for status in AppointmentStatus:
+        if status == AppointmentStatus.RESCHEDULED:
+            continue
         assert is_appointment_reschedulable(status) == is_appointment_cancelable(status)
 
 

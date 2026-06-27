@@ -181,12 +181,7 @@ class SQLAlchemyAppointmentRepository:
             select(Appointment)
             .where(
                 Appointment.patient_id == patient_id,
-                Appointment.status.in_(
-                    (
-                        AppointmentStatus.SCHEDULED,
-                        AppointmentStatus.RESCHEDULED,
-                    ),
-                ),
+                Appointment.status == AppointmentStatus.SCHEDULED,
                 Appointment.start_time >= start_from,
             )
             .order_by(Appointment.start_time)

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.domain.appointments import is_appointment_cancelable
 from app.domain.scheduling.enums import AppointmentStatus
 from app.models.scheduling import Appointment, Doctor, Patient
 from app.services.appointment_cancellation import AppointmentCancellationService
@@ -1335,7 +1336,7 @@ def test_cancellation_flow_does_not_call_cancellation_service() -> None:
     cancel_appointment_mock.assert_not_called()
 
 
-def test_fake_repository_list_cancelable_for_patient_includes_scheduled_and_rescheduled() -> None:
+def test_fake_repository_list_cancelable_for_patient_excludes_rescheduled() -> None:
     patient_id = uuid4()
     doctor_id = uuid4()
     specialty_id = uuid4()
@@ -1367,7 +1368,7 @@ def test_fake_repository_list_cancelable_for_patient_includes_scheduled_and_resc
         start_from=REFERENCE_CLINIC_NOW_UTC,
     )
 
-    assert [appointment.id for appointment in appointments] == [scheduled.id, rescheduled.id]
+    assert [appointment.id for appointment in appointments] == [scheduled.id]
 
 
 def test_fake_repository_list_cancelable_for_patient_orders_by_start_time() -> None:
@@ -1379,7 +1380,7 @@ def test_fake_repository_list_cancelable_for_patient_orders_by_start_time() -> N
         doctor_id=doctor_id,
         specialty_id=specialty_id,
         start_time=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
-        status=AppointmentStatus.RESCHEDULED,
+        status=AppointmentStatus.SCHEDULED,
     )
     earlier = create_appointment(
         patient_id=patient_id,
@@ -1396,6 +1397,36 @@ def test_fake_repository_list_cancelable_for_patient_orders_by_start_time() -> N
     )
 
     assert [appointment.id for appointment in appointments] == [earlier.id, later.id]
+
+
+def test_after_reschedule_only_successor_is_listed_and_predecessor_not_cancelable() -> None:
+    patient_id = uuid4()
+    doctor_id = uuid4()
+    specialty_id = uuid4()
+    monday_predecessor = create_appointment(
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        specialty_id=specialty_id,
+        start_time=datetime(2026, 7, 6, 14, 0, tzinfo=UTC),
+        status=AppointmentStatus.RESCHEDULED,
+    )
+    tuesday_successor = create_appointment(
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        specialty_id=specialty_id,
+        start_time=datetime(2026, 7, 7, 19, 0, tzinfo=UTC),
+        status=AppointmentStatus.SCHEDULED,
+    )
+    repository = FakeAppointmentRepository([monday_predecessor, tuesday_successor])
+
+    cancelable = repository.list_cancelable_for_patient(
+        patient_id=patient_id,
+        start_from=REFERENCE_CLINIC_NOW_UTC,
+    )
+
+    assert [appointment.id for appointment in cancelable] == [tuesday_successor.id]
+    assert is_appointment_cancelable(tuesday_successor.status) is True
+    assert is_appointment_cancelable(monday_predecessor.status) is False
 
 
 def chat_context_id_not_exposed(reply: str, *, chat_context: dict[str, object]) -> bool:
