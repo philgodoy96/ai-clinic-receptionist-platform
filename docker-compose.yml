@@ -6,6 +6,12 @@ services:
     container_name: clinic-receptionist-api
     env_file:
       - .env
+    environment:
+      # Provider secrets: read from host shell or local .env (never commit real values).
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RETELL_API_KEY: ${RETELL_API_KEY:-}
+      RETELL_WEBHOOK_SECRET: ${RETELL_WEBHOOK_SECRET:-}
     ports:
       - "8000:8000"
     depends_on:
