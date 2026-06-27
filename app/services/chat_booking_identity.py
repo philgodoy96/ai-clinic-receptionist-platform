@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.domain.chat_turn_understanding import (
     ChatTurnIntent,
@@ -32,6 +33,7 @@ from app.services.chat_confirmation import (
     understand_confirmation,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
+from app.services.clinic_time import format_clinic_local_time_label
 from app.services.patient_identity_resolution import (
     PatientIdentityResolutionService,
     PatientResolutionNotFoundError,
@@ -124,9 +126,11 @@ class ChatBookingIdentityOrchestrator:
         *,
         patient_identity_resolution: PatientIdentityResolutionService,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
+        clinic_timezone: ZoneInfo | None = None,
     ) -> None:
         self.patient_identity_resolution = patient_identity_resolution
         self.chat_turn_understanding_interpreter = chat_turn_understanding_interpreter
+        self._clinic_timezone = clinic_timezone
 
     def hold_created_context_updates(self, base_updates: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -470,7 +474,10 @@ class ChatBookingIdentityOrchestrator:
     ) -> BookingIdentityFlowResult:
         doctor_name = merged_context.get("selected_doctor_name")
         appointment_date = _format_summary_date(merged_context)
-        appointment_time = _format_summary_time(merged_context)
+        appointment_time = _format_summary_time(
+            merged_context,
+            clinic_timezone=self._clinic_timezone,
+        )
         details = ""
         if (
             isinstance(doctor_name, str)
@@ -1233,6 +1240,7 @@ class ChatBookingIdentityOrchestrator:
         summary_facts = _collect_summary_facts(
             booking_context=booking_context,
             confirmed_email=confirmed_email,
+            clinic_timezone=self._clinic_timezone,
         )
         if summary_facts is None:
             return BookingIdentityFlowResult(
@@ -1353,11 +1361,18 @@ def _format_summary_date(booking_context: dict[str, Any]) -> str | None:
     return None
 
 
-def _format_summary_time(booking_context: dict[str, Any]) -> str | None:
+def _format_summary_time(
+    booking_context: dict[str, Any],
+    *,
+    clinic_timezone: ZoneInfo | None = None,
+) -> str | None:
     start_time_raw = booking_context.get("selected_start_time")
     if isinstance(start_time_raw, str):
         try:
-            return datetime.fromisoformat(start_time_raw).strftime("%H:%M")
+            parsed = datetime.fromisoformat(start_time_raw)
+            if clinic_timezone is not None:
+                return format_clinic_local_time_label(parsed, clinic_timezone)
+            return parsed.strftime("%H:%M")
         except ValueError:
             pass
 
@@ -1368,6 +1383,7 @@ def _collect_summary_facts(
     *,
     booking_context: dict[str, Any],
     confirmed_email: str,
+    clinic_timezone: ZoneInfo | None = None,
 ) -> _SummaryFacts | None:
     doctor_name_raw = booking_context.get("selected_doctor_name")
     if not isinstance(doctor_name_raw, str) or not doctor_name_raw.strip():
@@ -1375,7 +1391,10 @@ def _collect_summary_facts(
 
     doctor_name = doctor_name_raw.strip()
     appointment_date = _format_summary_date(booking_context)
-    appointment_time = _format_summary_time(booking_context)
+    appointment_time = _format_summary_time(
+        booking_context,
+        clinic_timezone=clinic_timezone,
+    )
     if appointment_date is None or appointment_time is None:
         return None
 

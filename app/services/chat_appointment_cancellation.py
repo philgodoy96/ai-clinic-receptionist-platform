@@ -49,7 +49,11 @@ from app.services.chat_confirmation import (
     understand_confirmation,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
-from app.services.clinic_time import ClinicTimeService
+from app.services.clinic_time import (
+    ClinicTimeService,
+    format_clinic_local_time_label,
+    to_clinic_local_datetime,
+)
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 
 logger = logging.getLogger(__name__)
@@ -777,9 +781,10 @@ class ChatAppointmentCancellationOrchestrator:
     def _present_appointment(self, appointment: Appointment) -> _AppointmentPresentation:
         doctor_name = self._resolve_doctor_name(appointment.doctor_id)
         specialty_name = self._resolve_specialty_name(appointment.specialty_id)
-        localized_start = appointment.start_time.astimezone(self.clinic_time_service.timezone)
+        clinic_tz = self.clinic_time_service.timezone
+        localized_start = to_clinic_local_datetime(appointment.start_time, clinic_tz)
         weekday = localized_start.strftime("%A")
-        time_label = localized_start.strftime("%H:%M")
+        time_label = format_clinic_local_time_label(appointment.start_time, clinic_tz)
 
         list_summary = (
             f"{specialty_name} with {doctor_name} on {weekday} at {time_label}"

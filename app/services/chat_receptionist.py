@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.ai.receptionist_output import ReceptionistLLMIntent
 from app.ai.reliability import LLMFailureReason
@@ -101,7 +102,11 @@ from app.services.chat_confirmation import (
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
-from app.services.clinic_time import ClinicTimeService
+from app.services.clinic_time import (
+    ClinicTimeService,
+    format_clinic_local_time_label,
+    to_clinic_local_datetime,
+)
 from app.services.conversation_health import (
     ConversationHealthResult,
     ConversationHealthService,
@@ -936,14 +941,15 @@ class ChatReceptionistService:
         self.response_generation_mode = response_generation_mode
         self.patient_identity_resolution = patient_identity_resolution
         self.chat_turn_understanding_records = chat_turn_understanding_records
-        self._booking_identity = ChatBookingIdentityOrchestrator(
-            patient_identity_resolution=patient_identity_resolution,
-            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
-        )
         effective_clinic_time = clinic_time_service or scheduling._clinic_time_service
         if effective_clinic_time is None:
             msg = "clinic_time_service is required for appointment cancellation"
             raise ValueError(msg)
+        self._booking_identity = ChatBookingIdentityOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+            clinic_timezone=effective_clinic_time.timezone,
+        )
         self._appointment_cancellation = ChatAppointmentCancellationOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
             appointments=scheduling.appointments,
@@ -973,6 +979,15 @@ class ChatReceptionistService:
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
             appointment_holds=appointment_holds,
         )
+
+    def _clinic_timezone(self) -> ZoneInfo:
+        if self.clinic_time_service is not None:
+            return self.clinic_time_service.timezone
+        clinic_time = self.scheduling._clinic_time_service
+        if clinic_time is not None:
+            return clinic_time.timezone
+        msg = "clinic_time_service is required for clinic-local time formatting"
+        raise ValueError(msg)
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -2720,7 +2735,7 @@ class ChatReceptionistService:
         except ValueError:
             return "the selected time"
 
-        return parsed.strftime("%H:%M")
+        return format_clinic_local_time_label(parsed, self._clinic_timezone())
 
     def _format_booking_date(self, merged_context: dict[str, Any]) -> str:
         start_time_raw = merged_context.get("selected_start_time")
@@ -3502,9 +3517,11 @@ class ChatReceptionistService:
         doctor_name: str,
         label: str,
     ) -> str:
+        clinic_tz = self._clinic_timezone()
         grouped: dict[date, list[datetime]] = {}
         for slot in slots:
-            grouped.setdefault(slot.start_time.date(), []).append(slot.start_time)
+            local_start = to_clinic_local_datetime(slot.start_time, clinic_tz)
+            grouped.setdefault(local_start.date(), []).append(local_start)
 
         day_parts: list[str] = []
         for slot_date in sorted(grouped):
@@ -3526,9 +3543,11 @@ class ChatReceptionistService:
         specialty_name: str,
         label: str,
     ) -> str:
+        clinic_tz = self._clinic_timezone()
         grouped: dict[date, list[datetime]] = {}
         for item in slots:
-            grouped.setdefault(item.slot.start_time.date(), []).append(item.slot.start_time)
+            local_start = to_clinic_local_datetime(item.slot.start_time, clinic_tz)
+            grouped.setdefault(local_start.date(), []).append(local_start)
 
         day_parts: list[str] = []
         for slot_date in sorted(grouped):
@@ -3561,9 +3580,13 @@ class ChatReceptionistService:
         if not slots:
             return _EARLIEST_NO_AVAILABILITY_MESSAGE
 
-        slot_date = slots[0].start_time.date()
+        clinic_tz = self._clinic_timezone()
+        local_start = to_clinic_local_datetime(slots[0].start_time, clinic_tz)
+        slot_date = local_start.date()
         date_label = self._format_availability_date_label(slot_date)
-        times = [slot.start_time.strftime("%H:%M") for slot in slots]
+        times = [
+            format_clinic_local_time_label(slot.start_time, clinic_tz) for slot in slots
+        ]
         times_text = self._join_names(times)
         suffix = ""
         if len(slots) > _MAX_OFFERED_SLOTS:
@@ -3583,17 +3606,23 @@ class ChatReceptionistService:
         if not slots:
             return _EARLIEST_NO_AVAILABILITY_MESSAGE
 
+        clinic_tz = self._clinic_timezone()
         first = slots[0]
-        slot_date = first.slot.start_time.date()
+        first_local = to_clinic_local_datetime(first.slot.start_time, clinic_tz)
+        slot_date = first_local.date()
         date_label = self._format_availability_date_label(slot_date)
         doctor_name = first.doctor_name
         same_doctor_and_day = all(
-            item.doctor_name == doctor_name and item.slot.start_time.date() == slot_date
+            item.doctor_name == doctor_name
+            and to_clinic_local_datetime(item.slot.start_time, clinic_tz).date() == slot_date
             for item in slots
         )
 
         if same_doctor_and_day:
-            times = [item.slot.start_time.strftime("%H:%M") for item in slots]
+            times = [
+                format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+                for item in slots
+            ]
             times_text = self._join_names(times)
             return (
                 f"The earliest {specialty_name.lower()} openings I found are with "
@@ -3601,7 +3630,10 @@ class ChatReceptionistService:
             )
 
         opening_descriptions = [
-            f"{item.slot.start_time.strftime('%H:%M')} with {item.doctor_name}"
+            (
+                f"{format_clinic_local_time_label(item.slot.start_time, clinic_tz)} "
+                f"with {item.doctor_name}"
+            )
             for item in slots
         ]
         openings_text = self._join_names(opening_descriptions)
@@ -3841,6 +3873,7 @@ class ChatReceptionistService:
         use_slot_date: bool = False,
     ) -> list[dict[str, Any]]:
         doctor_names = doctor_names or {}
+        clinic_tz = self._clinic_timezone()
         return [
             {
                 "availability_slot_id": str(slot.id),
@@ -3848,9 +3881,11 @@ class ChatReceptionistService:
                 "doctor_name": doctor_names.get(slot.doctor_id, ""),
                 "specialty_name": specialty_name,
                 "start_time": slot.start_time.isoformat(),
-                "display_time": slot.start_time.strftime("%H:%M"),
+                "display_time": format_clinic_local_time_label(slot.start_time, clinic_tz),
                 "display_date": (
-                    slot.start_time.date().isoformat() if use_slot_date else display_date
+                    to_clinic_local_datetime(slot.start_time, clinic_tz).date().isoformat()
+                    if use_slot_date
+                    else display_date
                 ),
             }
             for slot in slots
@@ -3864,6 +3899,7 @@ class ChatReceptionistService:
         display_date: str | None = None,
         use_slot_date: bool = False,
     ) -> list[dict[str, Any]]:
+        clinic_tz = self._clinic_timezone()
         return [
             {
                 "availability_slot_id": str(item.slot.id),
@@ -3871,9 +3907,16 @@ class ChatReceptionistService:
                 "doctor_name": item.doctor_name,
                 "specialty_name": specialty_name,
                 "start_time": item.slot.start_time.isoformat(),
-                "display_time": item.slot.start_time.strftime("%H:%M"),
+                "display_time": format_clinic_local_time_label(
+                    item.slot.start_time,
+                    clinic_tz,
+                ),
                 "display_date": (
-                    item.slot.start_time.date().isoformat() if use_slot_date else display_date
+                    to_clinic_local_datetime(item.slot.start_time, clinic_tz)
+                    .date()
+                    .isoformat()
+                    if use_slot_date
+                    else display_date
                 ),
             }
             for item in slots
@@ -3887,7 +3930,10 @@ class ChatReceptionistService:
         requested_date: str,
     ) -> str:
         shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
-        times = [slot.start_time.strftime("%H:%M") for slot in shown_slots]
+        clinic_tz = self._clinic_timezone()
+        times = [
+            format_clinic_local_time_label(slot.start_time, clinic_tz) for slot in shown_slots
+        ]
         times_text = self._join_names(times)
         suffix = ""
 
@@ -3906,8 +3952,12 @@ class ChatReceptionistService:
         specialty_name: str,
         requested_date: str,
     ) -> str:
+        clinic_tz = self._clinic_timezone()
         opening_descriptions = [
-            f"{item.slot.start_time.strftime('%H:%M')} with {item.doctor_name}"
+            (
+                f"{format_clinic_local_time_label(item.slot.start_time, clinic_tz)} "
+                f"with {item.doctor_name}"
+            )
             for item in slots
         ]
         openings_text = self._join_names(opening_descriptions)
@@ -4059,11 +4109,12 @@ class ChatReceptionistService:
             start_time=start_time,
             end_time=end_time,
         )
+        clinic_tz = self._clinic_timezone()
         return [
             slot
             for slot in slots
             if is_time_in_window(
-                time_value=slot.start_time.strftime("%H:%M"),
+                time_value=format_clinic_local_time_label(slot.start_time, clinic_tz),
                 window=time_window,
             )
         ]
@@ -4088,11 +4139,15 @@ class ChatReceptionistService:
             start_time=start_time,
             end_time=end_time,
         )
+        clinic_tz = self._clinic_timezone()
         return [
             item
             for item in slots
             if is_time_in_window(
-                time_value=item.slot.start_time.strftime("%H:%M"),
+                time_value=format_clinic_local_time_label(
+                    item.slot.start_time,
+                    clinic_tz,
+                ),
                 window=time_window,
             )
         ]
@@ -4343,7 +4398,12 @@ class ChatReceptionistService:
         hold_expires_at = hold.created_at + timedelta(
             seconds=self.appointment_holds.ttl_seconds,
         )
-        display_time = str(selected_slot.get("display_time", slot.start_time.strftime("%H:%M")))
+        display_time = str(
+            selected_slot.get(
+                "display_time",
+                format_clinic_local_time_label(slot.start_time, self._clinic_timezone()),
+            ),
+        )
         doctor_name = str(
             selected_slot.get("doctor_name")
             or merged_context.get("selected_doctor_name", "the selected doctor"),

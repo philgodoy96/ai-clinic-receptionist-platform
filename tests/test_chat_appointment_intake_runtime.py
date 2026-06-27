@@ -862,12 +862,12 @@ def _scheduling_with_emily_afternoon_15_00() -> object:
     slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 19, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -898,7 +898,7 @@ def test_3pm_reply_creates_hold_end_to_end_with_fake_ctu() -> None:
     assert result.intent == ChatReceptionistIntent.HOLD_CREATED
     assert "15:00" in result.reply
     chat_context = result.conversation.conversation_metadata["chat_context"]
-    assert chat_context["selected_start_time"] == "2026-07-02T15:00:00+00:00"
+    assert chat_context["selected_start_time"] == "2026-07-02T19:00:00+00:00"
     assert chat_context.get("hold_id")
 
 
@@ -945,7 +945,7 @@ def _scheduling_with_next_week_slots() -> object:
         ),
         create_availability_slot(
             doctor_id=reed.id,
-            start_time=datetime(2026, 7, 8, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 8, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
@@ -1172,7 +1172,7 @@ def test_slot_selection_after_range_results_creates_hold() -> None:
     assert "14:00" in second.reply
     chat_context = second.conversation.conversation_metadata["chat_context"]
     assert chat_context.get("hold_id")
-    assert chat_context["selected_start_time"] == "2026-07-08T14:00:00+00:00"
+    assert chat_context["selected_start_time"] == "2026-07-08T18:00:00+00:00"
 
 
 def test_unclear_message_after_availability_results_asks_for_slot_selection() -> None:
