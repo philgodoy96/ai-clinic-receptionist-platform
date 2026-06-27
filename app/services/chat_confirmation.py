@@ -37,6 +37,21 @@ _REJECTED_PHRASES = (
     "don't",
 )
 
+_CANCELLATION_CONFIRMED_PHRASES = (
+    "yes, cancel it",
+    "yes cancel it",
+    "please cancel it",
+    "cancel it",
+)
+
+_CANCELLATION_REJECTED_PHRASES = (
+    "don't cancel",
+    "do not cancel",
+    "keep it",
+    "never mind",
+    "nevermind",
+)
+
 _WANTS_CHANGE_PHRASES = (
     "change",
     "change it",
@@ -56,6 +71,7 @@ class ConfirmationType(StrEnum):
     EMAIL_CONFIRMATION = "email_confirmation"
     FINAL_BOOKING_CONFIRMATION = "final_booking_confirmation"
     POSSIBLE_PATIENT_MATCH_CONFIRMATION = "possible_patient_match_confirmation"
+    CANCELLATION_CONFIRMATION = "cancellation_confirmation"
 
 
 class ConfirmationDecision(StrEnum):
@@ -77,8 +93,9 @@ def understand_confirmation(
     confirmation_type: ConfirmationType,
     message: str,
 ) -> ConfirmationUnderstanding:
-    del confirmation_type  # state-aware via caller; same phrases apply per type for now
     normalized = _normalize_message(message)
+    confirmed_phrases = _confirmed_phrases_for_type(confirmation_type)
+    rejected_phrases = _rejected_phrases_for_type(confirmation_type)
 
     if not normalized:
         return ConfirmationUnderstanding(
@@ -87,7 +104,7 @@ def understand_confirmation(
             reason="empty_message",
         )
 
-    rejected = _match_phrase_list(normalized, _REJECTED_PHRASES)
+    rejected = _match_phrase_list(normalized, rejected_phrases)
     if rejected is not None:
         return ConfirmationUnderstanding(
             decision=ConfirmationDecision.REJECTED,
@@ -103,7 +120,7 @@ def understand_confirmation(
             reason=f"matched_change_request:{wants_change}",
         )
 
-    confirmed = _match_phrase_list(normalized, _CONFIRMED_PHRASES)
+    confirmed = _match_phrase_list(normalized, confirmed_phrases)
     if confirmed is not None:
         return ConfirmationUnderstanding(
             decision=ConfirmationDecision.CONFIRMED,
@@ -154,6 +171,22 @@ def normalize_email_address(value: str) -> str:
         return collapsed
 
     return _TRAILING_PUNCTUATION.sub("", collapsed).strip().lower()
+
+
+def _confirmed_phrases_for_type(
+    confirmation_type: ConfirmationType,
+) -> tuple[str, ...]:
+    if confirmation_type is ConfirmationType.CANCELLATION_CONFIRMATION:
+        return _CONFIRMED_PHRASES + _CANCELLATION_CONFIRMED_PHRASES
+    return _CONFIRMED_PHRASES
+
+
+def _rejected_phrases_for_type(
+    confirmation_type: ConfirmationType,
+) -> tuple[str, ...]:
+    if confirmation_type is ConfirmationType.CANCELLATION_CONFIRMATION:
+        return _REJECTED_PHRASES + _CANCELLATION_REJECTED_PHRASES
+    return _REJECTED_PHRASES
 
 
 def _normalize_message(message: str) -> str:

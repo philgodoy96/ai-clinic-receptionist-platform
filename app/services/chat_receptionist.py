@@ -40,6 +40,7 @@ from app.services.appointment_booking import (
     BookingDoctorNotFoundError,
     BookingPatientNotFoundError,
 )
+from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_holds import (
     AppointmentHoldMismatchError,
     AppointmentHoldNotFoundError,
@@ -50,6 +51,18 @@ from app.services.appointment_holds import (
 )
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
+)
+from app.services.chat_appointment_cancellation import (
+    _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
+    _CANCELLATION_CONFIRMATION_REPROMPT,
+    _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+    APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+    APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION,
+    APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
+    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
+    APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+    CancellationFlowResult,
+    ChatAppointmentCancellationOrchestrator,
 )
 from app.services.chat_appointment_intake import (
     APPOINTMENT_AVAILABILITY_RANGE_NEXT_WEEK,
@@ -103,6 +116,10 @@ from app.services.post_booking_turn import (
     PostBookingTurnDecision,
     PostBookingTurnUnderstanding,
 )
+from app.services.post_cancellation_turn import (
+    PostCancellationTurnDecision,
+    classify_post_cancellation_turn,
+)
 from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
     ReceptionistResponseGenerator,
@@ -150,6 +167,9 @@ _EMERGENCY_KEYWORDS = [
 ]
 _CANCEL_KEYWORDS = ["cancel", "cancellation"]
 _RESCHEDULE_KEYWORDS = ["reschedule", "move appointment"]
+_CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
+    "Of course. I can look it up first. What is the patient's full name and date of birth?"
+)
 _SPECIALTY_LIST_KEYWORDS = [
     "specialties",
     "specialty",
@@ -251,6 +271,10 @@ _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE = (
 )
 _POST_BOOKING_UNKNOWN_MESSAGE = (
     "Your appointment is confirmed. Would you like to schedule, cancel, "
+    "or reschedule anything else?"
+)
+_POST_CANCELLATION_UNKNOWN_MESSAGE = (
+    "Your appointment has been cancelled. Would you like to schedule, cancel, "
     "or reschedule anything else?"
 )
 
@@ -358,9 +382,82 @@ def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None
     return resolved[1]
 
 
+def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
+def _is_awaiting_cancellation_appointment_selection(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+
+
+def _is_awaiting_cancellation_confirmation(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+
+
+def _is_in_post_cancellation_frame(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_CANCEL:
+        return False
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return False
+    if chat_context.get("cancellation_status") != "cancelled":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    booking_step = chat_context.get("booking_identity_step")
+    if isinstance(booking_step, str) and booking_step != (
+        ChatBookingIdentityStep.BOOKING_COMPLETED.value
+    ):
+        return False
+    return True
+
+
+def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_CANCEL:
+        return False
+    return (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+
+
 def _resolve_contextual_fallback_reply(
     chat_context: dict[str, Any],
 ) -> tuple[ChatReceptionistIntent, str] | None:
+    if _is_awaiting_cancellation_patient_identity(chat_context):
+        return (
+            ChatReceptionistIntent.CANCEL_REQUEST,
+            _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+        )
+
+    if _is_awaiting_cancellation_appointment_selection(chat_context):
+        return (
+            ChatReceptionistIntent.CANCEL_REQUEST,
+            _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
+        )
+
+    if _is_awaiting_cancellation_confirmation(chat_context):
+        return (
+            ChatReceptionistIntent.CANCEL_REQUEST,
+            _CANCELLATION_CONFIRMATION_REPROMPT,
+        )
+
     if chat_context.get("appointment_id"):
         return None
 
@@ -686,6 +783,7 @@ class ChatReceptionistService:
             ReceptionistResponseMode.DETERMINISTIC
         ),
         patient_identity_resolution: PatientIdentityResolutionService,
+        appointment_cancellation: AppointmentCancellationService,
         chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
         post_booking_turn_classifier: PostBookingTurnClassifier | None = None,
@@ -709,6 +807,18 @@ class ChatReceptionistService:
         self.chat_turn_understanding_records = chat_turn_understanding_records
         self._booking_identity = ChatBookingIdentityOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        )
+        effective_clinic_time = clinic_time_service or scheduling._clinic_time_service
+        if effective_clinic_time is None:
+            msg = "clinic_time_service is required for appointment cancellation"
+            raise ValueError(msg)
+        self._appointment_cancellation = ChatAppointmentCancellationOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            appointments=scheduling.appointments,
+            appointment_cancellation=appointment_cancellation,
+            scheduling_metadata=scheduling,
+            clinic_time_service=effective_clinic_time,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
         )
         self._appointment_intake = ChatAppointmentIntakeOrchestrator(
@@ -1145,11 +1255,16 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
             return self.responder.generate_reply(message=message)
 
-        if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
-            return self.responder.generate_reply(message=message)
-
         if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return self.responder.generate_reply(message=message)
+
+        if _is_in_post_cancellation_frame(existing_context):
+            post_cancellation_reply = self._handle_post_cancellation_message(
+                message=message,
+                merged_context=existing_context,
+            )
+            if post_cancellation_reply is not None:
+                return post_cancellation_reply
 
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
@@ -1163,6 +1278,20 @@ class ChatReceptionistService:
                     time_preference_parsing=time_extraction.time_preference_parsing,
                 )
             return reply
+
+        if _is_in_cancellation_flow(existing_context):
+            return finish(
+                self._handle_cancellation_flow(
+                    message=message,
+                    conversation=conversation,
+                    chat_context=existing_context,
+                ),
+            )
+
+        if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
+            return finish(
+                self._enter_cancellation_task_frame(context_updates={}),
+            )
 
         intake_result = self._try_appointment_intake(
             message=message,
@@ -1752,6 +1881,76 @@ class ChatReceptionistService:
             booking_attempted=flow.booking_attempted,
         )
 
+    def _handle_cancellation_flow(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        awaiting = chat_context.get("appointment_management_awaiting")
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY:
+            flow = self._appointment_cancellation.handle_patient_identity_intake(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+                parse_patient_fields=self._parse_booking_patient_fields,
+            )
+            return self._cancellation_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION:
+            flow = self._appointment_cancellation.handle_appointment_selection(
+                message=message,
+                chat_context=chat_context,
+            )
+            return self._cancellation_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION:
+            flow = self._appointment_cancellation.handle_cancellation_confirmation(
+                message=message,
+                conversation_id=conversation.id,
+                chat_context=chat_context,
+            )
+            return self._cancellation_flow_result_to_reply(flow)
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.CANCEL_REQUEST,
+            content=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+            chat_context_updates={
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+                "appointment_management_awaiting": (
+                    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                ),
+            },
+        )
+
+    def _cancellation_flow_result_to_reply(
+        self,
+        flow: CancellationFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+        )
+
+    def _enter_cancellation_task_frame(
+        self,
+        *,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.CANCEL_REQUEST,
+            content=_CANCELLATION_IDENTITY_ENTRY_MESSAGE,
+            chat_context_updates={
+                **context_updates,
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+                "appointment_management_awaiting": (
+                    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                ),
+            },
+        )
+
     def _hold_booking_identity_unavailable_reply(
         self,
         *,
@@ -1769,6 +1968,60 @@ class ChatReceptionistService:
             chat_context_updates=context_updates,
             hold_id=hold_id,
             booking_attempted=booking_attempted,
+        )
+
+    def _resolve_post_cancellation_decision(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> PostCancellationTurnDecision:
+        return classify_post_cancellation_turn(
+            message=message,
+            chat_context=chat_context,
+        ).decision
+
+    def _post_cancellation_reply_for_decision(
+        self,
+        *,
+        decision: PostCancellationTurnDecision,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostCancellationTurnDecision.CANCEL_REQUEST,
+            PostCancellationTurnDecision.RESCHEDULE_REQUEST,
+        }:
+            return None
+
+        content_by_decision = {
+            PostCancellationTurnDecision.END_CONVERSATION: _POST_BOOKING_CLOSING_MESSAGE,
+            PostCancellationTurnDecision.NEEDS_MORE_HELP: _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+            PostCancellationTurnDecision.UNKNOWN: _POST_CANCELLATION_UNKNOWN_MESSAGE,
+        }
+        content = content_by_decision.get(decision)
+        if content is None:
+            return None
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.CANCEL_REQUEST,
+            content=content,
+            chat_context_updates=context_updates,
+        )
+
+    def _handle_post_cancellation_message(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        decision = self._resolve_post_cancellation_decision(
+            message=message,
+            chat_context=merged_context,
+        )
+        return self._post_cancellation_reply_for_decision(
+            decision=decision,
+            context_updates={},
         )
 
     def _resolve_post_booking_decision(

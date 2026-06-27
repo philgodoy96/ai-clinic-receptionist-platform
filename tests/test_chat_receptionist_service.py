@@ -18,9 +18,15 @@ from app.services.appointment_booking import (
     AppointmentBookingResult,
     AppointmentBookingService,
 )
+from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
+)
+from app.services.chat_appointment_cancellation import (
+    APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
+    APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
 from app.services.chat_booking_identity import ChatBookingIdentityStep
 from app.services.chat_receptionist import (
@@ -161,6 +167,25 @@ def create_patient_identity_resolution_for_scheduling(
     )
 
 
+def create_appointment_cancellation_service_for_scheduling(
+    scheduling: SchedulingService,
+) -> AppointmentCancellationService:
+    from typing import cast
+
+    from app.services.audit_logs import AuditLogService
+    from tests.test_appointment_booking_api import FakeAuditLogService
+    from tests.test_appointment_cancellation_service import (
+        FakeAppointmentCancellationAttemptRepository,
+    )
+
+    return AppointmentCancellationService(
+        appointments=scheduling.appointments,
+        cancellation_attempts=FakeAppointmentCancellationAttemptRepository(),
+        audit_logs=cast(AuditLogService, FakeAuditLogService()),
+        availability_slots=scheduling.availability_slots,
+    )
+
+
 def create_chat_receptionist_service(
     *,
     conversations: ConversationService,
@@ -179,6 +204,7 @@ def create_chat_receptionist_service(
     response_generator: ReceptionistResponseGenerator | None = None,
     response_generation_mode: ReceptionistResponseMode = (ReceptionistResponseMode.DETERMINISTIC),
     patient_identity_resolution: PatientIdentityResolutionService | None = None,
+    appointment_cancellation: AppointmentCancellationService | None = None,
     chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
     chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
 ) -> ChatReceptionistService:
@@ -191,6 +217,11 @@ def create_chat_receptionist_service(
         patient_identity_resolution
         if patient_identity_resolution is not None
         else create_patient_identity_resolution_for_scheduling(scheduling)
+    )
+    cancellation = (
+        appointment_cancellation
+        if appointment_cancellation is not None
+        else create_appointment_cancellation_service_for_scheduling(scheduling)
     )
     return ChatReceptionistService(
         conversations=conversations,
@@ -209,6 +240,7 @@ def create_chat_receptionist_service(
         response_generator=response_generator,
         response_generation_mode=response_generation_mode,
         patient_identity_resolution=identity_resolution,
+        appointment_cancellation=cancellation,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
     )
@@ -456,6 +488,14 @@ def test_cancel_request_takes_priority_over_doctor_listing(
     )
 
     assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "full name" in result.reply.lower()
+    assert "date of birth" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
 
 
 def test_what_times_are_available_without_doctor_or_date_returns_missing_doctor(
@@ -2113,7 +2153,7 @@ def test_resolve_contextual_fallback_for_final_booking_confirmation_step() -> No
     assert "book that appointment" in content.lower()
 
 
-def test_cancel_keyword_routing_unchanged_during_slot_selection_context(
+def test_cancel_keyword_routing_enters_cancellation_task_frame_during_slot_selection(
     scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
     service, _repository = scheduling_chat_service
@@ -2129,4 +2169,127 @@ def test_cancel_keyword_routing_unchanged_during_slot_selection_context(
     )
 
     assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
-    assert "cancellation" in result.reply.lower()
+    assert "full name" in result.reply.lower()
+    assert "date of birth" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
+@pytest.mark.parametrize(
+    "cancel_message",
+    [
+        "I want to cancel my appointment",
+        "I need to cancel",
+        "cancel my appointment",
+    ],
+)
+def test_cancel_request_enters_cancellation_task_frame(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+    cancel_message: str,
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(ChatMessageInput(message=cancel_message))
+
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    reply = result.reply.lower()
+    assert "full name" in reply
+    assert "date of birth" in reply
+    assert "appointment date" not in reply
+    assert "i can help with cancellation requests" not in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
+def test_unclear_message_during_cancellation_identity_intake_reprompts(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    started = service.handle_message(ChatMessageInput(message="I want to cancel my appointment"))
+    result = service.handle_message(
+        ChatMessageInput(message="???", conversation_id=started.conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    reply = result.reply.lower()
+    assert "full name" in reply
+    assert "date of birth" in reply
+    assert _GENERIC_SCHEDULING_FALLBACK_MESSAGE.lower() not in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
+def test_resolve_contextual_fallback_for_cancellation_identity_intake() -> None:
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
+        },
+    )
+
+    assert resolved is not None
+    intent, content = resolved
+    assert intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "full name" in content.lower()
+    assert "date of birth" in content.lower()
+
+
+def test_resolve_contextual_fallback_for_cancellation_appointment_selection() -> None:
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+            ),
+        },
+    )
+
+    assert resolved is not None
+    intent, content = resolved
+    assert intent == ChatReceptionistIntent.CANCEL_REQUEST
+    assert "Please choose one of the appointments I listed." in content
+
+
+def test_reschedule_routing_unchanged_after_cancellation_foundation(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(ChatMessageInput(message="I need to reschedule"))
+
+    assert result.intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert "rescheduling" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert chat_context.get("appointment_management_mode") is None
+
+
+def test_cancellation_task_frame_does_not_call_cancellation_service(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    from app.services.appointment_cancellation import AppointmentCancellationService
+
+    service, _repository = scheduling_chat_service
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="I want to cancel my appointment"),
+        )
+
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    cancel_appointment_mock.assert_not_called()
