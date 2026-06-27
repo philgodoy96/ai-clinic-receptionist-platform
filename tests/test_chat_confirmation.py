@@ -70,6 +70,50 @@ def test_maybe_is_unclear() -> None:
     assert result.decision is ConfirmationDecision.UNCLEAR
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "yes",
+        "yes, cancel it",
+        "please cancel it",
+        "confirm",
+        "yes please",
+    ],
+)
+def test_cancellation_confirmation_phrases_are_confirmed(message: str) -> None:
+    result = understand_confirmation(
+        confirmation_type=ConfirmationType.CANCELLATION_CONFIRMATION,
+        message=message,
+    )
+    assert result.decision is ConfirmationDecision.CONFIRMED
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "no",
+        "no thanks",
+        "don't cancel",
+        "keep it",
+        "never mind",
+    ],
+)
+def test_cancellation_confirmation_phrases_are_rejected(message: str) -> None:
+    result = understand_confirmation(
+        confirmation_type=ConfirmationType.CANCELLATION_CONFIRMATION,
+        message=message,
+    )
+    assert result.decision is ConfirmationDecision.REJECTED
+
+
+def test_cancellation_confirmation_maybe_is_unclear() -> None:
+    result = understand_confirmation(
+        confirmation_type=ConfirmationType.CANCELLATION_CONFIRMATION,
+        message="not sure",
+    )
+    assert result.decision is ConfirmationDecision.UNCLEAR
+
+
 def test_yes_does_not_globally_book_outside_final_state() -> None:
     assert not is_confirmation_confirmed(
         confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,

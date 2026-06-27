@@ -18,6 +18,7 @@ from app.services.appointment_booking import (
     AppointmentBookingResult,
     AppointmentBookingService,
 )
+from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_holds import (
     AppointmentHoldService,
     AppointmentSlotAlreadyHeldError,
@@ -166,6 +167,25 @@ def create_patient_identity_resolution_for_scheduling(
     )
 
 
+def create_appointment_cancellation_service_for_scheduling(
+    scheduling: SchedulingService,
+) -> AppointmentCancellationService:
+    from typing import cast
+
+    from app.services.audit_logs import AuditLogService
+    from tests.test_appointment_booking_api import FakeAuditLogService
+    from tests.test_appointment_cancellation_service import (
+        FakeAppointmentCancellationAttemptRepository,
+    )
+
+    return AppointmentCancellationService(
+        appointments=scheduling.appointments,
+        cancellation_attempts=FakeAppointmentCancellationAttemptRepository(),
+        audit_logs=cast(AuditLogService, FakeAuditLogService()),
+        availability_slots=scheduling.availability_slots,
+    )
+
+
 def create_chat_receptionist_service(
     *,
     conversations: ConversationService,
@@ -184,6 +204,7 @@ def create_chat_receptionist_service(
     response_generator: ReceptionistResponseGenerator | None = None,
     response_generation_mode: ReceptionistResponseMode = (ReceptionistResponseMode.DETERMINISTIC),
     patient_identity_resolution: PatientIdentityResolutionService | None = None,
+    appointment_cancellation: AppointmentCancellationService | None = None,
     chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
     chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
 ) -> ChatReceptionistService:
@@ -196,6 +217,11 @@ def create_chat_receptionist_service(
         patient_identity_resolution
         if patient_identity_resolution is not None
         else create_patient_identity_resolution_for_scheduling(scheduling)
+    )
+    cancellation = (
+        appointment_cancellation
+        if appointment_cancellation is not None
+        else create_appointment_cancellation_service_for_scheduling(scheduling)
     )
     return ChatReceptionistService(
         conversations=conversations,
@@ -214,6 +240,7 @@ def create_chat_receptionist_service(
         response_generator=response_generator,
         response_generation_mode=response_generation_mode,
         patient_identity_resolution=identity_resolution,
+        appointment_cancellation=cancellation,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
     )

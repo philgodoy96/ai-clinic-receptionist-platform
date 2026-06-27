@@ -19,6 +19,7 @@ from app.models.conversations import Conversation, ConversationMessage
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.repositories.memory.patient_resolution import InMemoryPatientResolutionRepository
 from app.services.appointment_booking import AppointmentBookingService
+from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.chat_receptionist import ChatReceptionistService
 from app.services.clinic_time import ClinicTimeService
@@ -511,6 +512,20 @@ def _create_chat_receptionist_service(
         appointments=scheduling.appointments,
         hold_service=holds,
     )
+    from typing import cast
+
+    from app.services.audit_logs import AuditLogService
+    from tests.test_appointment_booking_api import FakeAuditLogService
+    from tests.test_appointment_cancellation_service import (
+        FakeAppointmentCancellationAttemptRepository,
+    )
+
+    cancellation = AppointmentCancellationService(
+        appointments=scheduling.appointments,
+        cancellation_attempts=FakeAppointmentCancellationAttemptRepository(),
+        audit_logs=cast(AuditLogService, FakeAuditLogService()),
+        availability_slots=scheduling.availability_slots,
+    )
     return ChatReceptionistService(
         conversations=conversations,
         scheduling=scheduling,
@@ -529,6 +544,7 @@ def _create_chat_receptionist_service(
                 mode=VoicePatientIntakeMode.DEMO_AUTO_CREATE,
             ),
         ),
+        appointment_cancellation=cancellation,
     )
 
 

@@ -9,6 +9,13 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
+from app.domain.appointments import (
+    AppointmentCancellationRequest,
+    AppointmentNotCancelableError,
+    AppointmentNotFoundError,
+    is_appointment_cancelable,
+)
+from app.domain.audit.enums import AuditActorType
 from app.domain.chat_turn_understanding import (
     ChatTurnIntent,
     ChatTurnUnderstandingRequest,
@@ -21,9 +28,11 @@ from app.domain.patient_identity_resolution import (
     PatientIdentityResolutionRequest,
     PatientResolutionMatchStatus,
 )
+from app.domain.scheduling.enums import AppointmentStatus
 from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, Doctor, Specialty
 from app.repositories.scheduling import AppointmentRepository
+from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
@@ -33,7 +42,12 @@ from app.services.chat_booking_identity import (
     _is_valid_iso_date,
     _merge_parsed_fields,
 )
-from app.services.chat_confirmation import normalize_patient_display_name
+from app.services.chat_confirmation import (
+    ConfirmationDecision,
+    ConfirmationType,
+    normalize_patient_display_name,
+    understand_confirmation,
+)
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import ClinicTimeService
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
@@ -46,6 +60,9 @@ APPOINTMENT_MANAGEMENT_MODE_CANCEL = "cancel"
 APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY = "patient_identity"
 APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION = "appointment_selection"
 APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION = "cancellation_confirmation"
+APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED = "completed"
+
+CHAT_CANCELLATION_SOURCE = "chat_cancellation"
 
 _CANCELLATION_IDENTITY_REPROMPT_MESSAGE = (
     "I still need the patient's full name and date of birth to look up the appointment."
@@ -68,6 +85,25 @@ _CANCELLATION_APPOINTMENT_SELECTION_AMBIGUOUS = (
 )
 _CANCELLATION_CONFIRMATION_REPROMPT = (
     "Please let me know if you'd like to cancel this appointment."
+)
+_CANCELLATION_CONFIRMATION_AMBIGUOUS_PREFIX = (
+    "Please confirm whether you want me to cancel your"
+)
+_CANCELLATION_REJECTED_MESSAGE = (
+    "Okay, I won't cancel that appointment. Is there anything else I can help with?"
+)
+_CANCELLATION_OWNERSHIP_MISMATCH_MESSAGE = (
+    "I couldn't verify that appointment for the resolved patient, so I can't cancel it."
+)
+_CANCELLATION_APPOINTMENT_NOT_FOUND_MESSAGE = (
+    "I couldn't find that appointment, so I can't cancel it."
+)
+_CANCELLATION_APPOINTMENT_NOT_CANCELABLE_MESSAGE = (
+    "That appointment can no longer be cancelled."
+)
+_CANCELLATION_MISSING_SELECTION_MESSAGE = (
+    "I don't have an appointment selected to cancel. "
+    "Please tell me which appointment you'd like to cancel."
 )
 _CANCEL_KEYWORDS = ("cancel", "cancellation")
 _ORDINAL_APPOINTMENT_KEYWORDS: dict[str, int] = {
@@ -141,12 +177,14 @@ class ChatAppointmentCancellationOrchestrator:
         *,
         patient_identity_resolution: PatientIdentityResolutionService,
         appointments: AppointmentRepository,
+        appointment_cancellation: AppointmentCancellationService,
         scheduling_metadata: SchedulingMetadataForCancellation,
         clinic_time_service: ClinicTimeService,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
     ) -> None:
         self.patient_identity_resolution = patient_identity_resolution
         self.appointments = appointments
+        self.appointment_cancellation = appointment_cancellation
         self.scheduling_metadata = scheduling_metadata
         self.clinic_time_service = clinic_time_service
         self.chat_turn_understanding_interpreter = chat_turn_understanding_interpreter
@@ -405,6 +443,230 @@ class ChatAppointmentCancellationOrchestrator:
             content=_CANCELLATION_CONFIRMATION_REPROMPT,
             chat_context_updates={},
         )
+
+    def handle_cancellation_confirmation(
+        self,
+        *,
+        message: str,
+        conversation_id: UUID,
+        chat_context: dict[str, Any],
+    ) -> CancellationFlowResult:
+        understanding = understand_confirmation(
+            confirmation_type=ConfirmationType.CANCELLATION_CONFIRMATION,
+            message=message,
+        )
+
+        if understanding.decision is ConfirmationDecision.REJECTED:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_REJECTED_MESSAGE,
+                chat_context_updates=self._cancellation_declined_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if understanding.decision in {
+            ConfirmationDecision.UNCLEAR,
+            ConfirmationDecision.WANTS_CHANGE,
+        }:
+            return self._reprompt_cancellation_confirmation(chat_context)
+
+        selected_appointment_id = chat_context.get("selected_appointment_id")
+        resolved_patient_id = chat_context.get("resolved_patient_id")
+        selected_summary = chat_context.get("selected_appointment_summary")
+
+        if (
+            not isinstance(selected_appointment_id, str)
+            or not isinstance(resolved_patient_id, str)
+            or not isinstance(selected_summary, str)
+        ):
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_MISSING_SELECTION_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        try:
+            appointment_id = UUID(selected_appointment_id)
+            patient_id = UUID(resolved_patient_id)
+        except ValueError:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_APPOINTMENT_NOT_FOUND_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        appointment = self.appointments.get_by_id(appointment_id)
+        if appointment is None:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_APPOINTMENT_NOT_FOUND_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if appointment.patient_id != patient_id:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_OWNERSHIP_MISMATCH_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if (
+            not is_appointment_cancelable(appointment.status)
+            and appointment.status != AppointmentStatus.CANCELLED
+        ):
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_APPOINTMENT_NOT_CANCELABLE_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        confirmation_summary = _confirmation_summary_from_list_summary(selected_summary)
+        idempotency_key = (
+            f"chat-cancel:{conversation_id}:{selected_appointment_id}"
+        )
+        request = AppointmentCancellationRequest(
+            appointment_id=appointment_id,
+            explicit_confirmation=True,
+            idempotency_key=idempotency_key,
+            source=CHAT_CANCELLATION_SOURCE,
+            actor_type=AuditActorType.CHAT,
+            actor_id=str(conversation_id),
+            conversation_id=str(conversation_id),
+        )
+
+        try:
+            result = self.appointment_cancellation.cancel_appointment(request)
+        except AppointmentNotFoundError:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_APPOINTMENT_NOT_FOUND_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+        except AppointmentNotCancelableError:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_APPOINTMENT_NOT_CANCELABLE_MESSAGE,
+                chat_context_updates=self._cancellation_completed_context_updates(
+                    chat_context,
+                ),
+            )
+
+        if result.already_cancelled:
+            content = (
+                f"Your {confirmation_summary} has already been cancelled."
+            )
+        else:
+            content = f"Your {confirmation_summary} has been cancelled."
+
+        return CancellationFlowResult(
+            intent="cancel_request",
+            content=content,
+            chat_context_updates=self._cancellation_succeeded_context_updates(
+                chat_context,
+                cancelled_appointment_summary=selected_summary,
+            ),
+        )
+
+    def _reprompt_cancellation_confirmation(
+        self,
+        chat_context: dict[str, Any],
+    ) -> CancellationFlowResult:
+        selected_summary = chat_context.get("selected_appointment_summary")
+        if isinstance(selected_summary, str):
+            confirmation_summary = _confirmation_summary_from_list_summary(
+                selected_summary,
+            )
+            content = (
+                f"{_CANCELLATION_CONFIRMATION_AMBIGUOUS_PREFIX} "
+                f"{confirmation_summary}."
+            )
+        else:
+            content = _CANCELLATION_CONFIRMATION_REPROMPT
+
+        return CancellationFlowResult(
+            intent="cancel_request",
+            content=content,
+            chat_context_updates=self._cancellation_confirmation_context_updates(
+                chat_context,
+            ),
+        )
+
+    def _cancellation_confirmation_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        updates = {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+            ),
+            **self._resolved_patient_context(chat_context),
+        }
+        if isinstance(chat_context.get("selected_appointment_id"), str):
+            updates["selected_appointment_id"] = chat_context["selected_appointment_id"]
+        if isinstance(chat_context.get("selected_appointment_summary"), str):
+            updates["selected_appointment_summary"] = chat_context[
+                "selected_appointment_summary"
+            ]
+        if chat_context.get("offered_appointments") is not None:
+            updates["offered_appointments"] = chat_context["offered_appointments"]
+        return updates
+
+    def _cancellation_succeeded_context_updates(
+        self,
+        chat_context: dict[str, Any],
+        *,
+        cancelled_appointment_summary: str,
+    ) -> dict[str, Any]:
+        return {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
+            "cancellation_status": "cancelled",
+            "cancelled_appointment_summary": cancelled_appointment_summary,
+            "resolved_patient_id": chat_context.get("resolved_patient_id"),
+            "resolved_patient_name": chat_context.get("resolved_patient_name"),
+            "patient_resolution_id": chat_context.get("patient_resolution_id"),
+            "selected_appointment_id": None,
+            "selected_appointment_summary": None,
+            "offered_appointments": None,
+        }
+
+    def _cancellation_declined_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **self._cancellation_completed_context_updates(chat_context),
+            "cancellation_status": "declined",
+        }
+
+    def _cancellation_completed_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
+            "resolved_patient_id": chat_context.get("resolved_patient_id"),
+            "resolved_patient_name": chat_context.get("resolved_patient_name"),
+            "patient_resolution_id": chat_context.get("patient_resolution_id"),
+            "selected_appointment_id": None,
+            "selected_appointment_summary": None,
+            "offered_appointments": None,
+        }
 
     def _resolve_patient_fields(
         self,
