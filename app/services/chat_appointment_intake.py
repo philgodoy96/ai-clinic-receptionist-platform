@@ -19,7 +19,7 @@ from app.domain.chat_turn_understanding import (
 )
 from app.models.scheduling import Doctor, Specialty
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
-from app.services.clinic_time import ClinicTimeService
+from app.services.clinic_time import ClinicTimeService, format_clinic_local_time_label
 from app.services.date_parsing import DateParseStatus, NaturalLanguageDateParser
 from app.services.scheduling import SchedulingService
 from app.services.time_preferences import TimePreferenceParser, TimePreferenceStatus
@@ -482,6 +482,15 @@ class ChatAppointmentIntakeOrchestrator:
         if isinstance(display_time, str) and display_time:
             return display_time
         start_time = item.get("start_time")
+        if isinstance(start_time, str) and self.clinic_time_service is not None:
+            try:
+                parsed = datetime.fromisoformat(start_time)
+                return format_clinic_local_time_label(
+                    parsed,
+                    self.clinic_time_service.timezone,
+                )
+            except ValueError:
+                return None
         if isinstance(start_time, str):
             try:
                 return datetime.fromisoformat(start_time).strftime("%H:%M")

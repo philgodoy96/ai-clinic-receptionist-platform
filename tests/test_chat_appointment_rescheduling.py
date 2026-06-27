@@ -964,12 +964,12 @@ def _create_reschedule_service_with_wednesday_afternoon_availability() -> tuple[
     availability_slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 1, 15, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 1, 17, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 1, 16, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 1, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -1166,17 +1166,17 @@ def test_reschedule_time_window_filters_to_afternoon_slots() -> None:
     availability_slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 17, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -1551,7 +1551,7 @@ def test_reschedule_confirmation_prompt_includes_original_and_new_slot_summaries
     )
 
     assert "Dermatology appointment with Dr. Emily Carter" in result.reply
-    assert "Wednesday at 11:00" in result.reply
+    assert "Wednesday at 13:00" in result.reply
 
 
 def test_reschedule_hold_failure_returns_safe_message_and_stays_in_slot_selection() -> None:
@@ -1568,7 +1568,7 @@ def test_reschedule_hold_failure_returns_safe_message_and_stays_in_slot_selectio
     availability_slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 1, 15, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 1, 17, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]

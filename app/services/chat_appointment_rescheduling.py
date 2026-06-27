@@ -58,7 +58,12 @@ from app.services.chat_confirmation import (
     understand_confirmation,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
-from app.services.clinic_time import ClinicTimeService
+from app.services.clinic_time import (
+    ClinicTimeService,
+    format_clinic_local_slot_summary,
+    format_clinic_local_time_label,
+    to_clinic_local_datetime,
+)
 from app.services.date_parsing import DateParseStatus, NaturalLanguageDateParser
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.scheduling import (
@@ -990,10 +995,12 @@ class ChatAppointmentReschedulingOrchestrator:
         if preference.time_window is not None:
             filtered = self._filter_slots_by_time_window(filtered, preference.time_window)
         if preference.exact_time is not None:
+            clinic_tz = self.clinic_time_service.timezone
             filtered = [
                 slot
                 for slot in filtered
-                if slot.start_time.strftime("%H:%M") == preference.exact_time
+                if format_clinic_local_time_label(slot.start_time, clinic_tz)
+                == preference.exact_time
             ]
         return filtered
 
@@ -1010,10 +1017,12 @@ class ChatAppointmentReschedulingOrchestrator:
                 preference.time_window,
             )
         if preference.exact_time is not None:
+            clinic_tz = self.clinic_time_service.timezone
             filtered = [
                 item
                 for item in filtered
-                if item.slot.start_time.strftime("%H:%M") == preference.exact_time
+                if format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+                == preference.exact_time
             ]
         return filtered
 
@@ -1037,11 +1046,12 @@ class ChatAppointmentReschedulingOrchestrator:
             start_time=start_time,
             end_time=end_time,
         )
+        clinic_tz = self.clinic_time_service.timezone
         return [
             slot
             for slot in slots
             if is_time_in_window(
-                time_value=slot.start_time.strftime("%H:%M"),
+                time_value=format_clinic_local_time_label(slot.start_time, clinic_tz),
                 window=time_window,
             )
         ]
@@ -1066,11 +1076,15 @@ class ChatAppointmentReschedulingOrchestrator:
             start_time=start_time,
             end_time=end_time,
         )
+        clinic_tz = self.clinic_time_service.timezone
         return [
             item
             for item in slots
             if is_time_in_window(
-                time_value=item.slot.start_time.strftime("%H:%M"),
+                time_value=format_clinic_local_time_label(
+                    item.slot.start_time,
+                    clinic_tz,
+                ),
                 window=time_window,
             )
         ]
@@ -1096,10 +1110,10 @@ class ChatAppointmentReschedulingOrchestrator:
             else:
                 continue
 
-            localized = slot.start_time.astimezone(self.clinic_time_service.timezone)
-            weekday = localized.strftime("%A")
-            time_label = localized.strftime("%H:%M")
-            summary = f"{weekday} at {time_label}"
+            summary = format_clinic_local_slot_summary(
+                slot.start_time,
+                self.clinic_time_service.timezone,
+            )
 
             entry: dict[str, str] = {
                 "availability_slot_id": str(slot.id),
@@ -1315,14 +1329,14 @@ class ChatAppointmentReschedulingOrchestrator:
             ):
                 continue
 
-            localized = datetime.fromisoformat(start_time).astimezone(
-                self.clinic_time_service.timezone,
-            )
+            parsed_start = datetime.fromisoformat(start_time)
+            clinic_tz = self.clinic_time_service.timezone
+            localized = to_clinic_local_datetime(parsed_start, clinic_tz)
             weekday = localized.strftime("%A")
-            time_label = localized.strftime("%H:%M")
+            time_label = format_clinic_local_time_label(parsed_start, clinic_tz)
             summary = item.get("summary")
             if not isinstance(summary, str) or not summary:
-                summary = f"{weekday} at {time_label}"
+                summary = format_clinic_local_slot_summary(parsed_start, clinic_tz)
 
             offered.append(
                 _OfferedRescheduleSlotView(
@@ -1546,9 +1560,10 @@ class ChatAppointmentReschedulingOrchestrator:
     def _present_appointment(self, appointment: Appointment) -> _AppointmentPresentation:
         doctor_name = self._resolve_doctor_name(appointment.doctor_id)
         specialty_name = self._resolve_specialty_name(appointment.specialty_id)
-        localized_start = appointment.start_time.astimezone(self.clinic_time_service.timezone)
+        clinic_tz = self.clinic_time_service.timezone
+        localized_start = to_clinic_local_datetime(appointment.start_time, clinic_tz)
         weekday = localized_start.strftime("%A")
-        time_label = localized_start.strftime("%H:%M")
+        time_label = format_clinic_local_time_label(appointment.start_time, clinic_tz)
 
         list_summary = (
             f"{specialty_name} with {doctor_name} on {weekday} at {time_label}"

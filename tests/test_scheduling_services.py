@@ -624,13 +624,13 @@ def create_demo_scheduling_service_with_emily_july_availability(
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_1_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_2_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 10, 30, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 14, 30, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -652,19 +652,19 @@ def create_demo_scheduling_service_with_emily_mixed_july_availability(
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_1_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_2_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 10, 30, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 14, 30, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_3_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -686,7 +686,7 @@ def create_demo_scheduling_service_with_emily_afternoon_july_availability(
         create_availability_slot(
             slot_id=EMILY_JULY_SLOT_3_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]

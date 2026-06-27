@@ -482,15 +482,15 @@ def _create_eval_scheduling_service() -> SchedulingService:
         AvailabilitySlot(
             id=_EMILY_JULY_SLOT_1_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
-            end_time=datetime(2026, 7, 2, 9, 30, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
+            end_time=datetime(2026, 7, 2, 13, 30, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         AvailabilitySlot(
             id=_EMILY_JULY_SLOT_2_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 10, 30, tzinfo=UTC),
-            end_time=datetime(2026, 7, 2, 11, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 14, 30, tzinfo=UTC),
+            end_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]

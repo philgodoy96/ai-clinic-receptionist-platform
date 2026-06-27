@@ -917,12 +917,12 @@ def test_availability_with_specialty_and_multiple_doctors_returns_specialty_wide
     availability_slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=anna.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -1084,12 +1084,12 @@ def test_hold_after_specialty_wide_availability_preserves_doctor_context(
     availability_slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=anna.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -1306,7 +1306,7 @@ def test_hold_by_ordinal_selects_first_offered_slot(
     assert result.intent == ChatReceptionistIntent.HOLD_CREATED
     chat_context = result.conversation.conversation_metadata["chat_context"]
     assert chat_context["selected_availability_slot_id"] == str(EMILY_JULY_SLOT_1_ID)
-    assert chat_context["selected_start_time"] == "2026-07-02T09:00:00+00:00"
+    assert chat_context["selected_start_time"] == "2026-07-02T13:00:00+00:00"
 
 
 def test_hold_time_match_creates_hold_for_second_slot(
@@ -1374,12 +1374,12 @@ def _afternoon_dermatology_scheduling() -> SchedulingService:
     availability_slots = [
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         create_availability_slot(
             doctor_id=emily.id,
-            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 19, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -1415,7 +1415,7 @@ def test_hold_pm_and_bare_hour_select_offered_15_00_slot(selection_message: str)
     assert "15:00" in result.reply
     assert len(hold_service.create_hold_calls) == 1
     chat_context = result.conversation.conversation_metadata["chat_context"]
-    assert chat_context["selected_start_time"] == "2026-07-02T15:00:00+00:00"
+    assert chat_context["selected_start_time"] == "2026-07-02T19:00:00+00:00"
 
 
 def test_hold_2pm_selects_offered_14_00_slot() -> None:
@@ -1438,7 +1438,7 @@ def test_hold_2pm_selects_offered_14_00_slot() -> None:
     assert "14:00" in result.reply
     assert len(hold_service.create_hold_calls) == 1
     chat_context = result.conversation.conversation_metadata["chat_context"]
-    assert chat_context["selected_start_time"] == "2026-07-02T14:00:00+00:00"
+    assert chat_context["selected_start_time"] == "2026-07-02T18:00:00+00:00"
 
 
 def test_hold_unoffered_pm_time_does_not_create_hold() -> None:
