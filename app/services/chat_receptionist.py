@@ -74,10 +74,12 @@ from app.services.chat_appointment_intake import (
     ChatAppointmentIntakeResult,
 )
 from app.services.chat_appointment_rescheduling import (
+    APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
-    RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
+    RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
     RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+    RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
     ChatAppointmentReschedulingOrchestrator,
     RescheduleFlowResult,
 )
@@ -444,6 +446,24 @@ def _is_awaiting_reschedule_patient_identity(chat_context: dict[str, Any]) -> bo
     )
 
 
+def _is_awaiting_reschedule_appointment_selection(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+
+
+def _is_awaiting_reschedule_new_time_preference(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+
+
 def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> bool:
     return (
         chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
@@ -512,6 +532,18 @@ def _resolve_contextual_fallback_reply(
         return (
             ChatReceptionistIntent.RESCHEDULE_REQUEST,
             RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+        )
+
+    if _is_awaiting_reschedule_appointment_selection(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+        )
+
+    if _is_awaiting_reschedule_new_time_preference(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
         )
 
     if _is_awaiting_cancellation_patient_identity(chat_context):
@@ -2066,9 +2098,16 @@ class ChatReceptionistService:
             return self._reschedule_flow_result_to_reply(flow)
 
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION:
+            flow = self._appointment_rescheduling.handle_appointment_selection(
+                message=message,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
-                content=RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
+                content=RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
                 chat_context_updates={},
             )
 

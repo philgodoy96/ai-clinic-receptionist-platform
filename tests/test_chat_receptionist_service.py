@@ -2264,6 +2264,22 @@ def test_resolve_contextual_fallback_for_cancellation_appointment_selection() ->
     assert "Please choose one of the appointments I listed." in content
 
 
+def test_resolve_contextual_fallback_for_reschedule_appointment_selection() -> None:
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+            ),
+        },
+    )
+
+    assert resolved is not None
+    intent, content = resolved
+    assert intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert "Please choose one of the appointments I listed." in content
+
+
 def test_reschedule_request_enters_reschedule_task_frame(
     scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
 ) -> None:
