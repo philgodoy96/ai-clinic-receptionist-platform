@@ -73,6 +73,13 @@ from app.services.chat_appointment_intake import (
     ChatAppointmentIntakeOrchestrator,
     ChatAppointmentIntakeResult,
 )
+from app.services.chat_appointment_rescheduling import (
+    APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+    RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
+    RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+    ChatAppointmentReschedulingOrchestrator,
+    RescheduleFlowResult,
+)
 from app.services.chat_booking_identity import (
     BookingIdentityFlowResult,
     ChatBookingIdentityOrchestrator,
@@ -166,7 +173,12 @@ _EMERGENCY_KEYWORDS = [
     "cannot breathe",
 ]
 _CANCEL_KEYWORDS = ["cancel", "cancellation"]
-_RESCHEDULE_KEYWORDS = ["reschedule", "move appointment"]
+_RESCHEDULE_KEYWORDS = [
+    "reschedule",
+    "move appointment",
+    "move my appointment",
+    "move an appointment",
+]
 _CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
     "Of course. I can look it up first. What is the patient's full name and date of birth?"
 )
@@ -382,6 +394,15 @@ def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None
     return resolved[1]
 
 
+def _is_awaiting_reschedule_patient_identity(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
 def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> bool:
     return (
         chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
@@ -437,9 +458,21 @@ def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
     )
 
 
+def _is_in_reschedule_flow(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+    )
+
+
 def _resolve_contextual_fallback_reply(
     chat_context: dict[str, Any],
 ) -> tuple[ChatReceptionistIntent, str] | None:
+    if _is_awaiting_reschedule_patient_identity(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+        )
+
     if _is_awaiting_cancellation_patient_identity(chat_context):
         return (
             ChatReceptionistIntent.CANCEL_REQUEST,
@@ -722,15 +755,6 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
-                content=(
-                    "I can help with rescheduling. Please tell me which appointment "
-                    "you want to move and your preferred new time."
-                ),
-            )
-
         if self._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
@@ -831,6 +855,7 @@ class ChatReceptionistService:
         self._post_booking_turn_classifier = (
             post_booking_turn_classifier or DeterministicPostBookingTurnClassifier()
         )
+        self._appointment_rescheduling = ChatAppointmentReschedulingOrchestrator()
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -1255,9 +1280,6 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
             return self.responder.generate_reply(message=message)
 
-        if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
-            return self.responder.generate_reply(message=message)
-
         if _is_in_post_cancellation_frame(existing_context):
             post_cancellation_reply = self._handle_post_cancellation_message(
                 message=message,
@@ -1288,9 +1310,22 @@ class ChatReceptionistService:
                 ),
             )
 
+        if _is_in_reschedule_flow(existing_context):
+            return finish(
+                self._handle_reschedule_flow(
+                    message=message,
+                    chat_context=existing_context,
+                ),
+            )
+
         if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
             return finish(
                 self._enter_cancellation_task_frame(context_updates={}),
+            )
+
+        if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
+            return finish(
+                self._enter_reschedule_task_frame(context_updates={}),
             )
 
         intake_result = self._try_appointment_intake(
@@ -1945,6 +1980,49 @@ class ChatReceptionistService:
             chat_context_updates={
                 **context_updates,
                 "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+                "appointment_management_awaiting": (
+                    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                ),
+            },
+        )
+
+    def _handle_reschedule_flow(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        awaiting = chat_context.get("appointment_management_awaiting")
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY:
+            flow = self._appointment_rescheduling.handle_patient_identity_intake(
+                message=message,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        return self._enter_reschedule_task_frame(context_updates={})
+
+    def _reschedule_flow_result_to_reply(
+        self,
+        flow: RescheduleFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+        )
+
+    def _enter_reschedule_task_frame(
+        self,
+        *,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            content=RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
+            chat_context_updates={
+                **context_updates,
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
                 "appointment_management_awaiting": (
                     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
                 ),
