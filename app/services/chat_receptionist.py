@@ -63,6 +63,8 @@ from app.services.appointment_time_normalization import (
 from app.services.chat_appointment_cancellation import (
     _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
     _CANCELLATION_CONFIRMATION_REPROMPT,
+    _CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
+    _CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
     _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION,
@@ -88,7 +90,9 @@ from app.services.chat_appointment_rescheduling import (
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
     RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
     RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
+    RESCHEDULE_IDENTITY_DOB_ONLY_MESSAGE,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
+    RESCHEDULE_IDENTITY_NAME_ONLY_MESSAGE,
     RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
     RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
     RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
@@ -96,10 +100,14 @@ from app.services.chat_appointment_rescheduling import (
     RescheduleFlowResult,
 )
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     BookingIdentityFlowResult,
     ChatBookingIdentityOrchestrator,
     ChatBookingIdentityStep,
     ParsedPatientFields,
+    appointment_management_missing_identity_prompt,
+    build_resolved_patient_context_updates,
+    read_resolved_patient_context,
 )
 from app.services.chat_confirmation import (
     ConfirmationType,
@@ -209,6 +217,21 @@ _RESCHEDULE_KEYWORDS = [
 ]
 _CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
     "Of course. I can look it up first. What is the patient's full name and date of birth?"
+)
+# Phrases that signal the request is for a different patient than the one already
+# resolved in the conversation. Kept intentionally small; this is not broad
+# family-member support, just a guard against silently reusing the wrong patient.
+_DIFFERENT_PATIENT_PHRASES = (
+    "someone else",
+    "somebody else",
+    "different patient",
+    "another patient",
+    "different person",
+    "another person",
+    "not me",
+    "not for me",
+    "it's for my",
+    "it is for my",
 )
 _SPECIALTY_LIST_KEYWORDS = [
     "specialties",
@@ -601,9 +624,17 @@ def _resolve_contextual_fallback_reply(
     chat_context: dict[str, Any],
 ) -> tuple[ChatReceptionistIntent, str] | None:
     if _is_awaiting_reschedule_patient_identity(chat_context):
+        identity_raw = chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY)
+        identity = identity_raw if isinstance(identity_raw, dict) else {}
+        prompt = appointment_management_missing_identity_prompt(
+            identity,
+            both_prompt=RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+            name_prompt=RESCHEDULE_IDENTITY_NAME_ONLY_MESSAGE,
+            dob_prompt=RESCHEDULE_IDENTITY_DOB_ONLY_MESSAGE,
+        )
         return (
             ChatReceptionistIntent.RESCHEDULE_REQUEST,
-            RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+            prompt or RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
         )
 
     if _is_awaiting_reschedule_appointment_selection(chat_context):
@@ -631,9 +662,17 @@ def _resolve_contextual_fallback_reply(
         )
 
     if _is_awaiting_cancellation_patient_identity(chat_context):
+        identity_raw = chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY)
+        identity = identity_raw if isinstance(identity_raw, dict) else {}
+        prompt = appointment_management_missing_identity_prompt(
+            identity,
+            both_prompt=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+            name_prompt=_CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
+            dob_prompt=_CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
+        )
         return (
             ChatReceptionistIntent.CANCEL_REQUEST,
-            _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+            prompt or _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
         )
 
     if _is_awaiting_cancellation_appointment_selection(chat_context):
@@ -1538,12 +1577,20 @@ class ChatReceptionistService:
 
         if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
             return finish(
-                self._enter_cancellation_task_frame(context_updates={}),
+                self._enter_cancellation_task_frame(
+                    context_updates={},
+                    message=message,
+                    chat_context=existing_context,
+                ),
             )
 
         if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return finish(
-                self._enter_reschedule_task_frame(context_updates={}),
+                self._enter_reschedule_task_frame(
+                    context_updates={},
+                    message=message,
+                    chat_context=existing_context,
+                ),
             )
 
         intake_result = self._try_appointment_intake(
@@ -2286,7 +2333,27 @@ class ChatReceptionistService:
         self,
         *,
         context_updates: dict[str, Any],
+        message: str = "",
+        chat_context: dict[str, Any] | None = None,
     ) -> ChatReceptionistReply:
+        if chat_context is not None and not self._wants_different_patient(
+            message=message,
+            chat_context=chat_context,
+        ):
+            reuse = self._appointment_cancellation.list_appointments_for_resolved_patient(
+                chat_context=chat_context,
+            )
+            if reuse is not None:
+                if context_updates:
+                    reuse = replace(
+                        reuse,
+                        chat_context_updates={
+                            **context_updates,
+                            **reuse.chat_context_updates,
+                        },
+                    )
+                return self._cancellation_flow_result_to_reply(reuse)
+
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.CANCEL_REQUEST,
             content=_CANCELLATION_IDENTITY_ENTRY_MESSAGE,
@@ -2296,6 +2363,8 @@ class ChatReceptionistService:
                 "appointment_management_awaiting": (
                     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
                 ),
+                # Start the intake with a clean partial-identity buffer.
+                APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
             },
         )
 
@@ -2346,7 +2415,11 @@ class ChatReceptionistService:
             )
             return self._reschedule_flow_result_to_reply(flow)
 
-        return self._enter_reschedule_task_frame(context_updates={})
+        return self._enter_reschedule_task_frame(
+            context_updates={},
+            message=message,
+            chat_context=chat_context,
+        )
 
     def _reschedule_flow_result_to_reply(
         self,
@@ -2362,7 +2435,27 @@ class ChatReceptionistService:
         self,
         *,
         context_updates: dict[str, Any],
+        message: str = "",
+        chat_context: dict[str, Any] | None = None,
     ) -> ChatReceptionistReply:
+        if chat_context is not None and not self._wants_different_patient(
+            message=message,
+            chat_context=chat_context,
+        ):
+            reuse = self._appointment_rescheduling.list_appointments_for_resolved_patient(
+                chat_context=chat_context,
+            )
+            if reuse is not None:
+                if context_updates:
+                    reuse = replace(
+                        reuse,
+                        chat_context_updates={
+                            **context_updates,
+                            **reuse.chat_context_updates,
+                        },
+                    )
+                return self._reschedule_flow_result_to_reply(reuse)
+
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
             content=RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
@@ -2372,8 +2465,42 @@ class ChatReceptionistService:
                 "appointment_management_awaiting": (
                     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
                 ),
+                # Start the intake with a clean partial-identity buffer.
+                APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
             },
         )
+
+    def _wants_different_patient(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> bool:
+        """Decide whether the user is asking about a different patient.
+
+        We only override a remembered patient through normal identity resolution,
+        so when the user clearly signals a different person (an explicit phrase, a
+        new date of birth, or a different full name) we skip reuse and fall back
+        to the standard name + date-of-birth intake.
+        """
+        resolved = read_resolved_patient_context(chat_context)
+        if resolved is None:
+            return False
+
+        normalized = message.lower()
+        if any(phrase in normalized for phrase in _DIFFERENT_PATIENT_PHRASES):
+            return True
+
+        parsed = self.parse_patient_identity(message, booking_context=False)
+        if parsed.date_of_birth:
+            return True
+        if parsed.full_name and resolved.name:
+            if (
+                normalize_patient_display_name(parsed.full_name).lower()
+                != resolved.name.lower()
+            ):
+                return True
+        return False
 
     def _hold_booking_identity_unavailable_reply(
         self,
@@ -2927,6 +3054,19 @@ class ChatReceptionistService:
                 **identity_updates,
                 "appointment_id": str(appointment.id),
                 "booking_confirmed_at": booking_confirmed_at,
+                # Remember the resolved patient so a later cancellation/reschedule
+                # in this conversation can reuse it without re-asking name + DOB.
+                **build_resolved_patient_context_updates(
+                    patient_id=str(patient.id),
+                    name=patient.full_name,
+                    date_of_birth=patient.date_of_birth.isoformat(),
+                    email=patient.email,
+                    patient_resolution_id=(
+                        merged_context.get("patient_resolution_id")
+                        if isinstance(merged_context.get("patient_resolution_id"), str)
+                        else None
+                    ),
+                ),
                 **self._booking_identity.booking_completed_context_updates(),
             },
             hold_id=hold_id,
