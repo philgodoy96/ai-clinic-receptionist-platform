@@ -454,6 +454,7 @@ def get_chat_receptionist_service(
         appointment_rescheduling=appointment_rescheduling,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        chat_appointment_hold_ttl_seconds=settings.chat_appointment_hold_ttl_seconds,
     )
 
 

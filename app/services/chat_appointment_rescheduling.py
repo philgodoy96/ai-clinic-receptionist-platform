@@ -337,6 +337,7 @@ class ChatAppointmentReschedulingOrchestrator:
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
         appointment_holds: AppointmentHoldService | None = None,
         appointment_rescheduling: AppointmentReschedulingService | None = None,
+        chat_appointment_hold_ttl_seconds: int = 600,
     ) -> None:
         self.patient_identity_resolution = patient_identity_resolution
         self.appointments = appointments
@@ -350,6 +351,7 @@ class ChatAppointmentReschedulingOrchestrator:
             msg = "appointment_holds is required for reschedule slot holds"
             raise ValueError(msg)
         self.appointment_holds = appointment_holds
+        self._chat_appointment_hold_ttl_seconds = chat_appointment_hold_ttl_seconds
         if appointment_rescheduling is None:
             msg = "appointment_rescheduling is required for reschedule confirmation"
             raise ValueError(msg)
@@ -1647,6 +1649,7 @@ class ChatAppointmentReschedulingOrchestrator:
                 start_time=slot.start_time,
                 end_time=slot.end_time,
                 owner_id=owner_id,
+                ttl_seconds=self._chat_appointment_hold_ttl_seconds,
             )
         except (
             AvailabilitySlotNotFoundError,
@@ -1661,7 +1664,7 @@ class ChatAppointmentReschedulingOrchestrator:
             )
 
         hold_expires_at = hold.created_at + timedelta(
-            seconds=self.appointment_holds.ttl_seconds,
+            seconds=self._chat_appointment_hold_ttl_seconds,
         )
         original_summary = str(chat_context.get("selected_appointment_summary") or "")
         confirmation_content = self._format_reschedule_confirmation_prompt(
