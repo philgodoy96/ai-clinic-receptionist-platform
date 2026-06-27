@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from app.domain.conversations.enums import ConversationChannel
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient
 from app.services.chat_appointment_rescheduling import _ReschedulePreferenceExtraction
@@ -17,10 +18,11 @@ from app.services.clinic_time import (
     format_clinic_local_time_label,
     to_clinic_local_datetime,
 )
-from app.services.conversations import ConversationService
+from app.services.conversations import ConversationCreate, ConversationService
 from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
 from app.services.scheduling import SchedulingService
 from app.services.time_preferences import TimePreferenceParser
+from tests.clinic_time_test_support import make_test_clinic_time_service
 from tests.test_chat_appointment_cancellation import (
     _add_appointments,
     _create_chat_service_with_patient,
@@ -285,6 +287,224 @@ def test_reschedule_exact_time_does_not_match_utc_wall_clock() -> None:
         preference=_ReschedulePreferenceExtraction(exact_time="10:00"),
     )
     assert filtered == []
+
+
+# 2026-07-06 is a Monday, 2026-07-07 a Tuesday; clinic is America/New_York (EDT, UTC-4).
+EARLIEST_MONDAY_10_ET_UTC = datetime(2026, 7, 6, 14, 0, tzinfo=UTC)
+EARLIEST_MONDAY_11_ET_UTC = datetime(2026, 7, 6, 15, 0, tzinfo=UTC)
+EARLIEST_MONDAY_14_ET_UTC = datetime(2026, 7, 6, 18, 0, tzinfo=UTC)
+EARLIEST_MONDAY_15_ET_UTC = datetime(2026, 7, 6, 19, 0, tzinfo=UTC)
+EARLIEST_TUESDAY_10_ET_UTC = datetime(2026, 7, 7, 14, 0, tzinfo=UTC)
+
+
+def _create_emily_multiday_chat_service() -> tuple[
+    ChatReceptionistService,
+    Doctor,
+    list[AvailabilitySlot],
+]:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=start_time,
+            status=AvailabilitySlotStatus.AVAILABLE,
+        )
+        for start_time in (
+            EARLIEST_MONDAY_10_ET_UTC,
+            EARLIEST_MONDAY_11_ET_UTC,
+            EARLIEST_MONDAY_14_ET_UTC,
+            EARLIEST_MONDAY_15_ET_UTC,
+            EARLIEST_TUESDAY_10_ET_UTC,
+        )
+    ]
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=slots,
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+        clinic_time_service=make_test_clinic_time_service(),
+    )
+    return service, emily, slots
+
+
+def test_format_earliest_doctor_availability_groups_by_clinic_local_date() -> None:
+    service, _emily, slots = _create_emily_multiday_chat_service()
+
+    message = service._format_earliest_doctor_availability_slots(
+        slots,
+        doctor_name="Dr. Emily Carter",
+    )
+
+    assert message == (
+        "I found openings with Dr. Emily Carter "
+        "Monday at 10:00, 11:00, 14:00, and 15:00; Tuesday at 10:00. "
+        "Which time works better?"
+    )
+
+
+def test_format_earliest_doctor_availability_does_not_collapse_dates() -> None:
+    service, _emily, slots = _create_emily_multiday_chat_service()
+
+    message = service._format_earliest_doctor_availability_slots(
+        slots,
+        doctor_name="Dr. Emily Carter",
+    )
+
+    # The Tuesday 10:00 must stay under the Tuesday label, not collapse into Monday.
+    assert "; Tuesday at 10:00" in message
+    assert "15:00, and 10:00" not in message
+    assert message.count("10:00") == 2
+
+
+def test_earliest_doctor_offered_slots_store_per_slot_clinic_local_date() -> None:
+    service, emily, slots = _create_emily_multiday_chat_service()
+
+    offered = service._serialize_offered_slots(
+        slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        use_slot_date=True,
+    )
+
+    assert [slot["display_date"] for slot in offered] == [
+        "2026-07-06",
+        "2026-07-06",
+        "2026-07-06",
+        "2026-07-06",
+        "2026-07-07",
+    ]
+    tuesday = offered[-1]
+    assert tuesday["display_time"] == "10:00"
+    assert tuesday["display_date"] == "2026-07-07"
+
+
+def test_earliest_doctor_offered_slot_display_date_uses_clinic_local_not_utc() -> None:
+    service, emily, _slots = _create_emily_multiday_chat_service()
+    # 2026-07-07 02:00 UTC is 2026-07-06 22:00 in clinic-local (EDT) time.
+    boundary_slot = create_availability_slot(
+        doctor_id=emily.id,
+        start_time=datetime(2026, 7, 7, 2, 0, tzinfo=UTC),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+
+    offered = service._serialize_offered_slots(
+        [boundary_slot],
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        use_slot_date=True,
+    )
+
+    assert offered[0]["display_date"] == "2026-07-06"
+    assert offered[0]["display_time"] == "22:00"
+    assert offered[0]["start_time"] == "2026-07-07T02:00:00+00:00"
+
+
+def test_select_offered_slot_duplicate_display_time_is_ambiguous() -> None:
+    service, emily, slots = _create_emily_multiday_chat_service()
+    offered = service._serialize_offered_slots(
+        slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        use_slot_date=True,
+    )
+
+    selection = service._select_offered_slot("10:00", "10:00", offered)
+
+    assert selection.ambiguous is True
+    assert selection.slot is None
+
+
+def test_select_offered_slot_option_number_is_deterministic_with_duplicates() -> None:
+    service, emily, slots = _create_emily_multiday_chat_service()
+    offered = service._serialize_offered_slots(
+        slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        use_slot_date=True,
+    )
+
+    selection = service._select_offered_slot("the first one", "the first one", offered)
+
+    assert selection.ambiguous is False
+    assert selection.slot is offered[0]
+
+
+def test_select_offered_slot_full_iso_disambiguates_duplicate_display_time() -> None:
+    service, emily, slots = _create_emily_multiday_chat_service()
+    offered = service._serialize_offered_slots(
+        slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        use_slot_date=True,
+    )
+
+    selection = service._select_offered_slot(
+        "2026-07-07T14:00:00+00:00",
+        "2026-07-07t14:00:00+00:00",
+        offered,
+    )
+
+    assert selection.ambiguous is False
+    assert selection.slot is not None
+    assert selection.slot["start_time"] == "2026-07-07T14:00:00+00:00"
+
+
+def test_earliest_doctor_flow_groups_dates_and_stores_clinic_local_dates() -> None:
+    service, emily, _slots = _create_emily_multiday_chat_service()
+
+    reply = service._handle_earliest_doctor_availability_flow(
+        merged_context={
+            "selected_doctor_id": str(emily.id),
+            "selected_doctor_name": "Dr. Emily Carter",
+        },
+        context_updates={},
+        start_date=date(2026, 7, 6),
+        end_date=date(2026, 7, 7),
+    )
+
+    assert reply.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert (
+        "Monday at 10:00, 11:00, 14:00, and 15:00; Tuesday at 10:00" in reply.content
+    )
+    offered = reply.chat_context_updates["offered_slots"]
+    assert {slot["display_date"] for slot in offered} == {"2026-07-06", "2026-07-07"}
+
+
+def test_hold_flow_reprompts_when_bare_time_is_ambiguous() -> None:
+    service, emily, slots = _create_emily_multiday_chat_service()
+    offered = service._serialize_offered_slots(
+        slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        use_slot_date=True,
+    )
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(channel=ConversationChannel.CHAT),
+    )
+
+    reply = service._handle_hold_flow(
+        message="10:00",
+        normalized_message="10:00",
+        conversation=conversation,
+        merged_context={"offered_slots": offered},
+        context_updates={},
+    )
+
+    assert reply.intent == ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND
+    assert reply.content == (
+        "I found more than one matching time. Please choose by option number or day."
+    )
+    assert reply.hold_created is False
 
 
 def test_cancellation_summary_renders_clinic_local_time() -> None:
