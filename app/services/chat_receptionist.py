@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -8,6 +9,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
+
+from redis.exceptions import RedisError
 
 from app.ai.receptionist_output import ReceptionistLLMIntent
 from app.ai.reliability import LLMFailureReason
@@ -22,6 +25,7 @@ from app.domain.human_escalations import (
     HumanEscalationSource,
 )
 from app.domain.receptionist.enums import ReceptionistResponseMode
+from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.availability import AvailabilityCheckStatus
 from app.domain.scheduling.expressions import (
     DateExpression,
@@ -34,6 +38,7 @@ from app.schemas.retell_tools import CheckAvailabilityToolArguments
 from app.schemas.scheduling_expressions import DateExpressionSchema
 from app.services.appointment_booking import (
     AppointmentBookingRequest,
+    AppointmentBookingResult,
     AppointmentBookingService,
     AppointmentSlotAlreadyBookedError,
     BookingAvailabilitySlotNotFoundError,
@@ -47,6 +52,7 @@ from app.services.appointment_holds import (
     AppointmentHoldNotFoundError,
     AppointmentHoldOwnershipError,
     AppointmentHoldService,
+    AppointmentHoldServiceError,
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
@@ -171,6 +177,8 @@ from app.services.time_preferences import (
     TimeWindow,
     is_time_in_window,
 )
+
+logger = logging.getLogger(__name__)
 
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
@@ -1457,6 +1465,19 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
             return self.responder.generate_reply(message=message)
 
+        # If the user starts a new scheduling request while stuck in a stale final
+        # booking confirmation whose hold is gone, clear the stale confirmation/hold
+        # state so normal scheduling intake/routing can restart instead of looping
+        # on the confirmation prompt.
+        stale_confirmation_cleanup: dict[str, Any] = {}
+        if self._should_override_stale_final_confirmation(
+            existing_context=existing_context,
+            message=message,
+            normalized_message=normalized_message,
+        ):
+            stale_confirmation_cleanup = self._cleared_hold_context_updates()
+            existing_context = {**existing_context, **stale_confirmation_cleanup}
+
         if _is_in_post_cancellation_frame(existing_context):
             post_cancellation_reply = self._handle_post_cancellation_message(
                 message=message,
@@ -1477,6 +1498,14 @@ class ChatReceptionistService:
         time_extraction = self._extract_time_preference(message)
 
         def finish(reply: ChatReceptionistReply) -> ChatReceptionistReply:
+            if stale_confirmation_cleanup:
+                reply = replace(
+                    reply,
+                    chat_context_updates={
+                        **stale_confirmation_cleanup,
+                        **reply.chat_context_updates,
+                    },
+                )
             if date_extraction.date_parsing is not None:
                 reply = replace(reply, date_parsing=date_extraction.date_parsing)
             if time_extraction.time_preference_parsing is not None:
@@ -1878,6 +1907,87 @@ class ChatReceptionistService:
             return False
 
         return True
+
+    def _should_override_stale_final_confirmation(
+        self,
+        *,
+        existing_context: dict[str, Any],
+        message: str,
+        normalized_message: str,
+    ) -> bool:
+        if existing_context.get("appointment_id"):
+            return False
+
+        if (
+            existing_context.get("booking_identity_step")
+            != ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
+        ):
+            return False
+
+        hold_id_raw = existing_context.get("hold_id")
+        if not hold_id_raw:
+            return False
+
+        # A genuine confirmation is handled by the booking flow (which now refreshes
+        # an expired hold), so only override for clearly new scheduling requests.
+        if is_confirmation_confirmed(
+            confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,
+            message=message,
+        ):
+            return False
+
+        if not self._looks_like_new_scheduling_request(normalized_message):
+            return False
+
+        # Only override when the hold is actually missing/expired; an active hold
+        # means the pending confirmation is still valid.
+        return not self._hold_is_present(hold_id_raw)
+
+    def _looks_like_new_scheduling_request(self, normalized_message: str) -> bool:
+        if not normalized_message:
+            return False
+
+        if any(
+            phrase in normalized_message
+            for phrase in ("start over", "start again", "restart")
+        ):
+            return True
+
+        if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
+            return True
+
+        if self._is_availability_request(normalized_message):
+            return True
+
+        if self.responder._contains_any(normalized_message, _SPECIALTY_LIST_KEYWORDS):
+            return True
+
+        if self.responder._contains_any(normalized_message, _DOCTOR_LIST_KEYWORDS):
+            return True
+
+        if self._match_specialty_in_message(normalized_message) is not None:
+            return True
+
+        if self._mentions_unknown_specialty(normalized_message):
+            return True
+
+        if self._match_doctor_in_message(normalized_message) is not None:
+            return True
+
+        return self._mentions_unknown_doctor(normalized_message)
+
+    def _hold_is_present(self, hold_id_raw: Any) -> bool:
+        try:
+            hold_id = UUID(str(hold_id_raw))
+        except (ValueError, TypeError):
+            return False
+
+        try:
+            return self.appointment_holds.get_hold_by_id(hold_id) is not None
+        except (RedisError, AppointmentHoldServiceError):
+            # If the hold store cannot confirm the hold, treat it as gone so the
+            # user is not trapped repeating the confirmation prompt.
+            return False
 
     def _appointment_intake_context_updates(
         self,
@@ -2721,38 +2831,25 @@ class ChatReceptionistService:
             )
 
         try:
-            booking_result = self.appointment_booking.book_appointment(
-                AppointmentBookingRequest(
-                    hold_id=UUID(hold_id),
-                    availability_slot_id=UUID(str(slot_id_raw)),
-                    patient_id=patient.id,
-                    owner_id=owner_id,
-                ),
-            )
-        except AppointmentHoldNotFoundError:
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
-                content=(
-                    "Your temporary hold was not found or has expired. "
-                    "Please check availability and choose a time again."
-                ),
-                chat_context_updates=identity_updates,
-                hold_id=hold_id,
-                booking_attempted=True,
+            booking_result = self._book_appointment_with_hold(
+                hold_id=UUID(hold_id),
+                availability_slot_id=UUID(str(slot_id_raw)),
+                patient_id=patient.id,
+                owner_id=owner_id,
             )
         except (
+            AppointmentHoldNotFoundError,
             AppointmentHoldMismatchError,
             AppointmentHoldOwnershipError,
         ):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
-                content=(
-                    "Your temporary hold is no longer valid for this booking. "
-                    "Please check availability and choose a time again."
-                ),
-                chat_context_updates=identity_updates,
-                hold_id=hold_id,
-                booking_attempted=True,
+            # Do not book without a valid hold. Try to recover by refreshing the
+            # hold for the still-selected slot, otherwise clear stale state.
+            return self._recover_missing_hold(
+                conversation=conversation,
+                merged_context=merged_context,
+                identity_updates=identity_updates,
+                slot_id_raw=slot_id_raw,
+                patient=patient,
             )
         except (
             AppointmentSlotAlreadyBookedError,
@@ -2773,6 +2870,42 @@ class ChatReceptionistService:
                 booking_attempted=True,
             )
 
+        return self._booking_success_reply(
+            booking_result=booking_result,
+            merged_context=merged_context,
+            identity_updates=identity_updates,
+            owner_id=owner_id,
+            hold_id=hold_id,
+            patient=patient,
+        )
+
+    def _book_appointment_with_hold(
+        self,
+        *,
+        hold_id: UUID,
+        availability_slot_id: UUID,
+        patient_id: UUID,
+        owner_id: str,
+    ) -> AppointmentBookingResult:
+        return self.appointment_booking.book_appointment(
+            AppointmentBookingRequest(
+                hold_id=hold_id,
+                availability_slot_id=availability_slot_id,
+                patient_id=patient_id,
+                owner_id=owner_id,
+            ),
+        )
+
+    def _booking_success_reply(
+        self,
+        *,
+        booking_result: AppointmentBookingResult,
+        merged_context: dict[str, Any],
+        identity_updates: dict[str, Any],
+        owner_id: str,
+        hold_id: str,
+        patient: Patient,
+    ) -> ChatReceptionistReply:
         appointment = booking_result.appointment
         hold = booking_result.hold
         doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
@@ -2805,6 +2938,133 @@ class ChatReceptionistService:
                 owner_id=owner_id,
             ),
         )
+
+    def _recover_missing_hold(
+        self,
+        *,
+        conversation: Conversation,
+        merged_context: dict[str, Any],
+        identity_updates: dict[str, Any],
+        slot_id_raw: Any,
+        patient: Patient,
+    ) -> ChatReceptionistReply:
+        """Recover from a missing/expired hold at final booking confirmation.
+
+        The hold is the concurrency boundary, so we never book without one. If the
+        previously selected slot is still available, we create a fresh hold (owned
+        by this conversation) and retry the booking. If the slot is gone or the
+        retry still fails, we clear stale hold/selection state and ask the user to
+        choose another time.
+        """
+        if not slot_id_raw:
+            return self._unrecoverable_hold_reply(identity_updates=identity_updates)
+
+        owner_id = str(conversation.id)
+
+        try:
+            slot = self.scheduling.get_available_slot_for_hold(UUID(str(slot_id_raw)))
+            refreshed_hold = self.appointment_holds.create_hold(
+                availability_slot_id=slot.id,
+                doctor_id=slot.doctor_id,
+                start_time=slot.start_time,
+                end_time=slot.end_time,
+                owner_id=owner_id,
+            )
+        except (
+            AvailabilitySlotNotFoundError,
+            AvailabilitySlotUnavailableError,
+            AppointmentSlotAlreadyHeldError,
+            AppointmentHoldStoreUnavailableError,
+        ):
+            return self._unrecoverable_hold_reply(identity_updates=identity_updates)
+
+        hold_expires_at = refreshed_hold.created_at + timedelta(
+            seconds=self.appointment_holds.ttl_seconds,
+        )
+        refreshed_hold_context = {
+            "selected_availability_slot_id": str(slot.id),
+            "selected_start_time": slot.start_time.isoformat(),
+            "selected_doctor_id": str(slot.doctor_id),
+            "hold_id": str(refreshed_hold.hold_id),
+            "hold_expires_at": hold_expires_at.isoformat(),
+            "hold_owner_id": owner_id,
+        }
+
+        try:
+            booking_result = self._book_appointment_with_hold(
+                hold_id=refreshed_hold.hold_id,
+                availability_slot_id=slot.id,
+                patient_id=patient.id,
+                owner_id=owner_id,
+            )
+        except (
+            AppointmentHoldNotFoundError,
+            AppointmentHoldMismatchError,
+            AppointmentHoldOwnershipError,
+            AppointmentSlotAlreadyBookedError,
+            BookingAvailabilitySlotUnavailableError,
+            BookingAvailabilitySlotNotFoundError,
+            BookingDoctorNotFoundError,
+            BookingPatientNotFoundError,
+            AppointmentSlotAlreadyHeldError,
+        ):
+            self._release_hold_safely(hold=refreshed_hold, owner_id=owner_id)
+            return self._unrecoverable_hold_reply(identity_updates=identity_updates)
+
+        return self._booking_success_reply(
+            booking_result=booking_result,
+            merged_context={**merged_context, **refreshed_hold_context},
+            identity_updates={**identity_updates, **refreshed_hold_context},
+            owner_id=owner_id,
+            hold_id=str(refreshed_hold.hold_id),
+            patient=patient,
+        )
+
+    def _unrecoverable_hold_reply(
+        self,
+        *,
+        identity_updates: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
+            content=(
+                "That time is no longer available, so I could not complete the booking. "
+                "Please choose another available time and I'll hold it for you."
+            ),
+            chat_context_updates={
+                **identity_updates,
+                **self._cleared_hold_context_updates(),
+            },
+            booking_attempted=True,
+        )
+
+    def _release_hold_safely(self, *, hold: AppointmentHold, owner_id: str) -> None:
+        try:
+            self.appointment_holds.release_hold(
+                doctor_id=hold.doctor_id,
+                start_time=hold.start_time,
+                owner_id=owner_id,
+            )
+        except (AppointmentHoldServiceError, RedisError):
+            logger.debug("failed to release refreshed hold after booking recovery failure")
+
+    def _cleared_hold_context_updates(self) -> dict[str, Any]:
+        """Transient keys to clear when a hold becomes unrecoverable.
+
+        Stable user/session context (selected doctor/specialty, patient identity)
+        is intentionally preserved so the user can retry quickly.
+        """
+        return {
+            "hold_id": None,
+            "hold_expires_at": None,
+            "hold_owner_id": None,
+            "selected_availability_slot_id": None,
+            "selected_start_time": None,
+            "offered_slots": [],
+            "booking_identity_step": None,
+            "pending_confirmation_email": None,
+            "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME,
+        }
 
     def _resolve_patient_for_booking(
         self,
