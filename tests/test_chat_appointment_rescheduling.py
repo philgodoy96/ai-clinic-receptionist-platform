@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
-from app.domain.scheduling.enums import AppointmentStatus
-from app.models.scheduling import Appointment
+from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
+from app.models.scheduling import Appointment, Doctor, Patient
 from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
@@ -15,8 +15,11 @@ from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
 from app.services.chat_appointment_rescheduling import (
+    APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+    RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
+    RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
 )
 from app.services.chat_receptionist import (
     _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
@@ -27,10 +30,12 @@ from app.services.chat_receptionist import (
     _resolve_contextual_fallback_reply,
 )
 from app.services.conversations import ConversationService
+from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
 from app.services.post_cancellation_turn import (
     PostCancellationTurnDecision,
     classify_post_cancellation_turn,
 )
+from app.services.time_preferences import TimePreferenceParser
 from tests.clinic_time_test_support import REFERENCE_CLINIC_NOW_UTC
 from tests.test_chat_appointment_cancellation import (
     _add_appointments,
@@ -45,11 +50,17 @@ from tests.test_chat_booking_identity_orchestration import (
     _book_appointment_and_get_conversation,
     _create_service,
 )
-from tests.test_chat_receptionist_service import create_chat_receptionist_service
+from tests.test_chat_receptionist_service import (
+    FakeAppointmentHoldService,
+    create_chat_receptionist_service,
+)
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
     FakeAppointmentRepository,
+    create_availability_slot,
     create_demo_scheduling_service,
+    create_service,
+    create_specialty,
 )
 
 
@@ -925,3 +936,473 @@ def test_reschedule_selection_does_not_call_rescheduling_service() -> None:
         )
 
     reschedule_appointment_mock.assert_not_called()
+
+
+def _create_reschedule_service_with_wednesday_afternoon_availability() -> tuple[
+    ChatReceptionistService,
+    FakeConversationRepository,
+    Doctor,
+    Patient,
+]:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    patient = _felipe_patient()
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 1, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 1, 16, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        patients=[patient],
+        availability_slots=availability_slots,
+    )
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=FakeAppointmentHoldService(),
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+    )
+    return service, repository, emily, patient
+
+
+_reschedule_wednesday_pm_service = _create_reschedule_service_with_wednesday_afternoon_availability
+
+
+def _reach_reschedule_new_time_preference(
+    service: ChatReceptionistService,
+    *,
+    appointments: list[Appointment],
+) -> tuple[ChatMessageResult, UUID]:
+    _selection_result, conversation_id = _reach_reschedule_single_appointment_selection(
+        service,
+        appointments=appointments,
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="yes", conversation_id=conversation_id),
+    )
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+    return result, conversation_id
+
+
+def test_reschedule_wednesday_afternoon_checks_availability_and_lists_slots() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    assert "I found these openings" in result.reply
+    assert "Dr. Emily Carter" in result.reply
+    assert "1." in result.reply
+    assert "2." in result.reply
+    assert "Which time would you like?" in result.reply
+
+
+def test_reschedule_availability_advances_to_new_slot_selection() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+    )
+
+
+def test_reschedule_availability_stores_offered_slots() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    offered = result.conversation.conversation_metadata["chat_context"]["reschedule_offered_slots"]
+    assert isinstance(offered, list)
+    assert len(offered) == 2
+    assert all("availability_slot_id" in slot for slot in offered)
+    assert all("doctor_id" in slot for slot in offered)
+    assert all("start_time" in slot for slot in offered)
+    assert all("summary" in slot for slot in offered)
+
+
+def test_reschedule_availability_reply_exposes_no_internal_ids() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
+
+
+def test_reschedule_availability_uses_selected_original_doctor() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    offered = result.conversation.conversation_metadata["chat_context"]["reschedule_offered_slots"]
+    assert all(slot["doctor_name"] == "Dr. Emily Carter" for slot in offered)
+    assert all(slot["doctor_id"] == str(emily.id) for slot in offered)
+
+
+def test_reschedule_time_window_filters_to_afternoon_slots() -> None:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    patient = _felipe_patient()
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        patients=[patient],
+        availability_slots=availability_slots,
+    )
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=FakeAppointmentHoldService(),
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 7, 1))),
+        time_preference_parser=TimePreferenceParser(),
+    )
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Thursday afternoon", conversation_id=conversation_id),
+    )
+
+    offered = result.conversation.conversation_metadata["chat_context"]["reschedule_offered_slots"]
+    assert len(offered) == 2
+    assert "09:00" not in result.reply
+    assert "1." in result.reply
+    assert "2." in result.reply
+
+
+def test_reschedule_no_availability_keeps_new_time_preference() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday morning", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+    assert "don't see openings" in result.reply.lower()
+
+
+def test_reschedule_no_availability_clears_stale_offered_slots() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    service.conversations.merge_chat_context(
+        conversation_id=conversation_id,
+        chat_context={
+            "reschedule_offered_slots": [{"availability_slot_id": "stale", "summary": "stale"}],
+        },
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday morning", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("reschedule_offered_slots") is None
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+
+
+def test_reschedule_unclear_preference_reprompts_for_day_or_time() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="maybe?", conversation_id=conversation_id),
+    )
+
+    assert result.reply == RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+    assert result.reply != _GENERIC_SCHEDULING_FALLBACK_MESSAGE
+
+
+def test_reschedule_new_preference_clears_stale_slot_and_hold_context() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    service.conversations.merge_chat_context(
+        conversation_id=conversation_id,
+        chat_context={
+            "reschedule_offered_slots": [{"availability_slot_id": "stale"}],
+            "reschedule_selected_availability_slot_id": "stale-slot",
+            "reschedule_selected_start_time": "2026-07-01T16:00:00+00:00",
+            "reschedule_selected_doctor_id": str(emily.id),
+            "reschedule_selected_doctor_name": "Dr. Emily Carter",
+            "reschedule_hold_id": "stale-hold",
+            "reschedule_hold_expires_at": "2026-07-01T16:05:00+00:00",
+            "reschedule_hold_owner_id": "stale-owner",
+        },
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("reschedule_selected_availability_slot_id") is None
+    assert chat_context.get("reschedule_hold_id") is None
+    assert chat_context.get("reschedule_hold_expires_at") is None
+    assert chat_context.get("reschedule_hold_owner_id") is None
+    assert chat_context.get("reschedule_selected_start_time") is None
+    assert chat_context.get("reschedule_selected_doctor_id") is None
+    assert len(chat_context["reschedule_offered_slots"]) == 2
+
+
+def test_reschedule_new_slot_selection_reprompts_stub() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+    assert (
+        availability.conversation.conversation_metadata["chat_context"][
+            "appointment_management_awaiting"
+        ]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="the first one", conversation_id=conversation_id),
+    )
+
+    assert result.reply == RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+    )
+
+
+def test_reschedule_time_preference_does_not_call_rescheduling_service() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    with patch.object(
+        AppointmentReschedulingService,
+        "reschedule_appointment",
+    ) as reschedule_appointment_mock:
+        service.handle_message(
+            ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+        )
+
+    reschedule_appointment_mock.assert_not_called()
+
+
+def test_reschedule_time_preference_does_not_call_hold_service() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    hold_service = service.appointment_holds
+    assert isinstance(hold_service, FakeAppointmentHoldService)
+    _time_result, conversation_id = _reach_reschedule_new_time_preference(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="Wednesday afternoon", conversation_id=conversation_id),
+    )
+
+    assert hold_service.create_hold_calls == []
+
+
+def test_resolve_contextual_fallback_for_reschedule_new_slot_selection() -> None:
+    resolved = _resolve_contextual_fallback_reply(
+        {
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION,
+        },
+    )
+
+    assert resolved is not None
+    intent, content = resolved
+    assert intent == ChatReceptionistIntent.RESCHEDULE_REQUEST
+    assert content == RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT

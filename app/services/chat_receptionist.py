@@ -74,11 +74,13 @@ from app.services.chat_appointment_intake import (
     ChatAppointmentIntakeResult,
 )
 from app.services.chat_appointment_rescheduling import (
+    APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
     RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
     RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+    RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
     RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
     ChatAppointmentReschedulingOrchestrator,
     RescheduleFlowResult,
@@ -464,6 +466,15 @@ def _is_awaiting_reschedule_new_time_preference(chat_context: dict[str, Any]) ->
     )
 
 
+def _is_awaiting_reschedule_new_slot_selection(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+    )
+
+
 def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> bool:
     return (
         chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
@@ -544,6 +555,12 @@ def _resolve_contextual_fallback_reply(
         return (
             ChatReceptionistIntent.RESCHEDULE_REQUEST,
             RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
+        )
+
+    if _is_awaiting_reschedule_new_slot_selection(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
         )
 
     if _is_awaiting_cancellation_patient_identity(chat_context):
@@ -931,8 +948,11 @@ class ChatReceptionistService:
         self._appointment_rescheduling = ChatAppointmentReschedulingOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
             appointments=scheduling.appointments,
+            scheduling=scheduling,
             scheduling_metadata=scheduling,
             clinic_time_service=effective_clinic_time,
+            date_parser=date_parser,
+            time_preference_parser=time_preference_parser,
             chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
         )
 
@@ -2105,11 +2125,17 @@ class ChatReceptionistService:
             return self._reschedule_flow_result_to_reply(flow)
 
         if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE:
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
-                content=RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
-                chat_context_updates={},
+            flow = self._appointment_rescheduling.handle_new_time_preference(
+                message=message,
+                chat_context=chat_context,
             )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION:
+            flow = self._appointment_rescheduling.handle_new_slot_selection(
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
 
         return self._enter_reschedule_task_frame(context_updates={})
 
