@@ -446,6 +446,20 @@ class FakeAppointmentRepository:
             and appointment.start_time >= start_from
         ]
 
+    def list_reschedulable_for_patient(
+        self,
+        *,
+        patient_id: UUID,
+        start_from: datetime,
+    ) -> list[Appointment]:
+        return [
+            appointment
+            for appointment in self.appointments
+            if appointment.patient_id == patient_id
+            and appointment.status == AppointmentStatus.SCHEDULED
+            and appointment.start_time >= start_from
+        ]
+
     def find_scheduled_conflict(
         self,
         *,

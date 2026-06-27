@@ -482,6 +482,23 @@ class FakeAppointmentRepository:
             key=lambda appointment: appointment.start_time,
         )
 
+    def list_reschedulable_for_patient(
+        self,
+        *,
+        patient_id: UUID,
+        start_from: datetime,
+    ) -> Sequence[Appointment]:
+        return sorted(
+            (
+                appointment
+                for appointment in self.appointments
+                if appointment.patient_id == patient_id
+                and appointment.status == AppointmentStatus.SCHEDULED
+                and appointment.start_time >= start_from
+            ),
+            key=lambda appointment: appointment.start_time,
+        )
+
     def find_scheduled_conflict(
         self,
         *,
