@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -10,6 +11,7 @@ from app.services.appointment_cancellation import AppointmentCancellationService
 from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION,
+    APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
@@ -27,6 +29,7 @@ from tests.test_chat_receptionist_service import (
 from tests.test_conversations import FakeConversationRepository
 from tests.test_scheduling_services import (
     FakeAppointmentRepository,
+    FakePatientRepository,
     create_appointment,
     create_service,
     create_specialty,
@@ -669,6 +672,360 @@ def test_cancellation_patient_not_found_does_not_list_appointments() -> None:
         chat_context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
+
+
+def _reach_cancellation_confirmation(
+    service: ChatReceptionistService,
+    *,
+    appointments: list[Appointment],
+) -> tuple[ChatMessageResult, UUID, Appointment]:
+    _add_appointments(service, appointments)
+    started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    appointment = appointments[0]
+    return result, started.conversation.id, appointment
+
+
+def test_cancellation_confirmation_yes_calls_cancellation_service() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+        wraps=service._appointment_cancellation.appointment_cancellation.cancel_appointment,
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="yes", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_called_once()
+    request = cancel_appointment_mock.call_args.args[0]
+    assert request.appointment_id == appointment.id
+    assert request.explicit_confirmation is True
+    assert request.idempotency_key == f"chat-cancel:{conversation_id}:{appointment.id}"
+    assert "has been cancelled" in result.reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+    assert chat_context["cancellation_status"] == "cancelled"
+    assert appointment.status == AppointmentStatus.CANCELLED
+
+
+def test_cancellation_confirmation_cancels_only_selected_appointment() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    dermatology = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    cardiology = _friday_appointment(
+        patient_id=patient.id,
+        doctor_id=reed.id,
+        specialty_id=reed.specialty_id,
+    )
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=[dermatology, cardiology],
+    )
+    service.handle_message(
+        ChatMessageInput(message="the first one", conversation_id=conversation_id),
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="yes please", conversation_id=conversation_id),
+    )
+
+    assert dermatology.status == AppointmentStatus.CANCELLED
+    assert cardiology.status == AppointmentStatus.SCHEDULED
+
+
+def test_cancellation_confirmation_success_message_format() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="please cancel it", conversation_id=conversation_id),
+    )
+
+    assert (
+        "Your Dermatology appointment with Dr. Emily Carter on Wednesday at 10:00 "
+        "has been cancelled."
+    ) in result.reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
+
+
+def test_cancellation_confirmation_success_sets_completed_context() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="confirm", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+    assert chat_context["cancellation_status"] == "cancelled"
+    assert chat_context.get("selected_appointment_id") is None
+    assert chat_context.get("selected_appointment_summary") is None
+    assert chat_context.get("offered_appointments") is None
+    assert chat_context.get("cancelled_appointment_summary")
+    assert "Dermatology" in result.reply
+
+
+def test_cancellation_confirmation_rejection_does_not_call_service() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="no", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
+    assert appointment.status == AppointmentStatus.SCHEDULED
+    assert "won't cancel" in result.reply.lower()
+
+
+def test_cancellation_confirmation_rejection_sets_declined_context() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="keep it", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+    assert chat_context["cancellation_status"] == "declined"
+    assert chat_context.get("selected_appointment_id") is None
+
+
+def test_cancellation_confirmation_ambiguous_reprompts_without_service_call() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="maybe", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert chat_context.get("selected_appointment_id")
+    assert "Please confirm whether you want me to cancel your" in result.reply
+    assert "Dermatology appointment with Dr. Emily Carter" in result.reply
+
+
+def test_cancellation_confirmation_ownership_mismatch_does_not_cancel() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    other_patient = Patient(
+        id=uuid4(),
+        full_name="Other Patient",
+        date_of_birth=date(1990, 1, 1),
+        phone_number="+1-555-9999",
+        email="other@example.test",
+    )
+    cast(FakePatientRepository, service.scheduling.patients).patients.append(other_patient)
+    wrong_owner_appointment = _wednesday_appointment(
+        patient_id=other_patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(
+            service,
+            appointments=[
+                _wednesday_appointment(
+                    patient_id=patient.id,
+                    doctor_id=emily.id,
+                    specialty_id=emily.specialty_id,
+                ),
+            ],
+        )
+    )
+    repository = service.scheduling.appointments
+    assert isinstance(repository, FakeAppointmentRepository)
+    repository.appointments.append(wrong_owner_appointment)
+    conversation = service.conversations.get_conversation(conversation_id)
+    service.conversations.merge_chat_context(
+        conversation_id=conversation_id,
+        chat_context={
+            **conversation.conversation_metadata["chat_context"],
+            "selected_appointment_id": str(wrong_owner_appointment.id),
+        },
+    )
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="yes", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
+    assert "couldn't verify that appointment" in result.reply.lower()
+    assert str(wrong_owner_appointment.id) not in result.reply
+    assert str(patient.id) not in result.reply
+
+
+def test_cancellation_confirmation_missing_appointment_does_not_cancel() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+    repository = service.scheduling.appointments
+    assert isinstance(repository, FakeAppointmentRepository)
+    repository.appointments.clear()
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="yes", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
+    assert "couldn't find that appointment" in result.reply.lower()
+
+
+def test_cancellation_confirmation_not_cancelable_returns_safe_response() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, confirmed_appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+    confirmed_appointment.status = AppointmentStatus.COMPLETED
+
+    with patch.object(
+        AppointmentCancellationService,
+        "cancel_appointment",
+    ) as cancel_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="yes", conversation_id=conversation_id),
+        )
+
+    cancel_appointment_mock.assert_not_called()
+    assert "can no longer be cancelled" in result.reply.lower()
+
+
+def test_cancellation_confirmation_duplicate_is_idempotent() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reach_cancellation_confirmation_result, conversation_id, _appointment = (
+        _reach_cancellation_confirmation(service, appointments=[appointment])
+    )
+
+    first = service.handle_message(
+        ChatMessageInput(message="yes", conversation_id=conversation_id),
+    )
+    service.conversations.merge_chat_context(
+        conversation_id=conversation_id,
+        chat_context={
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+            ),
+            "resolved_patient_id": str(patient.id),
+            "selected_appointment_id": str(appointment.id),
+            "selected_appointment_summary": (
+                "Dermatology with Dr. Emily Carter on Wednesday at 10:00"
+            ),
+        },
+    )
+    second = service.handle_message(
+        ChatMessageInput(message="yes please", conversation_id=conversation_id),
+    )
+
+    assert appointment.status == AppointmentStatus.CANCELLED
+    assert "cancelled" in first.reply.lower()
+    assert "already been cancelled" in second.reply.lower()
 
 
 def test_cancellation_flow_does_not_call_cancellation_service() -> None:
