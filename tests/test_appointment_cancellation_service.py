@@ -181,16 +181,17 @@ def test_already_cancelled_appointment_returns_safe_idempotent_result() -> None:
     assert len(context.attempt_repository.attempts) == 1
 
 
-def test_rescheduled_appointment_can_be_cancelled() -> None:
+def test_rescheduled_appointment_is_not_cancelable() -> None:
     context = create_cancellation_context(status=AppointmentStatus.RESCHEDULED)
 
-    result = context.service.cancel_appointment(
-        _build_request(context.appointment.id),
-    )
+    with pytest.raises(AppointmentNotCancelableError):
+        context.service.cancel_appointment(
+            _build_request(context.appointment.id),
+        )
 
-    assert result.already_cancelled is False
-    assert context.appointment.status == AppointmentStatus.CANCELLED
-    assert context.appointment.cancelled_at is not None
+    assert context.appointment.status == AppointmentStatus.RESCHEDULED
+    assert context.appointment.cancelled_at is None
+    assert len(context.audit_logs.records) == 0
 
 
 def test_completed_appointment_is_rejected() -> None:

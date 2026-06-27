@@ -282,7 +282,7 @@ def test_appointment_repository_lists_cancelable_patient_appointments(db_session
         start_from=start_time - timedelta(minutes=1),
     )
 
-    assert [appointment.id for appointment in appointments] == [scheduled.id, rescheduled.id]
+    assert [appointment.id for appointment in appointments] == [scheduled.id]
 
 
 def test_list_reschedulable_for_patient_includes_scheduled_excludes_rescheduled_and_cancelled(
