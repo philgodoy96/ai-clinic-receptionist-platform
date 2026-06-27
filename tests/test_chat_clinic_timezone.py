@@ -7,7 +7,11 @@ from zoneinfo import ZoneInfo
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient
 from app.services.chat_appointment_rescheduling import _ReschedulePreferenceExtraction
-from app.services.chat_receptionist import ChatMessageInput, ChatReceptionistIntent, ChatReceptionistService
+from app.services.chat_receptionist import (
+    ChatMessageInput,
+    ChatReceptionistIntent,
+    ChatReceptionistService,
+)
 from app.services.clinic_time import (
     format_clinic_local_slot_summary,
     format_clinic_local_time_label,
@@ -15,8 +19,8 @@ from app.services.clinic_time import (
 )
 from app.services.conversations import ConversationService
 from app.services.date_parsing import FixedClock, NaturalLanguageDateParser
-from app.services.time_preferences import TimePreferenceParser
 from app.services.scheduling import SchedulingService
+from app.services.time_preferences import TimePreferenceParser
 from tests.test_chat_appointment_cancellation import (
     _add_appointments,
     _create_chat_service_with_patient,
@@ -36,6 +40,7 @@ from tests.test_scheduling_services import (
     create_service,
     create_specialty,
 )
+
 
 def _availability_slots(scheduling: SchedulingService) -> list[AvailabilitySlot]:
     repository = scheduling.availability_slots
