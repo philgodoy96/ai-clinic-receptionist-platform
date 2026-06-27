@@ -27,6 +27,11 @@ from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Special
 from app.repositories.scheduling import AppointmentRepository
 from app.schemas.retell_tools import CheckAvailabilityToolArguments
 from app.schemas.scheduling_expressions import DateExpressionSchema
+from app.services.appointment_holds import (
+    AppointmentHoldService,
+    AppointmentHoldStoreUnavailableError,
+    AppointmentSlotAlreadyHeldError,
+)
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
@@ -57,6 +62,8 @@ from app.services.clinic_time import ClinicTimeService
 from app.services.date_parsing import DateParseStatus, NaturalLanguageDateParser
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.scheduling import (
+    AvailabilitySlotNotFoundError,
+    AvailabilitySlotUnavailableError,
     DoctorAttributedAvailabilitySlot,
     SchedulingService,
 )
@@ -75,6 +82,7 @@ _CTU_LOW_CONFIDENCE_THRESHOLD = 0.5
 APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE = "reschedule"
 APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE = "new_time_preference"
 APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION = "new_slot_selection"
+APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION = "reschedule_confirmation"
 
 _MAX_RESCHEDULE_OFFERED_SLOTS = 5
 
@@ -165,6 +173,22 @@ RESCHEDULE_NO_AVAILABILITY_MESSAGE = (
 RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT = (
     "Please choose one of the offered times."
 )
+RESCHEDULE_NEW_SLOT_SELECTION_AMBIGUOUS = (
+    "I found more than one matching time. Which one would you like?"
+)
+RESCHEDULE_NEW_SLOT_SELECTION_PREFERENCE_HINT = (
+    "Please choose one of the offered times, or tell me another day or time you prefer."
+)
+RESCHEDULE_HOLD_UNAVAILABLE_MESSAGE = (
+    "That time is no longer available. Would you like to choose another time?"
+)
+RESCHEDULE_CONFIRMATION_REPROMPT_STUB = (
+    "Please confirm whether you want me to reschedule your appointment."
+)
+
+_ISO_DATETIME_PATTERN = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:[+-]\d{2}:\d{2}|Z)?)\b",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,10 +226,10 @@ class RescheduleAppointmentSelectionStatus(StrEnum):
     AMBIGUOUS = "ambiguous"
 
 
-@dataclass(frozen=True, slots=True)
-class RescheduleAppointmentSelectionResult:
-    status: RescheduleAppointmentSelectionStatus
-    selected_appointment: dict[str, str] | None = None
+class RescheduleSlotSelectionStatus(StrEnum):
+    UNIQUE = "unique"
+    ZERO = "zero"
+    AMBIGUOUS = "ambiguous"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +243,31 @@ class _OfferedAppointmentView:
     doctor_id: str | None = None
     specialty_id: str | None = None
     start_time: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _OfferedRescheduleSlotView:
+    availability_slot_id: str
+    summary: str
+    weekday: str
+    time_label: str
+    doctor_id: str | None = None
+    doctor_name: str = ""
+    specialty_id: str | None = None
+    specialty_name: str = ""
+    start_time: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RescheduleAppointmentSelectionResult:
+    status: RescheduleAppointmentSelectionStatus
+    selected_appointment: dict[str, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RescheduleSlotSelectionResult:
+    status: RescheduleSlotSelectionStatus
+    selected_slot: _OfferedRescheduleSlotView | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +299,7 @@ class ChatAppointmentReschedulingOrchestrator:
         date_parser: NaturalLanguageDateParser | None = None,
         time_preference_parser: TimePreferenceParser | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
+        appointment_holds: AppointmentHoldService | None = None,
     ) -> None:
         self.patient_identity_resolution = patient_identity_resolution
         self.appointments = appointments
@@ -259,6 +309,10 @@ class ChatAppointmentReschedulingOrchestrator:
         self.date_parser = date_parser or NaturalLanguageDateParser()
         self.time_preference_parser = time_preference_parser or TimePreferenceParser()
         self.chat_turn_understanding_interpreter = chat_turn_understanding_interpreter
+        if appointment_holds is None:
+            msg = "appointment_holds is required for reschedule slot holds"
+            raise ValueError(msg)
+        self.appointment_holds = appointment_holds
 
     def handle_patient_identity_intake(
         self,
@@ -614,18 +668,72 @@ class ChatAppointmentReschedulingOrchestrator:
     def handle_new_slot_selection(
         self,
         *,
+        message: str,
+        conversation: Conversation,
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
+        base_updates = self._new_slot_selection_context_updates(chat_context)
+
+        selection = self.resolve_reschedule_slot_selection(
+            message=message,
+            chat_context=chat_context,
+        )
+
+        if selection.status is RescheduleSlotSelectionStatus.UNIQUE:
+            assert selection.selected_slot is not None
+            return self._create_reschedule_hold_and_request_confirmation(
+                selected=selection.selected_slot,
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+
+        if selection.status is RescheduleSlotSelectionStatus.AMBIGUOUS:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_NEW_SLOT_SELECTION_AMBIGUOUS,
+                chat_context_updates=base_updates,
+            )
+
+        preference = self._extract_reschedule_preference(message)
+        if not preference.requires_clarification:
+            content = RESCHEDULE_NEW_SLOT_SELECTION_PREFERENCE_HINT
+        else:
+            content = RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT
+
         return RescheduleFlowResult(
             intent="reschedule_request",
-            content=RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
-            chat_context_updates={
-                **self._reschedule_flow_context(chat_context),
-                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
-                "appointment_management_awaiting": (
-                    APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
-                ),
-            },
+            content=content,
+            chat_context_updates=base_updates,
+        )
+
+    def handle_reschedule_confirmation(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        del message
+        return RescheduleFlowResult(
+            intent="reschedule_request",
+            content=RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
+            chat_context_updates=self._reschedule_confirmation_context_updates(chat_context),
+        )
+
+    def resolve_reschedule_slot_selection(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> RescheduleSlotSelectionResult:
+        offered = self._load_offered_reschedule_slot_views(chat_context)
+        if not offered:
+            return RescheduleSlotSelectionResult(
+                status=RescheduleSlotSelectionStatus.ZERO,
+            )
+
+        return self._resolve_offered_reschedule_slot_selection(
+            message=message,
+            offered=offered,
         )
 
     def _extract_reschedule_preference(
@@ -1053,10 +1161,286 @@ class ChatAppointmentReschedulingOrchestrator:
             "reschedule_selected_start_time": None,
             "reschedule_selected_doctor_id": None,
             "reschedule_selected_doctor_name": None,
+            "reschedule_selected_specialty_id": None,
+            "reschedule_selected_specialty_name": None,
             "reschedule_hold_id": None,
             "reschedule_hold_expires_at": None,
             "reschedule_hold_owner_id": None,
         }
+
+    def _new_slot_selection_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **self._reschedule_flow_context(chat_context),
+            **self._preserved_reschedule_slot_context(chat_context),
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+            ),
+        }
+
+    def _reschedule_confirmation_context_updates(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **self._reschedule_flow_context(chat_context),
+            **self._preserved_reschedule_slot_context(chat_context),
+            "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION
+            ),
+        }
+
+    def _preserved_reschedule_slot_context(
+        self,
+        chat_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        updates: dict[str, Any] = {}
+        if chat_context.get("reschedule_offered_slots") is not None:
+            updates["reschedule_offered_slots"] = chat_context["reschedule_offered_slots"]
+        for key in (
+            "reschedule_selected_availability_slot_id",
+            "reschedule_selected_start_time",
+            "reschedule_selected_doctor_id",
+            "reschedule_selected_doctor_name",
+            "reschedule_selected_specialty_id",
+            "reschedule_selected_specialty_name",
+            "reschedule_hold_id",
+            "reschedule_hold_expires_at",
+            "reschedule_hold_owner_id",
+        ):
+            if key in chat_context:
+                updates[key] = chat_context[key]
+        return updates
+
+    def _create_reschedule_hold_and_request_confirmation(
+        self,
+        *,
+        selected: _OfferedRescheduleSlotView,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        owner_id = str(conversation.id)
+        slot_selection_updates = self._new_slot_selection_context_updates(chat_context)
+
+        try:
+            slot = self.scheduling.get_available_slot_for_hold(
+                UUID(selected.availability_slot_id),
+            )
+            hold = self.appointment_holds.create_hold(
+                availability_slot_id=slot.id,
+                doctor_id=slot.doctor_id,
+                start_time=slot.start_time,
+                end_time=slot.end_time,
+                owner_id=owner_id,
+            )
+        except (
+            AvailabilitySlotNotFoundError,
+            AvailabilitySlotUnavailableError,
+            AppointmentSlotAlreadyHeldError,
+            AppointmentHoldStoreUnavailableError,
+        ):
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_HOLD_UNAVAILABLE_MESSAGE,
+                chat_context_updates=slot_selection_updates,
+            )
+
+        hold_expires_at = hold.created_at + timedelta(
+            seconds=self.appointment_holds.ttl_seconds,
+        )
+        original_summary = str(chat_context.get("selected_appointment_summary") or "")
+        confirmation_content = self._format_reschedule_confirmation_prompt(
+            original_summary=original_summary,
+            new_slot_summary=selected.summary,
+        )
+        hold_updates: dict[str, Any] = {
+            "reschedule_selected_availability_slot_id": str(slot.id),
+            "reschedule_selected_start_time": slot.start_time.isoformat(),
+            "reschedule_selected_doctor_id": str(slot.doctor_id),
+            "reschedule_selected_doctor_name": selected.doctor_name,
+            "reschedule_hold_id": str(hold.hold_id),
+            "reschedule_hold_expires_at": hold_expires_at.isoformat(),
+            "reschedule_hold_owner_id": owner_id,
+            "appointment_management_awaiting": (
+                APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION
+            ),
+        }
+        if selected.specialty_id is not None:
+            hold_updates["reschedule_selected_specialty_id"] = selected.specialty_id
+        if selected.specialty_name:
+            hold_updates["reschedule_selected_specialty_name"] = selected.specialty_name
+
+        return RescheduleFlowResult(
+            intent="reschedule_request",
+            content=confirmation_content,
+            chat_context_updates={
+                **slot_selection_updates,
+                **hold_updates,
+            },
+        )
+
+    def _format_reschedule_confirmation_prompt(
+        self,
+        *,
+        original_summary: str,
+        new_slot_summary: str,
+    ) -> str:
+        confirmation_summary = _confirmation_summary_from_list_summary(original_summary)
+        return (
+            f"Please confirm: should I reschedule your {confirmation_summary} "
+            f"to {new_slot_summary}?"
+        )
+
+    def _load_offered_reschedule_slot_views(
+        self,
+        chat_context: dict[str, Any],
+    ) -> list[_OfferedRescheduleSlotView]:
+        raw_offered = chat_context.get("reschedule_offered_slots")
+        if not isinstance(raw_offered, list):
+            return []
+
+        offered: list[_OfferedRescheduleSlotView] = []
+        for item in raw_offered:
+            if not isinstance(item, dict):
+                continue
+            availability_slot_id = item.get("availability_slot_id")
+            start_time = item.get("start_time")
+            if not isinstance(availability_slot_id, str) or not isinstance(
+                start_time,
+                str,
+            ):
+                continue
+
+            localized = datetime.fromisoformat(start_time).astimezone(
+                self.clinic_time_service.timezone,
+            )
+            weekday = localized.strftime("%A")
+            time_label = localized.strftime("%H:%M")
+            summary = item.get("summary")
+            if not isinstance(summary, str) or not summary:
+                summary = f"{weekday} at {time_label}"
+
+            offered.append(
+                _OfferedRescheduleSlotView(
+                    availability_slot_id=availability_slot_id,
+                    summary=summary,
+                    weekday=weekday,
+                    time_label=time_label,
+                    doctor_id=_optional_str(item.get("doctor_id")),
+                    doctor_name=str(item.get("doctor_name") or ""),
+                    specialty_id=_optional_str(item.get("specialty_id")),
+                    specialty_name=str(item.get("specialty_name") or ""),
+                    start_time=start_time,
+                ),
+            )
+        return offered
+
+    def _resolve_offered_reschedule_slot_selection(
+        self,
+        *,
+        message: str,
+        offered: Sequence[_OfferedRescheduleSlotView],
+    ) -> RescheduleSlotSelectionResult:
+        normalized_message = message.lower().strip()
+        candidate_indices = list(range(len(offered)))
+        signals_detected = False
+
+        option_index = _extract_option_number_index(
+            normalized_message,
+            option_count=len(offered),
+        )
+        if option_index is not None:
+            signals_detected = True
+            candidate_indices = [
+                index for index in candidate_indices if index == option_index
+            ]
+
+        ordinal_index = _extract_ordinal_index(
+            normalized_message,
+            option_count=len(offered),
+        )
+        if ordinal_index is not None:
+            signals_detected = True
+            candidate_indices = [
+                index for index in candidate_indices if index == ordinal_index
+            ]
+
+        specialty_query = _extract_reschedule_slot_specialty_query(
+            normalized_message,
+            offered=offered,
+        )
+        if specialty_query is not None:
+            signals_detected = True
+            candidate_indices = [
+                index
+                for index in candidate_indices
+                if specialty_query in offered[index].specialty_name.lower()
+            ]
+
+        if _any_reschedule_slot_doctor_mentioned(normalized_message, offered):
+            signals_detected = True
+            candidate_indices = [
+                index
+                for index in candidate_indices
+                if _doctor_name_in_message(
+                    normalized_message,
+                    offered[index].doctor_name,
+                )
+            ]
+
+        if _any_reschedule_slot_weekday_mentioned(normalized_message, offered):
+            signals_detected = True
+            candidate_indices = [
+                index
+                for index in candidate_indices
+                if offered[index].weekday.lower() in normalized_message
+            ]
+
+        normalized_time = normalize_appointment_time_expression(
+            message,
+            allow_bare_hour=False,
+        )
+        if normalized_time is not None:
+            signals_detected = True
+            candidate_indices = [
+                index
+                for index in candidate_indices
+                if offered[index].time_label == normalized_time.value
+            ]
+
+        iso_datetime = _extract_iso_datetime(message)
+        if iso_datetime is not None:
+            signals_detected = True
+            iso_value = iso_datetime.isoformat()
+            candidate_indices = [
+                index
+                for index in candidate_indices
+                if offered[index].start_time == iso_value
+            ]
+
+        if not signals_detected:
+            return RescheduleSlotSelectionResult(
+                status=RescheduleSlotSelectionStatus.ZERO,
+            )
+
+        if len(candidate_indices) == 1:
+            return RescheduleSlotSelectionResult(
+                status=RescheduleSlotSelectionStatus.UNIQUE,
+                selected_slot=offered[candidate_indices[0]],
+            )
+
+        if not candidate_indices:
+            return RescheduleSlotSelectionResult(
+                status=RescheduleSlotSelectionStatus.ZERO,
+            )
+
+        return RescheduleSlotSelectionResult(
+            status=RescheduleSlotSelectionStatus.AMBIGUOUS,
+        )
 
     def _resolve_patient_fields(
         self,
@@ -1589,3 +1973,57 @@ def _new_time_preference_prompt(summary: str) -> str:
         f"Got it. What day or time would you prefer instead for your "
         f"{confirmation_summary}?"
     )
+
+
+def _extract_reschedule_slot_specialty_query(
+    normalized_message: str,
+    *,
+    offered: Sequence[_OfferedRescheduleSlotView],
+) -> str | None:
+    match = _SPECIALTY_SELECTION_PATTERN.search(normalized_message)
+    if match is not None:
+        specialty_query = match.group(1).strip().lower()
+        if specialty_query not in _ORDINAL_WORDS:
+            return specialty_query
+
+    for item in offered:
+        specialty = item.specialty_name.lower()
+        if specialty and re.search(rf"\b{re.escape(specialty)}\b", normalized_message):
+            return specialty
+
+    return None
+
+
+def _any_reschedule_slot_doctor_mentioned(
+    normalized_message: str,
+    offered: Sequence[_OfferedRescheduleSlotView],
+) -> bool:
+    return any(
+        _doctor_name_in_message(normalized_message, item.doctor_name)
+        for item in offered
+        if item.doctor_name
+    )
+
+
+def _any_reschedule_slot_weekday_mentioned(
+    normalized_message: str,
+    offered: Sequence[_OfferedRescheduleSlotView],
+) -> bool:
+    return any(item.weekday.lower() in normalized_message for item in offered)
+
+
+def _extract_iso_datetime(message: str) -> datetime | None:
+    match = _ISO_DATETIME_PATTERN.search(message)
+    if match is None:
+        return None
+
+    raw_value = match.group(1).replace(" ", "T")
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+
+    return parsed
