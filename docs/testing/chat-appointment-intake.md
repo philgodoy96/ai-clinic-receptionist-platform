@@ -229,7 +229,8 @@ Set `CHAT_TURN_UNDERSTANDING_INTERPRETER=fake`, restart the API, and run the seq
 
 ## Out of scope / follow-ups
 
-- **Cancel/reschedule contextual task frame** — future slice; current cancel/reschedule paths unchanged.
+- **Cancel contextual task frame** — implemented; see [Chat Cancellation Flow Manual Testing](chat-cancellation-flow.md).
+- **Reschedule contextual task frame** — future slice; current reschedule paths unchanged.
 - **Timezone/seed audit** — future slice; demo availability display may be offset if UTC storage and clinic-local time are not aligned. Do not treat as fixed in this branch.
 - **No second LLM response composer** — reply phrasing remains deterministic by default.
 - **Retell voice flow** — not modified.
