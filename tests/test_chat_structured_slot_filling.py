@@ -203,7 +203,8 @@ def test_llm_booking_confirmation_cannot_book_without_hold() -> None:
 
     result = service.handle_message(ChatMessageInput(message="confirm"))
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_MISSING
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "hold it first" not in result.reply.lower()
     assert len(tracking_booking.book_calls) == 0
 
 

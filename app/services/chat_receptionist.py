@@ -388,6 +388,10 @@ _IDENTITY_ONLY_MENU_MESSAGE = (
     "Thanks. I can help you book, reschedule, cancel, or check appointments. "
     "What would you like to do?"
 )
+_ORPHAN_CONFIRMATION_MENU_MESSAGE = (
+    "I can help you book, reschedule, cancel, or check appointments. "
+    "What would you like to do?"
+)
 _SLOT_SELECTION_REPROMPT_MESSAGE = (
     "Please choose one of the appointment times I offered."
 )
@@ -3752,6 +3756,19 @@ class ChatReceptionistService:
         }
 
         if has_confirmation and not hold_id and not offered_slots:
+            if not self._has_active_scheduling_context_for_booking_identity(
+                merged_context,
+            ):
+                # Orphan confirmation: a bare "yes"/"confirm"/"book it" with no
+                # active context that expects a yes/no (no hold, offered slot,
+                # selected slot, in-progress intake, or booking identity). Do not
+                # route to the booking-confirmation fallback or ask the user to
+                # hold a time first; surface the standard menu instead.
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.FALLBACK,
+                    content=_ORPHAN_CONFIRMATION_MENU_MESSAGE,
+                    chat_context_updates=context_updates,
+                )
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_HOLD_MISSING,
                 content=(
