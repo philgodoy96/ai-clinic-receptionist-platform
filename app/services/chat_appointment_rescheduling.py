@@ -187,6 +187,53 @@ _RESCHEDULE_SINGLE_REJECTED_PHRASES = (
     "that is not it",
 )
 _ORDINAL_WORDS = frozenset({"first", "second", "third"})
+# Plain denials during reschedule new-slot selection that `understand_confirmation`
+# does not already classify as a rejection. Matched as substrings on the
+# lowercased message so trailing punctuation/extra words do not break detection.
+_RESCHEDULE_NEW_SLOT_DENIAL_PHRASES = (
+    "none of those",
+    "none of these",
+    "none of them",
+    "none of that",
+    "none work",
+    "none of these work",
+    "don't want those",
+    "do not want those",
+    "dont want those",
+    "don't want these",
+    "do not want these",
+    "dont want these",
+    "don't want any of those",
+    "do not want any of those",
+    "don't want to reschedule",
+    "do not want to reschedule",
+    "dont want to reschedule",
+    "not reschedule anymore",
+    "reschedule anymore",
+)
+# Signals that a denial of the offered times is paired with a request to look at
+# different availability rather than abandoning the reschedule entirely.
+_RESCHEDULE_ALTERNATIVE_AVAILABILITY_MARKERS = (
+    "another time",
+    "another day",
+    "different time",
+    "different day",
+    "other time",
+    "other times",
+    "other day",
+    "what about",
+    "how about",
+    "show me",
+    "any other",
+    "anything else",
+    "something else",
+    "earlier",
+    "later",
+    "this week",
+    "next week",
+    "soonest",
+    "earliest",
+)
 _SPECIALTY_SELECTION_PATTERN = re.compile(
     r"\bthe\s+([a-z][a-z\s-]*?)\s+one\b",
     re.IGNORECASE,
@@ -224,6 +271,13 @@ RESCHEDULE_APPOINTMENT_SELECTION_AMBIGUOUS = (
 )
 RESCHEDULE_APPOINTMENT_REJECTED_MESSAGE = (
     "Okay. I won't reschedule that appointment. Is there anything else I can help with?"
+)
+RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE = (
+    "No problem \u2014 I won't reschedule your appointment. Your current appointment "
+    "remains unchanged. Would you like to look for another time or do something else?"
+)
+RESCHEDULE_NEW_SLOT_PREFERENCE_CLARIFICATION = (
+    "Sure \u2014 what day or time would you prefer?"
 )
 RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT = (
     "What day or time would you prefer instead?"
@@ -1072,6 +1126,22 @@ class ChatAppointmentReschedulingOrchestrator:
         conversation: Conversation,
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
+        if self._is_new_slot_selection_denial(message):
+            # The user declined the offered times. If they also asked for different
+            # availability ("None of those, what about Wednesday?", "No, show me
+            # another time") route that to the new-time-preference search instead of
+            # repeating the slot-selection prompt. A plain "No"/"No thanks" aborts the
+            # reschedule and leaves the original appointment untouched.
+            if self._new_slot_denial_seeks_alternative(message):
+                return self.handle_new_time_preference(
+                    message=message,
+                    chat_context=chat_context,
+                )
+            return self._decline_reschedule_new_slot_selection(
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+
         if is_appointment_selection_revision_message(
             message,
             chat_context=chat_context,
@@ -1116,6 +1186,48 @@ class ChatAppointmentReschedulingOrchestrator:
             intent="reschedule_request",
             content=content,
             chat_context_updates=base_updates,
+        )
+
+    def _is_new_slot_selection_denial(self, message: str) -> bool:
+        """Whether a new-slot-selection turn is a clear denial of the offered times."""
+        understanding = understand_confirmation(
+            confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
+            message=message,
+        )
+        if understanding.decision is ConfirmationDecision.REJECTED:
+            return True
+        normalized = message.lower().strip()
+        if not normalized:
+            return False
+        return any(phrase in normalized for phrase in _RESCHEDULE_NEW_SLOT_DENIAL_PHRASES)
+
+    def _new_slot_denial_seeks_alternative(self, message: str) -> bool:
+        """Whether a denial of offered times also asks for different availability."""
+        if not self._extract_reschedule_preference(message).requires_clarification:
+            return True
+        normalized = message.lower()
+        return any(
+            marker in normalized
+            for marker in _RESCHEDULE_ALTERNATIVE_AVAILABILITY_MARKERS
+        )
+
+    def _decline_reschedule_new_slot_selection(
+        self,
+        *,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        """Abort the reschedule without touching the original appointment."""
+        self._release_reschedule_hold_best_effort(
+            conversation=conversation,
+            chat_context=chat_context,
+        )
+        return RescheduleFlowResult(
+            intent="reschedule_request",
+            content=RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE,
+            chat_context_updates=self._reschedule_confirmation_declined_context_updates(
+                chat_context,
+            ),
         )
 
     def handle_reschedule_confirmation(

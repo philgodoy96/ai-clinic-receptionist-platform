@@ -350,12 +350,21 @@ def test_should_enter_booking_flow_requires_scheduling_context_for_identity_only
         offered_slots=[],
         merged_context={},
     ) is False
+    # Merely-offered slots are not enough to start identity intake; the user must
+    # have committed to a specific slot (selected or held) first.
     assert chat_service._should_enter_booking_flow(
         hold_id=None,
         has_identity_fields=True,
         has_confirmation=False,
         offered_slots=[{"display_time": "09:00"}],
         merged_context={"offered_slots": [{"display_time": "09:00"}]},
+    ) is False
+    assert chat_service._should_enter_booking_flow(
+        hold_id=None,
+        has_identity_fields=True,
+        has_confirmation=False,
+        offered_slots=[{"display_time": "09:00"}],
+        merged_context={"selected_availability_slot_id": "slot-1"},
     ) is True
     assert chat_service._should_enter_booking_flow(
         hold_id="hold-1",
