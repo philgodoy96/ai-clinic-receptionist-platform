@@ -86,7 +86,20 @@ See [Appointment Slot Holds](architecture/appointment-holds.md) and [Chat Appoin
 
 Postgres `EmailJob` records are the durable source of truth for delivery state. RabbitMQ carries wake-up messages only (`email_job_id`). Retry scheduling uses `next_attempt_at`; RabbitMQ TTL retry queues are not used for provider failures.
 
+Booking, reschedule, and escalation flows **create durable `EmailJob` records only**. Chat, scheduling API, and Retell routes do not call Resend (or any email provider) directly. A background worker sends through the configured `EmailDeliveryProvider`.
+
 Email delivery is **at-least-once**. Exactly-once delivery across Postgres and external providers is not guaranteed. When `EMAIL_PROVIDER=resend`, the worker passes `EmailJob.idempotency_key` (or an `email_job:{id}` fallback) to Resend as an `Idempotency-Key` header.
+
+### Provider modes
+
+| Mode | Setting | Use case |
+|------|---------|----------|
+| **Fake** (default) | `EMAIL_PROVIDER=fake` | Local development, CI, and smoke tests. No API keys required. Outbound messages are recorded in memory by `FakeEmailProvider`. |
+| **Resend** (opt-in) | `EMAIL_PROVIDER=resend` | Real outbound email through [Resend](https://resend.com). Requires `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`. Enable only in deployment secret managers — never commit real keys. |
+
+Resend is intentionally opt-in. Startup validation rejects `EMAIL_PROVIDER=resend` without `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`.
+
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -101,7 +114,52 @@ Email delivery is **at-least-once**. Exactly-once delivery across Postgres and e
 | `EMAIL_JOB_BACKOFF_MAX_SECONDS` | `900` | Maximum retry backoff delay in seconds |
 | `EMAIL_JOB_LOCK_TTL_SECONDS` | `300` | Worker lock duration while a job is `processing` |
 | `RESEND_API_KEY` | empty | Resend API key when `EMAIL_PROVIDER=resend` |
+| `RABBITMQ_URL` | local RabbitMQ URL | Required when `EMAIL_JOB_DISPATCH_ENABLED=true` |
 | `HUMAN_ESCALATION_NOTIFICATION_EMAIL` | demo staff email | Default staff notification recipient |
+
+### Runtime requirements
+
+Real appointment confirmation delivery requires all of the following:
+
+1. `EMAIL_PROVIDER=resend`
+2. Valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` (from a verified sending domain in production)
+3. A worker process running (`scripts/run_email_job_worker` for polling, or `scripts/run_email_worker` / `scripts/run_email_job_consumer` when RabbitMQ dispatch is enabled)
+4. When `EMAIL_JOB_DISPATCH_ENABLED=true`: RabbitMQ reachable from API and worker, with dispatch enabled on the **API** so booking flows publish wake-up messages
+
+With `EMAIL_JOB_DISPATCH_ENABLED=false`, the polling worker can process due jobs without RabbitMQ wake-ups.
+
+Confirming a booking or reschedule returns as soon as the appointment is committed. Email sending is asynchronous and best-effort.
+
+### Appointment confirmation behavior
+
+| Trigger | Job type | Idempotency key |
+|---------|----------|-----------------|
+| Written-chat booking confirmation | `appointment_confirmation` | `appointment_confirmation:{appointment_id}` |
+| Scheduling API / Retell voice booking | `appointment_confirmation` | same |
+| Reschedule confirmation (new active appointment) | `appointment_confirmation` | same (keyed to the **new** appointment id) |
+
+Jobs store `recipient_email`, `patient_name`, `doctor_name`, and `appointment_start_time` when available. The worker renders plain-text subject/body at send time using **clinic-local** appointment time (`CLINIC_TIMEZONE`). Reschedule confirmations use a distinct subject line when `confirmation_reason=reschedule` is present in the job payload.
+
+Email delivery does not roll back confirmed appointments. A failed or missing email leaves the appointment in place.
+
+### Idempotency
+
+Appointment confirmation jobs use:
+
+```
+appointment_confirmation:{appointment_id}
+```
+
+A partial unique index on `email_jobs.idempotency_key` prevents duplicate confirmation jobs for the same appointment. Retries and worker crash recovery reuse the same job record; they do not create a second job for the same key. When `EMAIL_PROVIDER=resend`, the same key is passed to Resend as the `Idempotency-Key` header where supported.
+
+### Failure behavior
+
+| Condition | Behavior |
+|-----------|----------|
+| Missing `recipient_email` | Worker records `recipient_email_missing` on the job, retries until `EMAIL_JOB_MAX_ATTEMPTS`, then `failed` |
+| Provider send failure | Retries with exponential backoff via `next_attempt_at`; terminal `failed` after max attempts |
+| Successful send | Job `sent`, `provider_message_id` stored when the provider returns one |
+| Appointment already confirmed | Unaffected — email failure does not undo booking or reschedule |
 
 For local development and CI, keep:
 
@@ -110,7 +168,7 @@ EMAIL_PROVIDER=fake
 EMAIL_JOB_DISPATCH_ENABLED=false
 ```
 
-Optional Resend configuration for a hosted public demo:
+Optional Resend configuration for a hosted public demo (secrets in the platform only):
 
 ```env
 EMAIL_PROVIDER=resend
@@ -118,7 +176,12 @@ RESEND_API_KEY=re_...
 EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
 ```
 
-See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.md).
+See also:
+
+- [Email Job Worker](architecture/email-job-worker.md)
+- [Email Confirmation Jobs](architecture/email-confirmation-jobs.md)
+- [Email Dispatch Reliability](architecture/email-dispatch-reliability.md)
+- [Local Development](operations/local-development.md) — manual smoke checklists
 
 ## LLM Provider
 

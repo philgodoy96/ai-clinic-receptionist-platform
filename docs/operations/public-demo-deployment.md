@@ -45,7 +45,6 @@ flowchart TB
     Worker --> RMQ
     Worker --> Resend
     API --> Groq
-    API --> Resend
     API -.-> OTEL
     Worker -.-> OTEL
     API --> RetellAPI
@@ -178,10 +177,12 @@ Copy values from `.env.demo.example` into your platform secret manager. At minim
 | Provider | Enable with | Also required |
 |----------|-------------|---------------|
 | **Groq** | `LLM_PRIMARY_PROVIDER=groq` or `LLM_PROVIDER=groq` | `GROQ_API_KEY`, `GROQ_MODEL` |
-| **Resend** | `EMAIL_PROVIDER=resend` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` |
+| **Resend** | `EMAIL_PROVIDER=resend` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` (use a verified domain in production) |
 | **Retell** | `RETELL_ENABLED=true` | `RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true`; `RETELL_API_KEY` for web calls |
 | **Retell web calls** | `RETELL_WEB_CALL_ENABLED=true` | `RETELL_API_KEY`, `RETELL_AGENT_ID`; optional `RETELL_AGENT_VERSION`, `RETELL_WEB_CALL_TIMEOUT_SECONDS` |
 | **Bedrock** | `LLM_PRIMARY_PROVIDER=bedrock` | `BEDROCK_MODEL_ID`, runtime AWS credentials |
+
+Resend is **opt-in**. Keep `EMAIL_PROVIDER=fake` for smoke tests without outbound mail or committed secrets. Booking and reschedule only create `EmailJob` rows; the worker sends asynchronously.
 
 Safe smoke-test defaults (no external provider keys):
 
@@ -284,7 +285,8 @@ After deploy, verify:
 - [ ] (Optional) Public web UI: chat panel returns a receptionist reply for a test message.
 - [ ] Redis guardrails active: repeated chat requests eventually return `429` when limits are exceeded (only in load test environments).
 - [ ] With `EMAIL_JOB_DISPATCH_ENABLED=true`, book an appointment in chat and confirm a worker log line such as `email_job_consumer_started` / job processing.
-- [ ] With `EMAIL_PROVIDER=fake`, email jobs reach `sent` in Postgres without external mail.
+- [ ] With `EMAIL_PROVIDER=fake`, email jobs reach `sent` in Postgres without external mail (`provider_message_id` like `fake-0`).
+- [ ] (Optional Resend) With `EMAIL_PROVIDER=resend`, valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`, and worker running: confirm booking, verify inbox delivery, confirm `EmailJob` is `sent` with `provider_message_id` populated. Do not store real keys in Git.
 - [ ] With `RETELL_ENABLED=false`, Retell routes return `503` with `retell_disabled` (expected until voice is configured).
 - [ ] (Optional) With `RETELL_WEB_CALL_ENABLED=true` and frontend voice flag on, `POST /api/v1/demo/voice/retell-web-call` returns `access_token` and `call_id` without exposing API keys in the response body.
 
@@ -317,6 +319,7 @@ After deploy, verify:
 - Treat all data as **fictional demo data**; do not load real patient information.
 - Confirmation email quotas may skip outbound mail while still allowing bookings — this is intentional abuse protection.
 - Review demo limit env vars (`DEMO_*`) before launch; defaults are conservative but not a substitute for edge WAF/CAPTCHA.
+- Before enabling **`EMAIL_PROVIDER=resend`**, enable guardrails and use a verified Resend sending domain. Cancellation emails are not implemented; appointment mail is plain text only.
 
 ## Intentionally Not Production-Ready
 
@@ -329,7 +332,7 @@ This deployment target is a **portfolio public demo**, not a HIPAA-ready clinic 
 | **Abuse protection** | Redis-backed demo guardrails and quotas — not a full abuse platform, WAF, or bot management |
 | **Retell dashboard** | Agent, prompts, and custom functions are configured in the Retell console; see [Retell Dashboard Setup](retell-dashboard-setup.md) |
 | **Observability** | Structured JSON logs to stdout; optional OTEL collector not configured in template |
-| **Email delivery** | At-least-once semantics; not guaranteed exactly-once across Postgres and Resend |
+| **Email delivery** | At-least-once semantics; plain-text appointment confirmations only; cancellation emails not implemented; use verified Resend domain for real mail |
 | **Multi-tenancy / SLA** | Single demo clinic tenant |
 
 ## Troubleshooting
@@ -421,3 +424,4 @@ See [Retell Webhook Security](../architecture/retell-webhook-security.md).
 - [Public demo web frontend](../../web/README.md)
 - [Public Demo Guardrails](../architecture/public-demo-guardrails.md)
 - [Email Dispatch Reliability](../architecture/email-dispatch-reliability.md)
+- [Email Job Worker](../architecture/email-job-worker.md)

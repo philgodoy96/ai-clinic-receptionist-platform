@@ -177,6 +177,7 @@ Architecture docs:
 - `docs/architecture/provider-run-evaluation-mode.md`
 - `docs/architecture/public-demo-guardrails.md`
 - `docs/architecture/email-dispatch-reliability.md`
+- `docs/architecture/email-job-worker.md`
 - `docs/architecture/retell-webhook-security.md`
 - `docs/architecture/retell-call-lifecycle.md`
 - `docs/architecture/retell-tool-calling-adapter.md`
