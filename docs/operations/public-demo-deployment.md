@@ -177,12 +177,34 @@ Copy values from `.env.demo.example` into your platform secret manager. At minim
 | Provider | Enable with | Also required |
 |----------|-------------|---------------|
 | **Groq** | `LLM_PRIMARY_PROVIDER=groq` or `LLM_PROVIDER=groq` | `GROQ_API_KEY`, `GROQ_MODEL` |
-| **Resend** | `EMAIL_PROVIDER=resend` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` (use a verified domain in production) |
+| **Resend** | `EMAIL_PROVIDER=resend` | `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` (verified domain or subdomain in Resend) |
 | **Retell** | `RETELL_ENABLED=true` | `RETELL_WEBHOOK_SECRET` when `RETELL_WEBHOOK_VERIFICATION_ENABLED=true`; `RETELL_API_KEY` for web calls |
 | **Retell web calls** | `RETELL_WEB_CALL_ENABLED=true` | `RETELL_API_KEY`, `RETELL_AGENT_ID`; optional `RETELL_AGENT_VERSION`, `RETELL_WEB_CALL_TIMEOUT_SECONDS` |
 | **Bedrock** | `LLM_PRIMARY_PROVIDER=bedrock` | `BEDROCK_MODEL_ID`, runtime AWS credentials |
 
-Resend is **opt-in**. Keep `EMAIL_PROVIDER=fake` for smoke tests without outbound mail or committed secrets. Booking and reschedule only create `EmailJob` rows; the worker sends asynchronously.
+Resend is **opt-in**. Keep `EMAIL_PROVIDER=fake` for smoke tests without outbound mail or committed secrets. Booking and reschedule only create `EmailJob` rows; the worker sends asynchronously. Email is not delivered until the worker processes each job.
+
+Example Resend configuration (secrets in the platform only):
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<set in secret manager, never commit>
+EMAIL_FROM_ADDRESS="AI Clinic Demo <appointments@email.example.com>"
+EMAIL_REPLY_TO=
+EMAIL_JOB_DISPATCH_ENABLED=true
+```
+
+### Resend sending domain
+
+Before enabling real mail on a public demo:
+
+1. Add and verify a sending subdomain in Resend (recommended: `email.example.com` rather than your apex domain).
+2. Publish Resend's DNS records (DKIM, SPF, Return-Path) on that subdomain.
+3. Add a DMARC record when ready; for early demo phases, `v=DMARC1; p=none; pct=100` is sufficient to start monitoring.
+4. Set `EMAIL_FROM_ADDRESS` to an address on the verified subdomain.
+5. Enable `PUBLIC_DEMO_GUARDRAILS_ENABLED` before `EMAIL_PROVIDER=resend` on an internet-facing deployment.
+
+New subdomains may still land in spam/junk until sender reputation improves, even when DNS checks pass. See [Configuration](../configuration.md#resend-sending-domain-and-dns).
 
 Safe smoke-test defaults (no external provider keys):
 
@@ -285,8 +307,8 @@ After deploy, verify:
 - [ ] (Optional) Public web UI: chat panel returns a receptionist reply for a test message.
 - [ ] Redis guardrails active: repeated chat requests eventually return `429` when limits are exceeded (only in load test environments).
 - [ ] With `EMAIL_JOB_DISPATCH_ENABLED=true`, book an appointment in chat and confirm a worker log line such as `email_job_consumer_started` / job processing.
-- [ ] With `EMAIL_PROVIDER=fake`, email jobs reach `sent` in Postgres without external mail (`provider_message_id` like `fake-0`).
-- [ ] (Optional Resend) With `EMAIL_PROVIDER=resend`, valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`, and worker running: confirm booking, verify inbox delivery, confirm `EmailJob` is `sent` with `provider_message_id` populated. Do not store real keys in Git.
+- [ ] With `EMAIL_PROVIDER=fake`, confirm an `EmailJob` is created as `pending` after booking, then reaches `sent` after the worker runs (`provider_message_id` like `fake-0`).
+- [ ] (Optional Resend) With verified sending subdomain, `EMAIL_PROVIDER=resend`, valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`, and worker running: confirm booking or reschedule, run or wait for worker, verify `EmailJob` moves `pending` → `sent` with `provider_message_id`, Resend dashboard shows the send, and mail arrives (inbox or spam/junk). Do not store real keys in Git.
 - [ ] With `RETELL_ENABLED=false`, Retell routes return `503` with `retell_disabled` (expected until voice is configured).
 - [ ] (Optional) With `RETELL_WEB_CALL_ENABLED=true` and frontend voice flag on, `POST /api/v1/demo/voice/retell-web-call` returns `access_token` and `call_id` without exposing API keys in the response body.
 
@@ -319,7 +341,7 @@ After deploy, verify:
 - Treat all data as **fictional demo data**; do not load real patient information.
 - Confirmation email quotas may skip outbound mail while still allowing bookings — this is intentional abuse protection.
 - Review demo limit env vars (`DEMO_*`) before launch; defaults are conservative but not a substitute for edge WAF/CAPTCHA.
-- Before enabling **`EMAIL_PROVIDER=resend`**, enable guardrails and use a verified Resend sending domain. Cancellation emails are not implemented; appointment mail is plain text only.
+- Before enabling **`EMAIL_PROVIDER=resend`**, verify a sending subdomain in Resend, enable guardrails, and use `EMAIL_FROM_ADDRESS` on that verified domain. Cancellation emails are not implemented; appointment mail is plain text with clinic-local date/time. New subdomains may land in spam/junk despite passing DNS checks.
 
 ## Intentionally Not Production-Ready
 
@@ -332,7 +354,7 @@ This deployment target is a **portfolio public demo**, not a HIPAA-ready clinic 
 | **Abuse protection** | Redis-backed demo guardrails and quotas — not a full abuse platform, WAF, or bot management |
 | **Retell dashboard** | Agent, prompts, and custom functions are configured in the Retell console; see [Retell Dashboard Setup](retell-dashboard-setup.md) |
 | **Observability** | Structured JSON logs to stdout; optional OTEL collector not configured in template |
-| **Email delivery** | At-least-once semantics; plain-text appointment confirmations only; cancellation emails not implemented; use verified Resend domain for real mail |
+| **Email delivery** | At-least-once semantics; plain-text appointment confirmations with clinic-local date/time; cancellation emails not implemented; verified Resend subdomain recommended for real mail; new domains may land in spam/junk |
 | **Multi-tenancy / SLA** | Single demo clinic tenant |
 
 ## Troubleshooting

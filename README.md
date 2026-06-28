@@ -218,7 +218,7 @@ The API handles chat, scheduling, and Retell routes. The worker consumes RabbitM
 - **fake** — default LLM for local development and CI (no API key)
 - **groq** — optional real LLM for hosted demo analysis and phrasing
 - **bedrock** — optional AWS enterprise-style LLM adapter (`BEDROCK_MODEL_ID`, `AWS_REGION`, standard AWS credentials)
-- **Resend** — optional real confirmation email delivery; fake provider records jobs in memory
+- **Resend** — optional real confirmation email delivery (`EMAIL_PROVIDER=resend`, verified sending subdomain, `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS`); fake provider remains the default for local and CI
 - **Retell** — voice tool routes, webhooks, server-side web calls, and call lifecycle; agent and webhook setup: [`docs/operations/retell-dashboard-setup.md`](docs/operations/retell-dashboard-setup.md)
 
 ### Demo safety

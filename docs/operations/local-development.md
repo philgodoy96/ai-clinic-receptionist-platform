@@ -104,17 +104,23 @@ Local development and CI should keep:
 
 The fake provider records outbound messages in memory and returns a synthetic `provider_message_id`. No external mail is sent.
 
-Optional Resend configuration for controlled testing or a hosted public demo:
+Optional Resend configuration for controlled real-mail smoke (secrets in `.env` only — never commit):
 
-    EMAIL_PROVIDER=resend
-    RESEND_API_KEY=re_...
-    EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<set locally, never commit>
+EMAIL_FROM_ADDRESS="AI Clinic Demo <appointments@email.example.com>"
+EMAIL_REPLY_TO=
+EMAIL_JOB_DISPATCH_ENABLED=false
+```
+
+The domain or subdomain in `EMAIL_FROM_ADDRESS` must be verified in Resend (DKIM, SPF, Return-Path; DMARC recommended). See [Configuration](../configuration.md#resend-sending-domain-and-dns).
 
 Enable `PUBLIC_DEMO_GUARDRAILS_ENABLED` before using a real email provider on an internet-facing deployment.
 
 ### Runtime note
 
-Creating a booking or reschedule only inserts a pending `EmailJob`. You must run a worker for delivery:
+Creating a booking or reschedule only inserts a pending `EmailJob`. **Email is not sent until a worker processes the job.** You must run a worker for delivery:
 
 - **Polling (local default):** `python -m scripts.run_email_job_worker --once` or `python -m scripts.run_email_job_worker`
 - **RabbitMQ dispatch:** `EMAIL_JOB_DISPATCH_ENABLED=true` on the API plus `python -m scripts.run_email_job_consumer` or `python -m scripts.run_email_worker`
@@ -125,17 +131,21 @@ See `docs/architecture/email-dispatch-reliability.md` for the full reliability m
 
 #### Fake provider
 
-1. Set `EMAIL_PROVIDER=fake`.
-2. Confirm an appointment through chat or the scheduling API (patient must have an email).
-3. Run `python -m scripts.run_email_job_worker --once`.
-4. Inspect the `email_jobs` row (or Email Job Debug API): status `sent`, `recipient_email` set, subject/body rendered, `provider_message_id` present (for example `fake-0`).
+1. Set `EMAIL_PROVIDER=fake` and `EMAIL_JOB_DISPATCH_ENABLED=false`.
+2. Confirm a booking or reschedule through chat or the scheduling API (patient must have an email).
+3. Confirm an `EmailJob` exists with status `pending`.
+4. Run `python -m scripts.run_email_job_worker --once`.
+5. Confirm the job moves to `sent` with `recipient_email`, rendered subject/body, and clinic-local appointment date/time in the body.
+6. Confirm `provider_message_id` is populated (for example `fake-0`).
 
 #### Resend provider
 
-1. Set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM_ADDRESS` in your local `.env` (do not commit).
-2. Start the API and an email worker/consumer.
-3. Confirm a booking to an inbox you control.
-4. Verify the email arrives and the `EmailJob` is `sent` with a Resend `provider_message_id`.
+1. Verify a sending subdomain in Resend (for example `email.example.com`).
+2. Set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM_ADDRESS` in your local `.env` (do not commit).
+3. Start the API.
+4. Confirm a booking or reschedule to an inbox you control.
+5. Run `python -m scripts.run_email_job_worker --once` (or the RabbitMQ consumer when dispatch is enabled).
+6. Confirm `EmailJob` status is `sent`, `provider_message_id` is populated, the Resend dashboard shows the send, and the message arrives (check spam/junk if needed).
 
 Fake provider remains recommended for day-to-day local development.
 

@@ -122,13 +122,50 @@ Resend is intentionally opt-in. Startup validation rejects `EMAIL_PROVIDER=resen
 Real appointment confirmation delivery requires all of the following:
 
 1. `EMAIL_PROVIDER=resend`
-2. Valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` (from a verified sending domain in production)
-3. A worker process running (`scripts/run_email_job_worker` for polling, or `scripts/run_email_worker` / `scripts/run_email_job_consumer` when RabbitMQ dispatch is enabled)
+2. Valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` (from a verified sending domain or subdomain in Resend)
+3. A worker process running (`python -m scripts.run_email_job_worker` for polling, or `python -m scripts.run_email_worker` / `python -m scripts.run_email_job_consumer` when RabbitMQ dispatch is enabled)
 4. When `EMAIL_JOB_DISPATCH_ENABLED=true`: RabbitMQ reachable from API and worker, with dispatch enabled on the **API** so booking flows publish wake-up messages
 
 With `EMAIL_JOB_DISPATCH_ENABLED=false`, the polling worker can process due jobs without RabbitMQ wake-ups.
 
-Confirming a booking or reschedule returns as soon as the appointment is committed. Email sending is asynchronous and best-effort.
+Confirming a booking or reschedule creates a pending `EmailJob` and returns as soon as the appointment is committed. **Email is not sent until the worker processes the job.** Sending is asynchronous and best-effort.
+
+### Real Resend configuration
+
+Real outbound delivery is opt-in. Set these values locally or in a deployment secret manager — never commit real API keys or `.env`:
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<set locally, never commit>
+EMAIL_FROM_ADDRESS="AI Clinic Demo <appointments@email.example.com>"
+EMAIL_REPLY_TO=
+EMAIL_JOB_DISPATCH_ENABLED=false
+```
+
+Notes:
+
+- The project uses `EMAIL_FROM_ADDRESS` as the Resend `from` address. There is no separate `RESEND_FROM_EMAIL` setting.
+- The domain or subdomain in `EMAIL_FROM_ADDRESS` must be **verified in Resend** before sends succeed.
+- For local manual smoke with dispatch disabled, run `python -m scripts.run_email_job_worker --once` after confirming a booking or reschedule.
+- With `EMAIL_JOB_DISPATCH_ENABLED=true`, the API publishes wake-up messages and a RabbitMQ consumer (`python -m scripts.run_email_worker` or `python -m scripts.run_email_job_consumer`) processes jobs from the queue.
+
+### Resend sending domain and DNS
+
+Use a **verified domain or subdomain** for transactional mail. A dedicated subdomain is recommended for demo and portfolio deployments (for example `email.example.com`) so sending reputation stays isolated from your primary site domain.
+
+Resend requires DNS verification records on the sending domain, typically including:
+
+- **DKIM** — cryptographic signing for recipient providers
+- **SPF** — authorized sending hosts for the domain
+- **Return-Path** — bounce handling for the subdomain
+
+**DMARC** is recommended on the sending subdomain. For early demo or portfolio phases, a permissive policy is enough to start monitoring without blocking legitimate test mail:
+
+```txt
+v=DMARC1; p=none; pct=100
+```
+
+Even with SPF, DKIM, and DMARC passing, **new domains and subdomains may still land in spam or junk** until sender reputation builds. Production deployments should use verified sending domains and operational monitoring (Resend dashboard, job failure metrics). Public demos should keep `EMAIL_PROVIDER=fake` unless auth, rate limits, and cost controls are in place.
 
 ### Appointment confirmation behavior
 
@@ -138,7 +175,9 @@ Confirming a booking or reschedule returns as soon as the appointment is committ
 | Scheduling API / Retell voice booking | `appointment_confirmation` | same |
 | Reschedule confirmation (new active appointment) | `appointment_confirmation` | same (keyed to the **new** appointment id) |
 
-Jobs store `recipient_email`, `patient_name`, `doctor_name`, and `appointment_start_time` when available. The worker renders plain-text subject/body at send time using **clinic-local** appointment time (`CLINIC_TIMEZONE`). Reschedule confirmations use a distinct subject line when `confirmation_reason=reschedule` is present in the job payload.
+Jobs store `recipient_email`, `patient_name`, `doctor_name`, `specialty_name`, and `appointment_start_time` when available. The worker renders plain-text subject/body at send time using **clinic-local** date and time (`CLINIC_TIMEZONE`). Templates avoid raw UTC timestamps. Reschedule confirmations use a distinct subject line when `confirmation_reason=reschedule` is present in the job payload.
+
+Appointment email content is transactional and structured. Booking confirmation and reschedule emails include appointment details when available: specialty, clinician, clinic-local date, and clinic-local time. Branded HTML templates are future work; mail is plain text today.
 
 Email delivery does not roll back confirmed appointments. A failed or missing email leaves the appointment in place.
 
@@ -168,13 +207,12 @@ EMAIL_PROVIDER=fake
 EMAIL_JOB_DISPATCH_ENABLED=false
 ```
 
-Optional Resend configuration for a hosted public demo (secrets in the platform only):
+### Current limitations
 
-```env
-EMAIL_PROVIDER=resend
-RESEND_API_KEY=re_...
-EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
-```
+- **Cancellation emails** are not implemented; only booking and reschedule confirmations enqueue jobs today.
+- **Plain text only** — no rich branded HTML templates yet.
+- **Sender reputation** — verified DNS does not guarantee inbox placement; new subdomains may land in spam/junk.
+- **Public demos** — keep `EMAIL_PROVIDER=fake` by default unless `PUBLIC_DEMO_GUARDRAILS_ENABLED` and cost controls are in place.
 
 See also:
 
