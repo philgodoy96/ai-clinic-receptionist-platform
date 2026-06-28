@@ -26,6 +26,21 @@ _COLON_TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 _H_SUFFIX_TIME_PATTERN = re.compile(r"\b(\d{1,2})\s*hs?\s*(\d{2})?\b", re.IGNORECASE)
 # A bare number that stands alone as the whole expression, e.g. ``15``.
 _BARE_NUMBER_PATTERN = re.compile(r"^\d{1,2}$")
+# A bare hour that appears mid-phrase but is disambiguated by an explicit time
+# context word immediately before it, e.g. ``at 14`` / ``Tuesday at 14`` /
+# ``Tuesday 14`` / ``on Tuesday at 14``. A leading ``at``/``on`` or weekday name
+# signals that the trailing number is a clock hour rather than an option index,
+# so it is safe to treat it as a time even though it is not the whole message.
+# The negative lookahead avoids re-capturing the hour of a richer clock form
+# (``at 14:30`` / ``at 14h``), which the colon/``h`` patterns already handle.
+_CONTEXTUAL_BARE_HOUR_PATTERN = re.compile(
+    r"\b(?:at|on|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)\b"
+    r"(?:\s+(?:at|on))*"
+    r"\s+(\d{1,2})\b(?!\s*[:h])",
+    re.IGNORECASE,
+)
 # Leading conversational wrappers before a clock time, e.g. ``It could be at 10``.
 _CONTEXTUAL_TIME_PREFIX_PATTERN = re.compile(
     r"^(?:"
@@ -85,11 +100,17 @@ def normalize_appointment_time_expression(
           whole expression is an unambiguous 24-hour hour, 13-23)
         * ``It could be at 10`` / ``Could be 10`` / ``at 2pm`` -> ``10:00`` /
           ``10:00`` / ``14:00`` after stripping contextual wrappers
+        * ``Tuesday at 14`` / ``Tuesday 14`` / ``on Tuesday at 14`` / ``at 14``
+          -> ``14:00`` when an ``at``/``on`` or weekday context word precedes the
+          bare hour mid-phrase
 
     Bare single/low numbers (``3``) are intentionally not treated as times on the
     original message to preserve option/reference selection semantics. After
     stripping contextual wrappers, bare hours 1-23 are accepted because the
-    surrounding phrase disambiguates them from option numbers.
+    surrounding phrase disambiguates them from option numbers. A bare hour that
+    appears mid-phrase is only accepted when an explicit time context word
+    (``at``/``on`` or a weekday) immediately precedes it, so ``option 2`` stays an
+    option index while ``Tuesday at 14`` becomes ``14:00``.
     """
     if not text:
         return None
@@ -107,14 +128,41 @@ def normalize_appointment_time_expression(
         return normalized
 
     stripped = strip_contextual_time_selection_phrases(candidate)
-    if not stripped or stripped == candidate:
+    if stripped and stripped != candidate:
+        normalized = _normalize_clock_time_candidate(
+            stripped,
+            allow_bare_hour=True,
+            min_bare_hour=_MIN_CONTEXTUAL_BARE_HOUR,
+        )
+        if normalized is not None:
+            return normalized
+
+    return _normalize_contextual_bare_hour(candidate)
+
+
+def _normalize_contextual_bare_hour(
+    candidate: str,
+) -> NormalizedAppointmentTime | None:
+    """Normalize a mid-phrase bare hour preceded by a time context word.
+
+    Recognizes forms like ``at 14`` / ``Tuesday at 14`` / ``Tuesday 14`` /
+    ``on Tuesday at 14`` where an ``at``/``on`` or weekday context word makes the
+    trailing number an unambiguous clock hour rather than an option index. Only
+    hours 1-23 are accepted, matching the contextual range used after stripping
+    leading conversational wrappers.
+    """
+    match = _CONTEXTUAL_BARE_HOUR_PATTERN.search(candidate)
+    if match is None:
         return None
 
-    return _normalize_clock_time_candidate(
-        stripped,
-        allow_bare_hour=True,
-        min_bare_hour=_MIN_CONTEXTUAL_BARE_HOUR,
-    )
+    hour = int(match.group(1))
+    if _MIN_CONTEXTUAL_BARE_HOUR <= hour <= _MAX_BARE_HOUR:
+        return NormalizedAppointmentTime(
+            value=f"{hour:02d}:00",
+            raw=match.group(1),
+        )
+
+    return None
 
 
 def _normalize_clock_time_candidate(

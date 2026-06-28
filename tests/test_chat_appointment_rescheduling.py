@@ -1731,7 +1731,16 @@ def test_reschedule_ambiguous_time_match_does_not_create_hold() -> None:
     assert hold_service.create_hold_calls == []
 
 
-@pytest.mark.parametrize("selection_message", ["It could be at 2pm", "at 2pm"])
+@pytest.mark.parametrize(
+    "selection_message",
+    [
+        "It could be at 2pm",
+        "at 2pm",
+        "at 14",
+        "Wednesday at 14",
+        "Wednesday 14",
+    ],
+)
 def test_reschedule_contextual_time_phrase_selects_matching_slot(
     selection_message: str,
 ) -> None:
