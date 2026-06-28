@@ -53,6 +53,10 @@ from app.services.appointment_booking import (
     BookingDoctorNotFoundError,
     BookingPatientNotFoundError,
 )
+from app.services.appointment_confirmation_email import (
+    build_appointment_confirmation_email_job_create,
+    resolve_specialty_name,
+)
 from app.services.appointment_holds import (
     AppointmentHoldMismatchError,
     AppointmentHoldNotFoundError,
@@ -67,10 +71,7 @@ from app.services.demo_guardrails import (
     DemoGuardrailLimitExceeded,
     DemoGuardrailService,
 )
-from app.services.email_jobs import (
-    AppointmentConfirmationEmailJobCreate,
-    EmailJobService,
-)
+from app.services.email_jobs import EmailJobService
 from app.services.patient_identity_resolution import (
     PatientIdentityConfirmationRequiredError,
     PatientIdentityResolutionService,
@@ -240,12 +241,16 @@ class VoiceBookingConfirmationService:
 
         appointment = booking_result.appointment
         email_job_result = self.email_jobs.get_or_create_appointment_confirmation_email_job(
-            AppointmentConfirmationEmailJobCreate(
-                appointment_id=appointment.id,
-                patient_id=patient.id,
-                appointment_start_time=appointment.start_time.isoformat(),
-                payload={
-                    "source": VOICE_BOOKING_SOURCE,
+            build_appointment_confirmation_email_job_create(
+                appointment=appointment,
+                patient=patient,
+                doctor=booking_result.doctor,
+                specialty_name=resolve_specialty_name(
+                    specialty_id=appointment.specialty_id,
+                    specialties=self.scheduling_service.specialties,
+                ),
+                source=VOICE_BOOKING_SOURCE,
+                extra_payload={
                     "hold_id": str(targets.hold_id),
                     "provider_call_id": request.provider_call_id,
                     "conversation_id": str(request.conversation_id),

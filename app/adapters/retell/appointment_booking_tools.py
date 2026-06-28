@@ -24,6 +24,9 @@ from app.services.appointment_booking import (
     BookingDoctorNotFoundError,
     BookingPatientNotFoundError,
 )
+from app.services.appointment_confirmation_email import (
+    build_appointment_confirmation_email_job_create,
+)
 from app.services.appointment_holds import (
     AppointmentHoldMismatchError,
     AppointmentHoldNotFoundError,
@@ -31,10 +34,7 @@ from app.services.appointment_holds import (
     AppointmentHoldService,
 )
 from app.services.audit_logs import AuditLogCreate, AuditLogService
-from app.services.email_jobs import (
-    AppointmentConfirmationEmailJobCreate,
-    EmailJobService,
-)
+from app.services.email_jobs import EmailJobService
 
 RETELL_TOOL_SOURCE = "retell_tool"
 logger = logging.getLogger("app.retell_tools")
@@ -106,17 +106,17 @@ class RetellAppointmentBookingToolAdapter:
             )
 
             email_job_result = self.email_jobs.get_or_create_appointment_confirmation_email_job(
-                AppointmentConfirmationEmailJobCreate(
-                    appointment_id=appointment.id,
-                    patient_id=payload.patient_id,
-                    appointment_start_time=appointment.start_time.isoformat(),
-                    payload={
-                        "source": "retell_tool",
+                build_appointment_confirmation_email_job_create(
+                    appointment=appointment,
+                    patient=booking_result.patient,
+                    doctor=booking_result.doctor,
+                    source=RETELL_TOOL_SOURCE,
+                    extra_payload={
                         "hold_id": str(payload.hold_id),
                         "call_id": payload.call_id,
                         "conversation_id": payload.conversation_id,
                     },
-                )
+                ),
             )
             email_job = email_job_result.email_job
 

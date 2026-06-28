@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,8 +18,10 @@ from app.api.dependencies import (
     get_email_job_dispatch_publisher,
     get_email_job_service,
     get_retell_appointment_booking_tool_adapter,
+    get_scheduling_service,
 )
 from app.db.session import get_db
+from app.domain.jobs.enums import EmailJobType
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
 from app.main import create_app
@@ -33,8 +36,11 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     AppointmentConfirmationEmailJobResult,
     EmailJobService,
+    build_appointment_confirmation_idempotency_key,
 )
+from app.services.scheduling import SchedulingService
 from tests.retell_webhook_support import configure_retell_for_tests
+from tests.test_scheduling_services import FakeSpecialtyRepository
 
 
 @pytest.fixture()
@@ -82,6 +88,7 @@ def booking_context() -> BookingApiContext:
     return BookingApiContext(
         patient=patient,
         doctor=doctor,
+        specialty=specialty,
         slot=slot,
         hold_repository=hold_repository,
         hold_service=hold_service,
@@ -126,7 +133,18 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
             email_job_dispatch=NoopEmailJobDispatchPublisher(),
         )
 
+    def override_scheduling_service() -> SchedulingService:
+        booking = booking_context.booking_service
+        return SchedulingService(
+            specialties=FakeSpecialtyRepository([booking_context.specialty]),
+            doctors=booking.doctors,
+            patients=booking.patients,
+            availability_slots=booking.availability_slots,
+            appointments=booking.appointments,
+        )
+
     app.dependency_overrides[get_appointment_booking_service] = override_booking_service
+    app.dependency_overrides[get_scheduling_service] = override_scheduling_service
     app.dependency_overrides[get_appointment_hold_service] = override_hold_service
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_audit_log_service] = override_audit_log_service
@@ -139,6 +157,7 @@ def client(booking_context: BookingApiContext) -> Generator[TestClient, None, No
     )
 
     with TestClient(app) as test_client:
+        booking_context.email_jobs = email_jobs
         yield test_client
 
     app.dependency_overrides.clear()
@@ -241,27 +260,228 @@ def test_retell_booking_tool_returns_structured_error_without_owner(
     assert response.json()["error_code"] == "missing_booking_owner"
 
 
+def test_scheduling_api_booking_enriches_appointment_confirmation_email_job(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    assert booking_context.email_jobs is not None
+    hold = booking_context.create_hold(owner_id="chat-123")
+
+    response = client.post(
+        "/api/v1/scheduling/appointments/book",
+        json={
+            "hold_id": str(hold.hold_id),
+            "availability_slot_id": str(booking_context.slot.id),
+            "patient_id": str(booking_context.patient.id),
+            "owner_id": "chat-123",
+            "reason": "Skin check",
+        },
+    )
+
+    assert response.status_code == 201
+    assert len(booking_context.email_jobs.jobs) == 1
+
+    email_job_create = booking_context.email_jobs.jobs[0]
+    appointment_id = UUID(response.json()["id"])
+    assert email_job_create.recipient_email == booking_context.patient.email
+    assert email_job_create.patient_name == booking_context.patient.full_name
+    assert email_job_create.doctor_name == booking_context.doctor.full_name
+    assert email_job_create.appointment_start_time == booking_context.slot.start_time.isoformat()
+    assert email_job_create.payload["source"] == "scheduling_api"
+    assert email_job_create.payload["specialty_name"] == booking_context.specialty.name
+
+    stored_job = booking_context.email_jobs.repository.email_jobs[0]
+    assert stored_job.recipient_email == booking_context.patient.email
+    assert stored_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        appointment_id,
+    )
+
+
+def test_scheduling_api_booking_reuses_existing_confirmation_email_job(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    assert booking_context.email_jobs is not None
+    hold = booking_context.create_hold(owner_id="chat-123")
+
+    response = client.post(
+        "/api/v1/scheduling/appointments/book",
+        json={
+            "hold_id": str(hold.hold_id),
+            "availability_slot_id": str(booking_context.slot.id),
+            "patient_id": str(booking_context.patient.id),
+            "owner_id": "chat-123",
+        },
+    )
+
+    assert response.status_code == 201
+    appointment_id = UUID(response.json()["id"])
+    jobs_before = len(booking_context.email_jobs.repository.email_jobs)
+    duplicate_result = booking_context.email_jobs.get_or_create_appointment_confirmation_email_job(
+        booking_context.email_jobs.jobs[0],
+    )
+
+    assert duplicate_result.created is False
+    assert len(booking_context.email_jobs.repository.email_jobs) == jobs_before
+    assert duplicate_result.email_job.idempotency_key == (
+        build_appointment_confirmation_idempotency_key(appointment_id)
+    )
+
+
+def test_scheduling_api_booking_succeeds_when_patient_has_no_email(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    assert booking_context.email_jobs is not None
+    booking_context.patient.email = cast(str, None)
+    hold = booking_context.create_hold(owner_id="chat-123")
+
+    response = client.post(
+        "/api/v1/scheduling/appointments/book",
+        json={
+            "hold_id": str(hold.hold_id),
+            "availability_slot_id": str(booking_context.slot.id),
+            "patient_id": str(booking_context.patient.id),
+            "owner_id": "chat-123",
+        },
+    )
+
+    assert response.status_code == 201
+    assert booking_context.email_jobs.jobs[-1].recipient_email is None
+
+
+def test_retell_booking_enriches_appointment_confirmation_email_job(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    assert booking_context.email_jobs is not None
+    hold = booking_context.create_hold(owner_id="retell-call-123")
+
+    response = client.post(
+        "/api/v1/retell/tools/book-appointment",
+        json={
+            "hold_id": str(hold.hold_id),
+            "availability_slot_id": str(booking_context.slot.id),
+            "patient_id": str(booking_context.patient.id),
+            "call_id": "retell-call-123",
+            "reason": "Skin check",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert len(booking_context.email_jobs.jobs) == 1
+
+    email_job_create = booking_context.email_jobs.jobs[0]
+    appointment_id = UUID(response.json()["result"]["appointment"]["id"])
+    assert email_job_create.recipient_email == booking_context.patient.email
+    assert email_job_create.patient_name == booking_context.patient.full_name
+    assert email_job_create.doctor_name == booking_context.doctor.full_name
+    assert email_job_create.payload["source"] == "retell_tool"
+
+    stored_job = booking_context.email_jobs.repository.email_jobs[0]
+    assert stored_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        appointment_id,
+    )
+
+
+def test_retell_booking_reuses_existing_confirmation_email_job(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    assert booking_context.email_jobs is not None
+    hold = booking_context.create_hold(owner_id="retell-call-123")
+    payload = {
+        "hold_id": str(hold.hold_id),
+        "availability_slot_id": str(booking_context.slot.id),
+        "patient_id": str(booking_context.patient.id),
+        "call_id": "retell-call-123",
+    }
+
+    response = client.post("/api/v1/retell/tools/book-appointment", json=payload)
+
+    assert response.status_code == 200
+    appointment_id = UUID(response.json()["result"]["appointment"]["id"])
+    jobs_before = len(booking_context.email_jobs.repository.email_jobs)
+    duplicate_result = booking_context.email_jobs.get_or_create_appointment_confirmation_email_job(
+        booking_context.email_jobs.jobs[0],
+    )
+
+    assert duplicate_result.created is False
+    assert len(booking_context.email_jobs.repository.email_jobs) == jobs_before
+    assert duplicate_result.email_job.idempotency_key == (
+        build_appointment_confirmation_idempotency_key(appointment_id)
+    )
+
+
+def test_scheduling_api_booking_does_not_call_resend_directly(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    hold = booking_context.create_hold(owner_id="chat-123")
+
+    with patch("app.email.resend_provider.ResendEmailProvider.send") as resend_send:
+        response = client.post(
+            "/api/v1/scheduling/appointments/book",
+            json={
+                "hold_id": str(hold.hold_id),
+                "availability_slot_id": str(booking_context.slot.id),
+                "patient_id": str(booking_context.patient.id),
+                "owner_id": "chat-123",
+            },
+        )
+
+    assert response.status_code == 201
+    resend_send.assert_not_called()
+
+
+def test_retell_booking_does_not_call_resend_directly(
+    client: TestClient,
+    booking_context: BookingApiContext,
+) -> None:
+    hold = booking_context.create_hold(owner_id="retell-call-123")
+
+    with patch("app.email.resend_provider.ResendEmailProvider.send") as resend_send:
+        response = client.post(
+            "/api/v1/retell/tools/book-appointment",
+            json={
+                "hold_id": str(hold.hold_id),
+                "availability_slot_id": str(booking_context.slot.id),
+                "patient_id": str(booking_context.patient.id),
+                "call_id": "retell-call-123",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    resend_send.assert_not_called()
+
+
 class BookingApiContext:
     def __init__(
         self,
         *,
         patient: Patient,
         doctor: Doctor,
+        specialty: Specialty,
         slot: AvailabilitySlot,
         hold_repository: FakeAppointmentHoldRepository,
         hold_service: AppointmentHoldService,
         appointment_repository: FakeAppointmentRepository,
         booking_service: AppointmentBookingService,
         db: FakeDatabaseSession,
+        email_jobs: FakeEmailJobService | None = None,
     ) -> None:
         self.patient = patient
         self.doctor = doctor
+        self.specialty = specialty
         self.slot = slot
         self.hold_repository = hold_repository
         self.hold_service = hold_service
         self.appointment_repository = appointment_repository
         self.booking_service = booking_service
         self.db = db
+        self.email_jobs = email_jobs
 
     def create_hold(self, *, owner_id: str) -> AppointmentHold:
         return self.hold_service.create_hold(
@@ -328,6 +548,17 @@ class FakeEmailJobService:
     ) -> EmailJob:
         self.jobs.append(payload)
         return self._service.enqueue_appointment_confirmation(payload)
+
+    def get_by_idempotency_key(
+        self,
+        *,
+        job_type: EmailJobType,
+        idempotency_key: str,
+    ) -> EmailJob | None:
+        return self._service.get_by_idempotency_key(
+            job_type=job_type,
+            idempotency_key=idempotency_key,
+        )
 
 
 class FakePatientRepository:
