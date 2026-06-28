@@ -110,7 +110,7 @@ def _conversation_with_active_hold(service: ChatReceptionistService) -> Conversa
     return conversation_with_active_hold(service)
 
 
-def test_confirm_without_hold_returns_booking_hold_missing_and_does_not_book(
+def test_orphan_confirm_without_context_returns_menu_and_does_not_book(
     booking_flow_context: tuple[
         ChatReceptionistService,
         TrackingAppointmentBookingService,
@@ -122,7 +122,8 @@ def test_confirm_without_hold_returns_booking_hold_missing_and_does_not_book(
 
     result = service.handle_message(ChatMessageInput(message="confirm"))
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_MISSING
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "hold it first" not in result.reply.lower()
     assert tracking_booking.book_calls == []
 
 
