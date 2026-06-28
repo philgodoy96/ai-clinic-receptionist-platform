@@ -4,6 +4,21 @@ from app.email.idempotency import normalize_resend_idempotency_key
 from app.email.resend_client import ResendEmailClient, ResendEmailClientError
 from app.email.types import EmailProviderError, EmailSendResult, OutboundEmailMessage
 
+_DELIVERY_ERROR_PREFIX = "resend email delivery failed"
+
+
+def _format_delivery_error(exc: ResendEmailClientError) -> str:
+    details: list[str] = []
+    if exc.status_code is not None:
+        details.append(f"status={exc.status_code}")
+    if exc.response_body:
+        details.append(f"body={exc.response_body}")
+
+    if not details:
+        return _DELIVERY_ERROR_PREFIX
+
+    return f"{_DELIVERY_ERROR_PREFIX}: " + " ".join(details)
+
 
 class ResendEmailProvider:
     def __init__(
@@ -40,7 +55,7 @@ class ResendEmailProvider:
                 idempotency_key=idempotency_key,
             )
         except ResendEmailClientError as exc:
-            raise EmailProviderError("resend email delivery failed") from exc
+            raise EmailProviderError(_format_delivery_error(exc)) from exc
 
         provider_message_id = response.get("id")
         if not isinstance(provider_message_id, str) or not provider_message_id:
