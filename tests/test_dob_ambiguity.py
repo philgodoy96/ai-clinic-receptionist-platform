@@ -178,7 +178,7 @@ def test_month_day_without_year_requires_pending_ambiguity_context() -> None:
     ("text", "expected_iso"),
     [
         ("19/09/1996", "1996-09-19"),
-        ("Felipe Marques, 19/09/1996", "1996-09-19"),
+        ("John Smith, 19/09/1996", "1996-09-19"),
         ("9/8/1980", None),
         ("13/08/1980", "1980-08-13"),
         ("08/13/1980", "1980-08-13"),
@@ -195,7 +195,7 @@ def test_parse_unambiguous_numeric_dob(text: str, expected_iso: str | None) -> N
     "text",
     [
         "09/08/1980",
-        "Felipe Marques, 09/08/1980",
+        "John Smith, 09/08/1980",
         "03/04/1985",
     ],
 )

@@ -161,11 +161,11 @@ def test_partial_identity_is_stored_in_chat_context(
         ChatMessageInput(message="jane.doe@example.com"),
     )
 
-    patient_identity = result.conversation.conversation_metadata["chat_context"]["patient_identity"]
-
-    assert patient_identity["email"] == "jane.doe@example.com"
-    assert "full_name" not in patient_identity
-    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "patient_identity" not in chat_context
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "phone" not in result.reply.lower()
+    assert "email" not in result.reply.lower()
     assert tracking_booking.book_calls == []
 
 

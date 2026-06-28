@@ -125,14 +125,14 @@ def test_existing_patient_identity_accepts_natural_dob_via_ctu() -> None:
 
     result = service.handle_message(
         ChatMessageInput(
-            message="Felipe Marques, Sep 19th 1996",
+            message="John Smith, Sep 19th 1996",
             conversation_id=conversation.id,
         ),
     )
 
     context = result.conversation.conversation_metadata["chat_context"]
     identity = context["patient_identity"]
-    assert identity["full_name"] == "Felipe Marques"
+    assert identity["full_name"] == "John Smith"
     assert identity["date_of_birth"] == "1996-09-19"
 
 
@@ -161,8 +161,8 @@ def test_new_patient_bundled_answer_accepts_typed_email_without_confirmation() -
     result = service.handle_message(
         ChatMessageInput(
             message=(
-                "No, I'm new. Felipe Marques, born Sep 19th 1996, "
-                "email felipe@example.com"
+                "No, I'm new. John Smith, born Sep 19th 1996, "
+                "email john.smith@example.com"
             ),
             conversation_id=conversation.id,
         ),
@@ -170,17 +170,17 @@ def test_new_patient_bundled_answer_accepts_typed_email_without_confirmation() -
 
     context = result.conversation.conversation_metadata["chat_context"]
     assert context["patient_seen_before"] is False
-    assert context["patient_identity"]["full_name"] == "Felipe Marques"
+    assert context["patient_identity"]["full_name"] == "John Smith"
     assert context["patient_identity"]["date_of_birth"] == "1996-09-19"
     # Written chat accepts the typed email immediately: no confirmation turn.
-    assert context["patient_identity"]["email"] == "felipe@example.com"
-    assert context["confirmed_booking_email"] == "felipe@example.com"
+    assert context["patient_identity"]["email"] == "john.smith@example.com"
+    assert context["confirmed_booking_email"] == "john.smith@example.com"
     assert "pending_confirmation_email" not in context
     assert context["booking_identity_step"] == (
         ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
     )
     assert "is that correct" not in result.reply.lower()
-    assert "felipe@example.com" in result.reply.lower()
+    assert "john.smith@example.com" in result.reply.lower()
     # Email acceptance still requires a final booking confirmation before booking.
     assert tracking.book_calls == []
 
@@ -196,7 +196,7 @@ def test_ambiguous_dob_does_not_store_dob_or_resolve_patient() -> None:
     ) as resolve_mock:
         result = service.handle_message(
             ChatMessageInput(
-                message="Felipe Marques, 09/10/1996",
+                message="John Smith, 09/10/1996",
                 conversation_id=conversation.id,
             ),
         )
@@ -205,7 +205,7 @@ def test_ambiguous_dob_does_not_store_dob_or_resolve_patient() -> None:
 
     context = result.conversation.conversation_metadata["chat_context"]
     identity = context.get("patient_identity", {})
-    assert identity.get("full_name") == "Felipe Marques"
+    assert identity.get("full_name") == "John Smith"
     assert "date_of_birth" not in identity
     assert "september" in result.reply.lower() or "october" in result.reply.lower()
 
@@ -314,7 +314,7 @@ def test_orchestrator_builds_safe_request_context() -> None:
     }
 
     orchestrator.handle(
-        message="Felipe Marques, Sep 19th 1996",
+        message="John Smith, Sep 19th 1996",
         conversation=conversation,
         merged_context=merged_context,
         context_updates={},
