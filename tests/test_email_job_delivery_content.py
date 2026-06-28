@@ -114,9 +114,11 @@ def test_appointment_confirmation_worker_renders_delivery_content() -> None:
     sent_message = provider.sent_messages[0]
     assert sent_message.subject == "Your appointment is confirmed"
     assert sent_message.body.startswith("Hi John Miller,")
-    assert "Dermatology" in sent_message.body
-    assert "Dr. Emily Carter" in sent_message.body
-    assert "Monday, June 29 at 10:00" in sent_message.body
+    assert "Your appointment has been confirmed." in sent_message.body
+    assert "- Specialty: Dermatology" in sent_message.body
+    assert "- Clinician: Dr. Emily Carter" in sent_message.body
+    assert "- Date: Monday, June 29" in sent_message.body
+    assert "- Time: 10:00" in sent_message.body
     assert SUMMER_10_ET_UTC_ISO not in sent_message.body
     assert sent_message.idempotency_key == f"appointment_confirmation:{appointment_id}"
 
@@ -241,7 +243,8 @@ def test_appointment_confirmation_body_uses_clinic_local_time() -> None:
         clinic_timezone=NEW_YORK,
     )
 
-    assert "Monday, June 29 at 10:00" in body
+    assert "- Date: Monday, June 29" in body
+    assert "- Time: 10:00" in body
 
 
 def test_appointment_confirmation_body_excludes_raw_utc_iso_timestamp() -> None:
@@ -297,7 +300,7 @@ def test_appointment_confirmation_uses_doctor_name() -> None:
         clinic_timezone=NEW_YORK,
     )
 
-    assert "Dr. Emily Carter" in body
+    assert "- Clinician: Dr. Emily Carter" in body
 
 
 def test_appointment_confirmation_uses_specialty_name() -> None:
@@ -315,7 +318,8 @@ def test_appointment_confirmation_uses_specialty_name() -> None:
         clinic_timezone=NEW_YORK,
     )
 
-    assert "Your Cardiology appointment with Dr. Emily Carter" in body
+    assert "- Specialty: Cardiology" in body
+    assert "- Clinician: Dr. Emily Carter" in body
 
 
 def test_appointment_confirmation_missing_patient_name_falls_back_to_safe_greeting() -> None:
@@ -348,7 +352,8 @@ def test_appointment_confirmation_missing_doctor_and_specialty_fall_back_gracefu
         clinic_timezone=NEW_YORK,
     )
 
-    assert "Your appointment with your clinician" in body
+    assert "- Clinician: your clinician" in body
+    assert "- Specialty: Not specified" in body
 
 
 def test_appointment_confirmation_missing_specialty_only_uses_generic_appointment_phrase() -> None:
@@ -365,8 +370,8 @@ def test_appointment_confirmation_missing_specialty_only_uses_generic_appointmen
         clinic_timezone=NEW_YORK,
     )
 
-    assert "Your appointment with Dr. Emily Carter" in body
-    assert "Dermatology" not in body
+    assert "- Clinician: Dr. Emily Carter" in body
+    assert "- Specialty: Not specified" in body
 
 
 def test_reschedule_confirmation_reason_renders_reschedule_copy() -> None:
@@ -386,8 +391,11 @@ def test_reschedule_confirmation_reason_renders_reschedule_copy() -> None:
     )
 
     assert subject == "Your appointment has been rescheduled"
-    assert "has been rescheduled to Tuesday, June 30 at 15:00." in body
-    assert "Thank you." not in body
+    assert "Your appointment has been rescheduled." in body
+    assert "Updated appointment details:" in body
+    assert "- Date: Tuesday, June 30" in body
+    assert "- Time: 15:00" in body
+    assert "If you did not request this change" in body
 
 
 def test_generic_confirmation_copy_when_no_reschedule_reason() -> None:
@@ -407,7 +415,7 @@ def test_generic_confirmation_copy_when_no_reschedule_reason() -> None:
     )
 
     assert subject == "Your appointment is confirmed"
-    assert "is confirmed for" in body
+    assert "Your appointment has been confirmed." in body
     assert "has been rescheduled" not in body
 
 

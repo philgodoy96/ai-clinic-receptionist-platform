@@ -9,7 +9,7 @@ from app.domain.jobs.enums import EmailJobType
 from app.email.idempotency import build_email_delivery_idempotency_key
 from app.models.email_jobs import EmailJob
 from app.providers.email import EmailMessage
-from app.services.clinic_time import format_clinic_local_appointment_datetime
+from app.services.clinic_time import to_clinic_local_datetime
 
 _HANDOFF_CONTEXT_BODY_KEYS = (
     ("active_hold_present", "Active hold present: yes"),
@@ -63,29 +63,45 @@ def render_appointment_confirmation_content(
         payload.get("appointment_start_time"),
     )
     timezone = clinic_timezone or ZoneInfo(get_settings().clinic_timezone)
-    datetime_label = _format_appointment_datetime_label(
+    clinic_name = get_settings().clinic_name
+    greeting = patient_name or "there"
+    appointment_date = _format_appointment_date_label(
         appointment_start_time,
         timezone=timezone,
     )
-    greeting = patient_name or "there"
-    appointment_phrase = _build_appointment_phrase(
-        specialty_name=specialty_name,
-        doctor_name=doctor_name,
+    appointment_time = _format_appointment_time_label(
+        appointment_start_time,
+        timezone=timezone,
     )
 
     if _is_reschedule_confirmation(payload):
         subject = "Your appointment has been rescheduled"
-        body = (
-            f"Hi {greeting},\n\n"
-            f"{appointment_phrase} has been rescheduled to {datetime_label}."
+        body = _build_appointment_details_body(
+            greeting=greeting,
+            intro_line="Your appointment has been rescheduled.",
+            details_heading="Updated appointment details:",
+            specialty_name=specialty_name,
+            doctor_name=doctor_name,
+            appointment_date=appointment_date,
+            appointment_time=appointment_time,
+            automated_notice=f"This is an automated update from {clinic_name}.",
+            ignore_notice="If you did not request this change, you can ignore this message.",
+            clinic_name=clinic_name,
         )
         return subject, body
 
     subject = "Your appointment is confirmed"
-    body = (
-        f"Hi {greeting},\n\n"
-        f"{appointment_phrase} is confirmed for {datetime_label}.\n\n"
-        "Thank you."
+    body = _build_appointment_details_body(
+        greeting=greeting,
+        intro_line="Your appointment has been confirmed.",
+        details_heading="Appointment details:",
+        specialty_name=specialty_name,
+        doctor_name=doctor_name,
+        appointment_date=appointment_date,
+        appointment_time=appointment_time,
+        automated_notice=f"This is an automated confirmation from {clinic_name}.",
+        ignore_notice="If you did not request this appointment, you can ignore this message.",
+        clinic_name=clinic_name,
     )
     return subject, body
 
@@ -121,26 +137,57 @@ def render_human_escalation_notification_content(
     return subject, "\n".join(lines)
 
 
-def _build_appointment_phrase(
+def _build_appointment_details_body(
     *,
+    greeting: str,
+    intro_line: str,
+    details_heading: str,
     specialty_name: str | None,
     doctor_name: str | None,
+    appointment_date: str,
+    appointment_time: str,
+    automated_notice: str,
+    ignore_notice: str,
+    clinic_name: str,
 ) -> str:
+    specialty = specialty_name or "Not specified"
     clinician = doctor_name or "your clinician"
-    if specialty_name is not None:
-        return f"Your {specialty_name} appointment with {clinician}"
-    return f"Your appointment with {clinician}"
+
+    return (
+        f"Hi {greeting},\n\n"
+        f"{intro_line}\n\n"
+        f"{details_heading}\n"
+        f"- Specialty: {specialty}\n"
+        f"- Clinician: {clinician}\n"
+        f"- Date: {appointment_date}\n"
+        f"- Time: {appointment_time}\n\n"
+        f"{automated_notice}\n\n"
+        f"{ignore_notice}\n\n"
+        f"Thank you,\n{clinic_name}"
+    )
 
 
-def _format_appointment_datetime_label(
+def _format_appointment_date_label(
     appointment_start_time: datetime | None,
     *,
     timezone: ZoneInfo,
 ) -> str:
     if appointment_start_time is None:
-        return "the scheduled time"
+        return "To be confirmed"
 
-    return format_clinic_local_appointment_datetime(appointment_start_time, timezone)
+    localized = to_clinic_local_datetime(appointment_start_time, timezone)
+    return f"{localized.strftime('%A')}, {localized.strftime('%B')} {localized.day}"
+
+
+def _format_appointment_time_label(
+    appointment_start_time: datetime | None,
+    *,
+    timezone: ZoneInfo,
+) -> str:
+    if appointment_start_time is None:
+        return "To be confirmed"
+
+    return to_clinic_local_datetime(appointment_start_time, timezone).strftime("%H:%M")
 
 
 def _is_reschedule_confirmation(payload: dict[str, Any]) -> bool:
