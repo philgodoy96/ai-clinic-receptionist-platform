@@ -1507,6 +1507,42 @@ def test_cancellation_ambiguous_dob_clarification_preserves_name_and_proceeds() 
     assert chat_context_id_not_exposed(clarified.reply, chat_context=clarified_context)
 
 
+def test_cancellation_ambiguous_dob_month_day_without_year_preserves_name() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _add_appointments(
+        service,
+        [
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+    ambiguous = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 09/08/1980",
+            conversation_id=started.conversation.id,
+        ),
+    )
+    ambiguous_context = ambiguous.conversation.conversation_metadata["chat_context"]
+    assert ambiguous_context["appointment_management_identity"]["full_name"] == "Felipe Godoy"
+
+    clarified = service.handle_message(
+        ChatMessageInput(message="I meant Sept 8th", conversation_id=started.conversation.id),
+    )
+    reply = clarified.reply.lower()
+    # The year (1980) is reused from the pending ambiguity, so the flow proceeds
+    # to patient resolution instead of re-prompting for the date of birth.
+    assert "what is the patient's date of birth" not in reply
+    assert "couldn't find a matching patient profile" in reply
+    clarified_context = clarified.conversation.conversation_metadata["chat_context"]
+    assert clarified_context.get("pending_dob_ambiguity") is None
+    assert chat_context_id_not_exposed(clarified.reply, chat_context=clarified_context)
+
+
 def test_cancellation_without_resolved_patient_still_asks_for_identity() -> None:
     service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
 

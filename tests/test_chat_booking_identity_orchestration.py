@@ -501,6 +501,67 @@ def test_new_patient_ambiguous_dob_clarification_preserves_name_and_proceeds() -
     assert tracking_booking.book_calls == []
 
 
+def test_new_patient_ambiguous_dob_clarification_without_year_preserves_name() -> None:
+    service, tracking_booking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Felipe Godoy."))
+    ambiguous = service.handle_message(
+        ChatMessageInput(message="09/08/1980", conversation_id=conversation.id),
+    )
+    assert ambiguous.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
+    ambiguous_context = ambiguous.conversation.conversation_metadata["chat_context"]
+    assert ambiguous_context["patient_identity"]["full_name"] == "Felipe Godoy"
+    assert ambiguous_context["pending_dob_ambiguity"]["proposed_iso"] == "1980-09-08"
+
+    clarified = service.handle_message(
+        ChatMessageInput(message="I meant Sept 8th", conversation_id=conversation.id),
+    )
+    reply = clarified.reply.lower()
+    assert "full name and date of birth" not in reply
+    assert "email" in reply
+    clarified_context = clarified.conversation.conversation_metadata["chat_context"]
+    assert clarified_context["patient_identity"]["full_name"] == "Felipe Godoy"
+    assert clarified_context["patient_identity"]["date_of_birth"] == "1980-09-08"
+    assert clarified_context.get("pending_dob_ambiguity") is None
+    assert tracking_booking.book_calls == []
+
+
+def test_new_patient_ambiguous_dob_alternate_month_day_without_year() -> None:
+    service, tracking_booking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Felipe Godoy."))
+    service.handle_message(
+        ChatMessageInput(message="09/08/1980", conversation_id=conversation.id),
+    )
+    clarified = service.handle_message(
+        ChatMessageInput(message="I meant August 9th", conversation_id=conversation.id),
+    )
+
+    clarified_context = clarified.conversation.conversation_metadata["chat_context"]
+    assert clarified_context["patient_identity"]["date_of_birth"] == "1980-08-09"
+    assert clarified_context["patient_identity"]["full_name"] == "Felipe Godoy"
+    assert tracking_booking.book_calls == []
+
+
+def test_booking_month_day_without_year_requires_pending_ambiguity_context() -> None:
+    service, tracking_booking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Jane Doe."))
+    result = service.handle_message(
+        ChatMessageInput(message="I meant Sept 8th", conversation_id=conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert "1980-09-08" not in reply
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("pending_dob_ambiguity") is None
+    assert "date_of_birth" not in context["patient_identity"]
+    assert tracking_booking.book_calls == []
+
+
 def test_new_patient_ambiguous_dob_accepts_yes_to_proposed_us_interpretation() -> None:
     service, tracking_booking, _scheduling = _create_service(patients=[])
     conversation = conversation_with_active_hold(service)
@@ -749,6 +810,8 @@ def test_final_booking_confirmation_preserves_typed_email_end_to_end() -> None:
     )
     assert booked.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert booked.booking_confirmed is True
+    assert "Is there anything else I can help with?" in booked.reply
+    assert "hold" not in booked.reply.lower()
     assert len(tracking_booking.book_calls) == 1
     booked_patient_id = booked.booked_patient_id
     assert booked_patient_id is not None
@@ -790,6 +853,8 @@ def test_existing_patient_dob_only_asks_for_name() -> None:
     assert result.intent == ChatReceptionistIntent.BOOKING_IDENTITY_MISSING
     assert "full name" in reply
     assert "full name and date of birth" not in reply
+    assert "hold is still active" not in reply
+    assert "that time is still available" in reply
     context = result.conversation.conversation_metadata["chat_context"]
     assert context["patient_identity"]["date_of_birth"] == "1985-04-12"
     assert "full_name" not in context["patient_identity"]

@@ -324,6 +324,7 @@ _TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "Please specify a time-of-day preference such as morning, afternoon, or "
     "evening, or provide an exact time in HH:MM format."
 )
+_SELECTED_TIME_STILL_AVAILABLE_SUFFIX = " That time is still available."
 _HELD_TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "You already have a time held. Please complete or release that hold before "
     "changing your time-of-day preference."
@@ -349,6 +350,7 @@ _ALREADY_CONFIRMED_MESSAGE = (
     "Is there anything else I can help with?"
 )
 _POST_BOOKING_CLOSING_MESSAGE = "You're all set. Have a great day!"
+_BOOKING_SUCCESS_FOLLOW_UP_SUFFIX = " Is there anything else I can help with?"
 _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE = (
     "Sure — would you like to schedule, cancel, or reschedule an appointment?"
 )
@@ -2918,8 +2920,8 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
                 content=(
-                    "I still need to verify patient details before booking. "
-                    "Your hold is still active."
+                    "I still need to verify patient details before booking."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 chat_context_updates=identity_updates,
                 hold_id=hold_id,
@@ -2930,8 +2932,8 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
                 content=(
-                    "I still need a confirmed email before booking. "
-                    "Your hold is still active."
+                    "I still need a confirmed email before booking."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 chat_context_updates=identity_updates,
                 hold_id=hold_id,
@@ -3049,6 +3051,7 @@ class ChatReceptionistService:
                 f"Your appointment with {doctor_name} on {appointment_date} at "
                 f"{display_time} has been booked. A confirmation email will be sent "
                 "if an email address is available."
+                f"{_BOOKING_SUCCESS_FOLLOW_UP_SUFFIX}"
             ),
             chat_context_updates={
                 **identity_updates,

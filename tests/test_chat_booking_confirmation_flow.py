@@ -211,6 +211,9 @@ def test_complete_identity_with_confirmation_books_appointment_without_llm(
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert result.booking_confirmed is True
     assert len(tracking_booking.book_calls) == 1
+    assert "Is there anything else I can help with?" in result.reply
+    assert "hold is still active" not in result.reply.lower()
+    assert "hold" not in result.reply.lower()
     assert result.conversation.conversation_metadata["chat_context"]["appointment_id"]
     assert appointments.appointments[0].availability_slot_id == EMILY_JULY_SLOT_1_ID
 

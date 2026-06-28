@@ -2141,6 +2141,16 @@ class ChatAppointmentReschedulingOrchestrator:
             chat_context=chat_context,
         )
         if understanding is None or self._should_use_deterministic_only(understanding):
+            if confirmed_iso is not None:
+                return (
+                    ParsedPatientFields(
+                        full_name=deterministic.full_name,
+                        date_of_birth=confirmed_iso,
+                        email=deterministic.email,
+                        phone=deterministic.phone,
+                    ),
+                    None,
+                )
             return deterministic, detect_ambiguous_numeric_dob(message)
 
         ctu_fields, dob_issue = self._validated_fields_from_understanding(understanding)

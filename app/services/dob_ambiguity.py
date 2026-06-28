@@ -51,6 +51,30 @@ _DOB_CONFIRMATION_NO_PHRASES = (
 # and are therefore always treated as unambiguous.
 _NUMERIC_DOB_PATTERN = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
 
+_MONTH_TOKEN_TO_NUMBER = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+# Month/day clarification replies during pending ambiguity (year omitted).
+_MONTH_DAY_WITHOUT_YEAR_PATTERN = re.compile(
+    r"(?:\bi\s+meant\s+)?"
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+    re.IGNORECASE,
+)
+
 _MONTH_NAMES = (
     "January",
     "February",
@@ -118,6 +142,29 @@ def merge_dob_ambiguity_context_updates(
         updates.update(clear_pending_dob_ambiguity_updates())
 
 
+def parse_month_day_dob_clarification(message: str, *, year: int) -> str | None:
+    """Parse a month/day DOB reply without a year, e.g. ``I meant Sept 8th``."""
+    if re.search(r"\b\d{4}\b", message):
+        return None
+
+    match = _MONTH_DAY_WITHOUT_YEAR_PATTERN.search(message)
+    if match is None:
+        return None
+
+    month_token = match.group(1).lower()[:3]
+    month = _MONTH_TOKEN_TO_NUMBER.get(month_token)
+    if month is None:
+        return None
+
+    day = int(match.group(2))
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+
+    return f"{year}-{month:02d}-{day:02d}"
+
+
 def parse_dob_ambiguity_confirmation(message: str) -> bool | None:
     normalized = message.lower().strip().rstrip(".!")
     if any(
@@ -163,6 +210,13 @@ def try_resolve_pending_dob_ambiguity(
             reason=DOB_AMBIGUITY_REJECTED_REASON,
             clarification_question=build_dob_format_reprompt(alternative),
         )
+
+    year = int(proposed[:4])
+    clarified_iso = parse_month_day_dob_clarification(message, year=year)
+    if clarified_iso == proposed:
+        return proposed, None
+    if clarified_iso == alternative:
+        return alternative, None
     return None, None
 
 
