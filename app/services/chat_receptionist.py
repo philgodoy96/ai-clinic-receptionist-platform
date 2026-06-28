@@ -5254,7 +5254,13 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _HOLD_KEYWORDS):
             return True
 
-        if self._message_has_time_pattern(normalized_message):
+        # A bare clock-like time only signals slot selection / a hold request once
+        # availability has been shown (offered slots) or while a hold is being
+        # confirmed/selected. Without that context a concrete time is part of a
+        # rich scheduling request and must reach availability/intake instead.
+        if self._message_has_time_pattern(normalized_message) and (
+            offered_slots or self._has_active_hold_context(merged_context)
+        ):
             return True
 
         if offered_slots and self._extract_offered_time(message) is not None:
@@ -5264,6 +5270,14 @@ class ChatReceptionistService:
             return True
 
         return self._extract_iso_datetime(message) is not None
+
+    def _has_active_hold_context(self, merged_context: dict[str, Any]) -> bool:
+        if merged_context.get("hold_id"):
+            return True
+        return (
+            merged_context.get("appointment_intake_awaiting")
+            == APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+        )
 
     def _is_single_slot_affirmative_hold_selection(
         self,

@@ -30,6 +30,9 @@ from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
+from app.services.chat_appointment_intake import (
+    APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+)
 from app.services.chat_appointment_lookup import APPOINTMENT_MANAGEMENT_MODE_LOOKUP
 from app.services.chat_appointment_rescheduling import APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
 from app.services.chat_booking_identity import ChatBookingIdentityStep
@@ -1251,6 +1254,94 @@ def test_hold_without_offered_slots_returns_hold_missing_availability(
     assert result.intent == ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY
     assert result.assistant_message.message_metadata["hold_created"] is False
     assert hold_service.create_hold_calls == []
+
+
+def test_is_hold_request_false_for_scheduling_request_without_offered_slots(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    message = "I'd like to schedule with Emily Carter on Tuesday 14:00"
+
+    assert service._is_hold_request(message.lower(), {}, message) is False
+
+
+def test_is_hold_request_true_for_time_when_offered_slots_present(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+    context = {
+        "offered_slots": [
+            {
+                "availability_slot_id": str(EMILY_JULY_SLOT_1_ID),
+                "start_time": "2026-07-02T14:00:00+00:00",
+                "label": "Tuesday at 14:00",
+            },
+        ],
+    }
+
+    assert service._is_hold_request("tuesday at 14:00", context, "Tuesday at 14:00") is True
+    assert (
+        service._is_hold_request("hold tuesday at 14:00", context, "hold Tuesday at 14:00")
+        is True
+    )
+
+
+def test_is_hold_request_true_for_time_with_active_hold_context(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, _hold_service = availability_guidance_service
+
+    active_hold_context = {"hold_id": str(uuid4())}
+    assert (
+        service._is_hold_request("tuesday at 14:00", active_hold_context, "Tuesday at 14:00")
+        is True
+    )
+
+    awaiting_selection_context = {
+        "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+    }
+    assert (
+        service._is_hold_request(
+            "tuesday at 14:00",
+            awaiting_selection_context,
+            "Tuesday at 14:00",
+        )
+        is True
+    )
+
+
+def test_rich_scheduling_request_with_time_reaches_availability_flow(
+    availability_guidance_service: tuple[
+        ChatReceptionistService,
+        FakeConversationRepository,
+        FakeAppointmentHoldService,
+    ],
+) -> None:
+    service, _repository, hold_service = availability_guidance_service
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I'd like to schedule with Dr. Emily Carter on 2026-07-02 at 09:00",
+        ),
+    )
+
+    assert result.intent != ChatReceptionistIntent.HOLD_MISSING_AVAILABILITY
+    assert "check availability first" not in result.reply.lower()
+    assert hold_service.create_hold_calls == []
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("offered_slots")
 
 
 def test_hold_first_slot_at_requested_time_creates_hold(
