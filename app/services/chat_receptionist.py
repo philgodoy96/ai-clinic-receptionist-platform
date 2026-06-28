@@ -152,7 +152,9 @@ from app.services.chat_offered_appointment_selection import (
 from app.services.chat_selection_revision import (
     has_offered_slot_selection_signals,
     has_selection_revision_phrase,
+    is_plain_rejection,
     is_slot_selection_revision_message,
+    message_looks_like_cross_flow_intent_switch,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
@@ -305,6 +307,41 @@ _GREETING_KEYWORDS = [
 ]
 # Tokens that look like part of a person's name (letters plus name punctuation).
 _NAME_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'\u2019.\-]*")
+# Conversational/clause tokens that are very unlikely to be part of a real name.
+# Used to tighten the comma "name, rest" heuristic so arbitrary clauses such as
+# "On second thought, ..." or "I'd like for ..." are not parsed as a patient
+# name. Kept deliberately narrow so seeded names (John Miller, Ava Thompson, ...)
+# are never rejected.
+_NON_NAME_CLAUSE_TOKENS = frozenset(
+    {
+        "i'd",
+        "i'm",
+        "im",
+        "like",
+        "want",
+        "wanted",
+        "prefer",
+        "please",
+        "just",
+        "actually",
+        "instead",
+        "maybe",
+        "really",
+        "wait",
+        "thought",
+        "second",
+        "changed",
+        "mind",
+        "would",
+        "could",
+        "should",
+        "wanna",
+        "gonna",
+        "lemme",
+        "different",
+        "nevermind",
+    },
+)
 _AVAILABILITY_KEYWORDS = [
     "available",
     "availability",
@@ -2061,6 +2098,14 @@ class ChatReceptionistService:
                 ),
             )
 
+        pre_hold_revision_reply = self._try_pre_hold_offered_slot_revision(
+            message=message,
+            conversation=conversation,
+            existing_context=existing_context,
+        )
+        if pre_hold_revision_reply is not None:
+            return finish(pre_hold_revision_reply)
+
         intake_result = self._try_appointment_intake(
             message=message,
             existing_context=existing_context,
@@ -2645,6 +2690,13 @@ class ChatReceptionistService:
         date_of_birth: str | None,
         booking_context: bool = False,
     ) -> str | None:
+        # A revision/denial turn ("On second thought, ...", "Actually, ...",
+        # "Wait, I meant ...", "I changed my mind", "Don't book it") is never a
+        # patient name. Blocking it here keeps a bogus name out of
+        # patient_identity so a later, correct identity is not shadowed by it.
+        if self._message_is_revision_or_denial(message):
+            return None
+
         name_match = _MY_NAME_IS_PATTERN.search(message)
         if name_match is not None:
             remainder = name_match.group(1).strip()
@@ -2686,6 +2738,7 @@ class ChatReceptionistService:
                 booking_context
                 and segments
                 and len(segments[0].split()) >= 2
+                and self._looks_like_person_name(segments[0])
                 and not self._looks_like_scheduling_text(segments[0])
             ):
                 return normalize_patient_display_name(segments[0])
@@ -2695,10 +2748,43 @@ class ChatReceptionistService:
         if first_segment.lower().startswith("my name is "):
             return None
 
-        if len(first_segment.split()) >= 2:
+        if len(first_segment.split()) >= 2 and self._looks_like_person_name(first_segment):
             return normalize_patient_display_name(first_segment)
 
         return None
+
+    def _message_is_revision_or_denial(self, message: str) -> bool:
+        """Whether the message reads as a slot/date revision or a denial.
+
+        Reuses the shared revision-phrase, plain-rejection, and explicit
+        booking-abort detectors so identity parsing and revision routing agree on
+        what counts as "the user is changing or declining", never a name.
+        """
+        normalized = message.lower().strip()
+        if not normalized:
+            return False
+        if has_selection_revision_phrase(normalized):
+            return True
+        if is_plain_rejection(message):
+            return True
+        return is_explicit_booking_abort(message)
+
+    def _looks_like_person_name(self, value: str) -> bool:
+        """Whether a comma-segment plausibly reads as a person's name.
+
+        Every token must look like a name part (letters plus name punctuation)
+        and none may be a conversational/clause word, so arbitrary phrases like
+        "I'd like for Wednesday" are not mistaken for a patient name.
+        """
+        tokens = value.split()
+        if not tokens:
+            return False
+        for token in tokens:
+            if not _NAME_TOKEN_PATTERN.fullmatch(token):
+                return False
+            if token.lower() in _NON_NAME_CLAUSE_TOKENS:
+                return False
+        return True
 
     def _looks_like_scheduling_text(self, value: str) -> bool:
         normalized = value.lower()
@@ -3862,11 +3948,34 @@ class ChatReceptionistService:
         if has_identity_fields and not hold_id:
             if merged_context is None:
                 return False
-            return self._has_active_scheduling_context_for_booking_identity(
-                merged_context,
-            )
+            # Offered slots alone (or an in-progress date/time/slot intake) mean
+            # the user has only *seen* times, not selected one, so identity
+            # collection must not start yet. Require a clearly selected/held slot
+            # or an already-active booking identity step.
+            return self._has_booking_identity_intake_context(merged_context)
 
         return False
+
+    def _has_booking_identity_intake_context(
+        self,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        """Stronger gate for *starting* patient identity intake during booking.
+
+        Unlike :meth:`_has_active_scheduling_context_for_booking_identity` (which
+        also treats merely-offered slots as "active scheduling" for the
+        orphan-confirmation distinction), this requires that the user has
+        actually committed to a specific slot: a hold, an active booking identity
+        step, or a selected slot. Merely-offered slots or an awaiting
+        date/time/slot intake do not qualify.
+        """
+        if merged_context.get("hold_id"):
+            return True
+        if self._booking_identity.is_active(merged_context):
+            return True
+        if merged_context.get("selected_availability_slot_id"):
+            return True
+        return bool(merged_context.get("selected_start_time"))
 
     def _has_active_scheduling_context_for_booking_identity(
         self,
@@ -4378,6 +4487,122 @@ class ChatReceptionistService:
             content=_BOOKING_DECLINED_MESSAGE,
             chat_context_updates=aborted_updates,
         )
+
+    def _try_pre_hold_offered_slot_revision(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        existing_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        """Safely handle a slot/date revision made before any hold exists.
+
+        When the assistant has only *offered* times (no hold yet) and the user
+        revises the requested slot/date ("On second thought, Wednesday",
+        "Actually, 14"), this must never be read as a confirmation or as patient
+        identity, and must never create an appointment or email job. A concrete
+        time that matches an offered slot is selected via the normal hold flow; a
+        new day with no time asks for a time on that day; anything unresolved
+        clears stale booking state and asks a focused scheduling clarification so
+        the next turn cannot be trapped on "hold a time first".
+        """
+        if existing_context.get("hold_id") or existing_context.get("appointment_id"):
+            return None
+
+        offered_slots = existing_context.get("offered_slots") or []
+        awaiting = existing_context.get("appointment_intake_awaiting")
+        has_pre_hold_context = (
+            bool(offered_slots)
+            or awaiting == APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+            or bool(existing_context.get("requested_exact_time"))
+        )
+        if not has_pre_hold_context:
+            return None
+
+        normalized_message = message.lower().strip()
+        if is_simple_affirmative(message) or is_plain_rejection(message):
+            return None
+        if message_looks_like_cross_flow_intent_switch(normalized_message):
+            return None
+        if not has_selection_revision_phrase(normalized_message):
+            return None
+
+        # A concrete time that maps to one of the offered slots: reuse the normal
+        # slot-selection/hold behavior so the revision selects that slot.
+        if (
+            isinstance(offered_slots, list)
+            and offered_slots
+            and has_offered_slot_selection_signals(
+                message,
+                normalized_message,
+                offered_slots,
+            )
+        ):
+            return self._handle_hold_flow(
+                message=message,
+                normalized_message=normalized_message,
+                conversation=conversation,
+                merged_context=existing_context,
+                context_updates={},
+            )
+
+        # A new day (no resolvable time yet): clear the now-stale offered slots,
+        # keep the specialty/doctor, and ask for a time on that day.
+        follow_up_updates = self._appointment_intake.extract_contextual_follow_up_updates(
+            message=message,
+            chat_context=existing_context,
+        )
+        new_date = follow_up_updates.get("requested_date")
+        if isinstance(new_date, str) and new_date:
+            cleared = self._cleared_pre_hold_revision_context_updates()
+            cleared["requested_date"] = new_date
+            cleared["appointment_intake_awaiting"] = APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+            weekday_label = self._weekday_label_for_date(new_date)
+            prompt = (
+                f"Sure \u2014 what time on {weekday_label} would you prefer?"
+                if weekday_label
+                else "Sure \u2014 what time would you prefer?"
+            )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                content=prompt,
+                chat_context_updates=cleared,
+            )
+
+        # Unresolved revision: drop stale invalid selection/confirmation/identity
+        # state and ask a focused scheduling clarification without trapping the
+        # user on "please hold a time first".
+        cleared = self._cleared_pre_hold_revision_context_updates()
+        if isinstance(offered_slots, list) and offered_slots:
+            # Keep the already-offered options so the user can still pick one.
+            cleared.pop("offered_slots", None)
+            cleared["appointment_intake_awaiting"] = APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+            prompt = _format_offered_slot_selection_reprompt(offered_slots)
+        else:
+            cleared["appointment_intake_awaiting"] = APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+            prompt = "Sure \u2014 what day and time would you prefer?"
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            content=prompt,
+            chat_context_updates=cleared,
+        )
+
+    def _cleared_pre_hold_revision_context_updates(self) -> dict[str, Any]:
+        """Clear stale pre-hold booking state that could trap the next turn."""
+        return {
+            "offered_slots": [],
+            "selected_availability_slot_id": None,
+            "selected_start_time": None,
+            "requested_exact_time": None,
+            "booking_identity_step": None,
+            "pending_confirmation_email": None,
+        }
+
+    def _weekday_label_for_date(self, value: str) -> str | None:
+        try:
+            return date.fromisoformat(value).strftime("%A")
+        except ValueError:
+            return None
 
     def _try_revise_held_slot_selection(
         self,

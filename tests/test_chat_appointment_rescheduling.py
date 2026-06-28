@@ -25,6 +25,7 @@ from app.services.chat_appointment_rescheduling import (
     RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
     RESCHEDULE_HOLD_EXPIRED_MESSAGE,
     RESCHEDULE_HOLD_UNAVAILABLE_MESSAGE,
+    RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE,
     RESCHEDULE_NEW_SLOT_SELECTION_AMBIGUOUS,
     RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
     RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
@@ -2916,3 +2917,152 @@ def test_reschedule_new_time_preference_revision_replaces_selected_appointment()
     assert "14:00" in summary
     assert "Monday" not in summary
     assert "what day or time" in result.reply.lower()
+
+
+def test_reschedule_new_slot_selection_no_declines_and_keeps_appointment() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[appointment],
+    )
+
+    with patch.object(
+        AppointmentReschedulingService,
+        "reschedule_appointment",
+    ) as reschedule_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="No", conversation_id=conversation_id),
+        )
+
+    reschedule_appointment_mock.assert_not_called()
+    assert appointment.status == AppointmentStatus.SCHEDULED
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+    assert chat_context["reschedule_status"] == "declined"
+    assert chat_context.get("reschedule_offered_slots") is None
+    assert chat_context.get("reschedule_hold_id") is None
+    assert result.reply == RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE
+    assert "won't reschedule" in result.reply.lower()
+    assert "remains unchanged" in result.reply.lower()
+
+
+def test_reschedule_new_slot_selection_no_thanks_declines_and_keeps_appointment() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[appointment],
+    )
+
+    with patch.object(
+        AppointmentReschedulingService,
+        "reschedule_appointment",
+    ) as reschedule_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="No thanks", conversation_id=conversation_id),
+        )
+
+    reschedule_appointment_mock.assert_not_called()
+    assert appointment.status == AppointmentStatus.SCHEDULED
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+    assert chat_context["reschedule_status"] == "declined"
+    assert chat_context.get("reschedule_offered_slots") is None
+    assert result.reply == RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE
+
+
+def test_reschedule_new_slot_selection_denial_with_date_routes_to_availability() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[appointment],
+    )
+
+    with patch.object(
+        AppointmentReschedulingService,
+        "reschedule_appointment",
+    ) as reschedule_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(
+                message="None of those, what about Wednesday?",
+                conversation_id=conversation_id,
+            ),
+        )
+
+    reschedule_appointment_mock.assert_not_called()
+    assert appointment.status == AppointmentStatus.SCHEDULED
+    assert result.reply != RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE
+    assert RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT not in result.reply
+    # Routed to a fresh availability search for the requested day instead of
+    # repeating the generic "choose one of the offered times" prompt.
+    assert "I found these openings" in result.reply
+
+
+def test_reschedule_new_slot_selection_yes_does_not_reschedule() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[appointment],
+    )
+
+    with patch.object(
+        AppointmentReschedulingService,
+        "reschedule_appointment",
+    ) as reschedule_appointment_mock:
+        result = service.handle_message(
+            ChatMessageInput(message="yes", conversation_id=conversation_id),
+        )
+
+    reschedule_appointment_mock.assert_not_called()
+    assert appointment.status == AppointmentStatus.SCHEDULED
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+    )
+
+
+def test_reschedule_happy_path_still_completes_after_denial_handling() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    result, _conversation_id, completed_appointment = _complete_reschedule(
+        service,
+        appointments=[appointment],
+    )
+
+    assert completed_appointment.status == AppointmentStatus.RESCHEDULED
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["reschedule_status"] == "rescheduled"
+    assert "has been rescheduled to" in result.reply
