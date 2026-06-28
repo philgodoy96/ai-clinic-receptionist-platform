@@ -134,6 +134,16 @@ from app.services.chat_confirmation import (
     normalize_email_address,
     normalize_patient_display_name,
 )
+from app.services.chat_intent_switching import (
+    PENDING_INTENT_SWITCH_KEY,
+    IntentSwitchTarget,
+    build_intent_switch_acknowledgment,
+    build_intent_switch_confirmation_message,
+    build_pending_intent_switch_context,
+    classify_pending_intent_switch_reply,
+    current_flow_name,
+    detect_intent_override,
+)
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
 from app.services.clinic_time import (
@@ -560,6 +570,7 @@ def _cleared_active_flow_for_escalation_updates() -> dict[str, Any]:
         **_cleared_appointment_management_completed_flow_updates(),
         "booking_identity_step": None,
         "pending_confirmation_email": None,
+        PENDING_INTENT_SWITCH_KEY: None,
     }
 
 
@@ -1950,6 +1961,20 @@ class ChatReceptionistService:
             completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
             existing_context = {**existing_context, **completed_flow_cleanup}
 
+        intent_switch_reply = self._try_active_flow_intent_switch(
+            message=message,
+            conversation=conversation,
+            chat_context=existing_context,
+        )
+        if intent_switch_reply is not None:
+            switch_cleanup = intent_switch_reply.chat_context_updates or {}
+            completed_flow_cleanup = {**completed_flow_cleanup, **switch_cleanup}
+            return self._finish_reply_with_context(
+                intent_switch_reply,
+                stale_confirmation_cleanup=stale_confirmation_cleanup,
+                completed_flow_cleanup=completed_flow_cleanup,
+            )
+
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
 
@@ -2711,6 +2736,206 @@ class ChatReceptionistService:
             hold_id=flow.hold_id,
             booking_attempted=flow.booking_attempted,
         )
+
+    def _try_active_flow_intent_switch(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        booking_identity_active = self._booking_identity.is_active(chat_context)
+
+        pending_reply = self._handle_pending_intent_switch(
+            message=message,
+            conversation=conversation,
+            chat_context=chat_context,
+            booking_identity_active=booking_identity_active,
+        )
+        if pending_reply is not None:
+            return pending_reply
+
+        detection = detect_intent_override(
+            message,
+            chat_context,
+            parse_patient_fields=self._parse_booking_patient_fields,
+            booking_identity_active=booking_identity_active,
+        )
+        if detection.kind == "none" or detection.target is None:
+            return None
+
+        if detection.kind == "uncertain":
+            from_flow = current_flow_name(
+                chat_context,
+                booking_identity_active=booking_identity_active,
+            )
+            previous_awaiting = chat_context.get("appointment_management_awaiting")
+            pending_context = build_pending_intent_switch_context(
+                from_flow=from_flow,
+                target=detection.target,
+                original_message=detection.source_message or message,
+                previous_awaiting=(
+                    str(previous_awaiting) if isinstance(previous_awaiting, str) else None
+                ),
+            )
+            return ChatReceptionistReply(
+                intent=self._intent_switch_chat_intent(detection.target),
+                content=build_intent_switch_confirmation_message(
+                    from_flow=from_flow,
+                    target=detection.target,
+                ),
+                chat_context_updates={
+                    PENDING_INTENT_SWITCH_KEY: pending_context,
+                },
+            )
+
+        return self._execute_intent_switch(
+            message=message,
+            conversation=conversation,
+            chat_context=chat_context,
+            target=detection.target,
+            flow_cleanup=_cleared_completed_flow_for_new_intent_updates(),
+        )
+
+    def _handle_pending_intent_switch(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+        booking_identity_active: bool,
+    ) -> ChatReceptionistReply | None:
+        pending_raw = chat_context.get(PENDING_INTENT_SWITCH_KEY)
+        if not isinstance(pending_raw, dict):
+            return None
+
+        reply = classify_pending_intent_switch_reply(message)
+        target = IntentSwitchTarget(pending_raw["to_intent"])
+        from_flow = str(pending_raw.get("from_flow", "unknown"))
+
+        if reply.decision == "confirmed":
+            return self._execute_intent_switch(
+                message=str(pending_raw.get("original_message") or message),
+                conversation=conversation,
+                chat_context=chat_context,
+                target=target,
+                flow_cleanup=_cleared_completed_flow_for_new_intent_updates(),
+            )
+
+        if reply.decision == "rejected":
+            resume_context = {**chat_context, PENDING_INTENT_SWITCH_KEY: None}
+            contextual = _resolve_contextual_fallback_reply(resume_context)
+            if contextual is not None:
+                intent, content = contextual
+                return ChatReceptionistReply(
+                    intent=intent,
+                    content=content,
+                    chat_context_updates={PENDING_INTENT_SWITCH_KEY: None},
+                )
+            return ChatReceptionistReply(
+                intent=self._intent_switch_chat_intent_for_flow(from_flow),
+                content=_GENERIC_SCHEDULING_FALLBACK_MESSAGE,
+                chat_context_updates={PENDING_INTENT_SWITCH_KEY: None},
+            )
+
+        retries = int(pending_raw.get("clarification_retries") or 0)
+        if retries >= 1:
+            resume_context = {**chat_context, PENDING_INTENT_SWITCH_KEY: None}
+            contextual = _resolve_contextual_fallback_reply(resume_context)
+            if contextual is not None:
+                intent, content = contextual
+                return ChatReceptionistReply(
+                    intent=intent,
+                    content=content,
+                    chat_context_updates={PENDING_INTENT_SWITCH_KEY: None},
+                )
+
+        confirmation_question = build_intent_switch_confirmation_message(
+            from_flow=from_flow,
+            target=target,
+        )
+        return ChatReceptionistReply(
+            intent=self._intent_switch_chat_intent(target),
+            content=(
+                f"Just to confirm: {confirmation_question} Please reply yes or no."
+            ),
+            chat_context_updates={
+                PENDING_INTENT_SWITCH_KEY: {
+                    **pending_raw,
+                    "clarification_retries": retries + 1,
+                },
+            },
+        )
+
+    def _execute_intent_switch(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+        target: IntentSwitchTarget,
+        flow_cleanup: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        merged_context = {
+            **chat_context,
+            **flow_cleanup,
+            PENDING_INTENT_SWITCH_KEY: None,
+        }
+        combined_cleanup = {**flow_cleanup, PENDING_INTENT_SWITCH_KEY: None}
+        acknowledgment = build_intent_switch_acknowledgment(target)
+
+        if target is IntentSwitchTarget.BOOKING:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                content=(
+                    f"{acknowledgment}{self._format_missing_scheduling_target_prompt()}"
+                ),
+                chat_context_updates=combined_cleanup,
+            )
+
+        if target is IntentSwitchTarget.CANCEL:
+            reply = self._enter_cancellation_task_frame(
+                context_updates=combined_cleanup,
+                message=message,
+                chat_context=merged_context,
+            )
+            return replace(reply, content=f"{acknowledgment}{reply.content}")
+
+        if target is IntentSwitchTarget.RESCHEDULE:
+            reply = self._enter_reschedule_task_frame(
+                context_updates=combined_cleanup,
+                message=message,
+                chat_context=merged_context,
+            )
+            return replace(reply, content=f"{acknowledgment}{reply.content}")
+
+        reply = self._enter_lookup_task_frame(
+            context_updates=combined_cleanup,
+            message=message,
+            chat_context=merged_context,
+        )
+        return replace(reply, content=f"{acknowledgment}{reply.content}")
+
+    def _intent_switch_chat_intent_for_flow(self, from_flow: str) -> ChatReceptionistIntent:
+        mapping = {
+            "booking": ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            "cancel": ChatReceptionistIntent.CANCEL_REQUEST,
+            "reschedule": ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            "lookup": ChatReceptionistIntent.LIST_APPOINTMENTS,
+        }
+        return mapping.get(from_flow, ChatReceptionistIntent.FALLBACK)
+
+    def _intent_switch_chat_intent(
+        self,
+        target: IntentSwitchTarget,
+    ) -> ChatReceptionistIntent:
+        mapping = {
+            IntentSwitchTarget.BOOKING: ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            IntentSwitchTarget.CANCEL: ChatReceptionistIntent.CANCEL_REQUEST,
+            IntentSwitchTarget.RESCHEDULE: ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            IntentSwitchTarget.LOOKUP: ChatReceptionistIntent.LIST_APPOINTMENTS,
+        }
+        return mapping[target]
 
     def _handle_cancellation_flow(
         self,
