@@ -18,6 +18,9 @@ from app.domain.chat_turn_understanding import (
     OfferedSlot,
 )
 from app.models.scheduling import Doctor, Specialty
+from app.services.appointment_time_normalization import (
+    normalize_appointment_time_expression,
+)
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import ClinicTimeService, format_clinic_local_time_label
 from app.services.date_parsing import DateParseStatus, NaturalLanguageDateParser
@@ -113,6 +116,7 @@ class AppointmentSearchCriteria:
     selected_doctor_name: str | None = None
     requested_date: str | None = None
     requested_time_window: dict[str, str] | None = None
+    requested_exact_time: str | None = None
     soonest_requested: bool = False
     search_start_date: str | None = None
     search_end_date: str | None = None
@@ -669,8 +673,27 @@ class ChatAppointmentIntakeOrchestrator:
             understanding=understanding,
             chat_context=chat_context,
         )
+        has_offered_slots = bool(chat_context.get("offered_slots"))
+        appointment_time = extracted.appointment_time
+
         if selected_slot_id is not None:
             context_updates["selected_availability_slot_id"] = selected_slot_id
+        elif (
+            has_offered_slots
+            and understanding.intent is ChatTurnIntent.SLOT_SELECTION
+            and appointment_time is not None
+        ):
+            return ChatAppointmentIntakeResult(
+                intent="clarification",
+                content=(
+                    "I could not match that time to one of the available slots. "
+                    "Please choose one of the listed times."
+                ),
+            )
+        elif appointment_time and not has_offered_slots:
+            context_updates["requested_exact_time"] = appointment_time
+            if chat_context.get("offered_slots"):
+                context_updates.update(stale_slot_clearing_updates())
 
         if not context_updates and not soonest_requested:
             return self._noop_or_clarification_result(understanding)
@@ -1047,7 +1070,20 @@ class ChatAppointmentIntakeOrchestrator:
                 content=time_result.clarification,
             )
 
-        if not date_result.requested_date and not time_result.requested_time_window:
+        exact_time: str | None = None
+        if not chat_context.get("offered_slots") or date_result.requested_date:
+            normalized_time = normalize_appointment_time_expression(
+                message,
+                allow_bare_hour=False,
+            )
+            if normalized_time is not None:
+                exact_time = normalized_time.value
+
+        if (
+            not date_result.requested_date
+            and not time_result.requested_time_window
+            and exact_time is None
+        ):
             return None
 
         context_updates: dict[str, Any] = {}
@@ -1069,6 +1105,9 @@ class ChatAppointmentIntakeOrchestrator:
             ):
                 context_updates.update(stale_slot_clearing_updates())
             context_updates["requested_time_window"] = time_result.requested_time_window
+
+        if exact_time is not None:
+            context_updates["requested_exact_time"] = exact_time
 
         if not context_updates:
             return None
@@ -1185,6 +1224,7 @@ class ChatAppointmentIntakeOrchestrator:
             selected_doctor_name=_as_str(merged.get("selected_doctor_name")),
             requested_date=_as_str(merged.get("requested_date")),
             requested_time_window=window,
+            requested_exact_time=_as_str(merged.get("requested_exact_time")),
             soonest_requested=soonest_requested,
             search_start_date=search_start_date,
             search_end_date=search_end_date,

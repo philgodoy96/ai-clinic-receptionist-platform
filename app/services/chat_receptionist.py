@@ -3389,6 +3389,17 @@ class ChatReceptionistService:
                 )
             slots = filtered_slots
 
+        exact_time_reply = self._handle_exact_time_doctor_availability(
+            slots=slots,
+            merged_context=merged_context,
+            context_updates=context_updates,
+            doctor_name=doctor_name,
+            requested_date=requested_date,
+            parsed_requested_date=parsed_requested_date,
+        )
+        if exact_time_reply is not None:
+            return exact_time_reply
+
         if slots:
             shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
             offered_slots = self._serialize_offered_slots(
@@ -3469,6 +3480,17 @@ class ChatReceptionistService:
                     offered_slot_count=0,
                 )
             attributed_slots = filtered_slots
+
+        exact_time_reply = self._handle_exact_time_specialty_availability(
+            attributed_slots=attributed_slots,
+            merged_context=merged_context,
+            context_updates=context_updates,
+            specialty_name=specialty_name,
+            requested_date=requested_date,
+            parsed_requested_date=parsed_requested_date,
+        )
+        if exact_time_reply is not None:
+            return exact_time_reply
 
         if attributed_slots:
             shown_slots = attributed_slots[:_MAX_OFFERED_SLOTS]
@@ -4764,7 +4786,7 @@ class ChatReceptionistService:
         if not has_provider:
             return False
 
-        scheduling_fields = {"requested_date", "requested_time_window"}
+        scheduling_fields = {"requested_date", "requested_time_window", "requested_exact_time"}
         provider_fields = {"selected_doctor_id", "selected_specialty_id"}
 
         if scheduling_fields & context_updates.keys():
@@ -5067,6 +5089,240 @@ class ChatReceptionistService:
 
     def _message_has_time_pattern(self, normalized_message: str) -> bool:
         return _TIME_PATTERN.search(normalized_message) is not None
+
+    def _requested_exact_time(self, merged_context: dict[str, Any]) -> str | None:
+        exact_time = merged_context.get("requested_exact_time")
+        if isinstance(exact_time, str) and exact_time:
+            return exact_time
+        return None
+
+    def _filter_slots_by_exact_time(
+        self,
+        slots: Sequence[AvailabilitySlot],
+        exact_time: str,
+    ) -> list[AvailabilitySlot]:
+        clinic_tz = self._clinic_timezone()
+        return [
+            slot
+            for slot in slots
+            if format_clinic_local_time_label(slot.start_time, clinic_tz) == exact_time
+        ]
+
+    def _filter_attributed_slots_by_exact_time(
+        self,
+        slots: Sequence[DoctorAttributedAvailabilitySlot],
+        exact_time: str,
+    ) -> list[DoctorAttributedAvailabilitySlot]:
+        clinic_tz = self._clinic_timezone()
+        return [
+            item
+            for item in slots
+            if format_clinic_local_time_label(item.slot.start_time, clinic_tz) == exact_time
+        ]
+
+    def _format_weekday_label(self, parsed_date: date) -> str:
+        return parsed_date.strftime("%A")
+
+    def _format_exact_time_available_hold_prompt(
+        self,
+        *,
+        provider_name: str,
+        parsed_date: date,
+        display_time: str,
+    ) -> str:
+        weekday = self._format_weekday_label(parsed_date)
+        return (
+            f"Yes, {provider_name} is available on {weekday} at {display_time}. "
+            "Would you like me to hold that time?"
+        )
+
+    def _format_exact_time_unavailable_with_alternatives(
+        self,
+        *,
+        provider_name: str,
+        parsed_date: date,
+        requested_exact_time: str,
+        alternative_times: Sequence[str],
+    ) -> str:
+        weekday = self._format_weekday_label(parsed_date)
+        if alternative_times:
+            alternatives_text = self._join_names(list(alternative_times))
+            return (
+                f"{requested_exact_time} is not available with {provider_name} on "
+                f"{weekday}, but I found these openings that day: {alternatives_text}. "
+                "Which time would you like?"
+            )
+        return (
+            f"I don't have {requested_exact_time} available with {provider_name} on "
+            f"{weekday}. Would you like me to check another day or time window?"
+        )
+
+    def _handle_exact_time_doctor_availability(
+        self,
+        *,
+        slots: Sequence[AvailabilitySlot],
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        doctor_name: str,
+        requested_date: str,
+        parsed_requested_date: date,
+    ) -> ChatReceptionistReply | None:
+        requested_exact_time = self._requested_exact_time(merged_context)
+        if requested_exact_time is None:
+            return None
+
+        exact_matches = self._filter_slots_by_exact_time(slots, requested_exact_time)
+        clinic_tz = self._clinic_timezone()
+
+        if len(exact_matches) == 1:
+            slot = exact_matches[0]
+            display_time = format_clinic_local_time_label(slot.start_time, clinic_tz)
+            offered_slots = self._serialize_offered_slots(
+                [slot],
+                doctor_names={slot.doctor_id: doctor_name},
+                specialty_name=merged_context.get("selected_specialty_name"),
+                display_date=requested_date,
+            )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
+                content=self._format_exact_time_available_hold_prompt(
+                    provider_name=doctor_name,
+                    parsed_date=parsed_requested_date,
+                    display_time=display_time,
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+                },
+                availability_checked=True,
+                offered_slot_count=1,
+            )
+
+        if not exact_matches:
+            alternative_times = [
+                format_clinic_local_time_label(slot.start_time, clinic_tz) for slot in slots
+            ]
+            shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
+            offered_slots = self._serialize_offered_slots(
+                shown_slots,
+                doctor_names={slot.doctor_id: doctor_name for slot in shown_slots},
+                specialty_name=merged_context.get("selected_specialty_name"),
+                display_date=requested_date,
+            ) if shown_slots else []
+            return ChatReceptionistReply(
+                intent=(
+                    ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+                    if not shown_slots
+                    else ChatReceptionistIntent.AVAILABILITY_RESULTS
+                ),
+                content=self._format_exact_time_unavailable_with_alternatives(
+                    provider_name=doctor_name,
+                    parsed_date=parsed_requested_date,
+                    requested_exact_time=requested_exact_time,
+                    alternative_times=alternative_times[:_MAX_OFFERED_SLOTS],
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": (
+                        APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+                        if shown_slots
+                        else APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+                    ),
+                },
+                availability_checked=True,
+                offered_slot_count=len(offered_slots),
+            )
+
+        return None
+
+    def _handle_exact_time_specialty_availability(
+        self,
+        *,
+        attributed_slots: Sequence[DoctorAttributedAvailabilitySlot],
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        specialty_name: str,
+        requested_date: str,
+        parsed_requested_date: date,
+    ) -> ChatReceptionistReply | None:
+        requested_exact_time = self._requested_exact_time(merged_context)
+        if requested_exact_time is None:
+            return None
+
+        exact_matches = self._filter_attributed_slots_by_exact_time(
+            attributed_slots,
+            requested_exact_time,
+        )
+        clinic_tz = self._clinic_timezone()
+
+        if len(exact_matches) == 1:
+            item = exact_matches[0]
+            display_time = format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+            offered_slots = self._serialize_attributed_offered_slots(
+                [item],
+                specialty_name=specialty_name,
+                display_date=requested_date,
+            )
+            provider_name = item.doctor_name or specialty_name
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
+                content=self._format_exact_time_available_hold_prompt(
+                    provider_name=provider_name,
+                    parsed_date=parsed_requested_date,
+                    display_time=display_time,
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+                },
+                availability_checked=True,
+                offered_slot_count=1,
+            )
+
+        if not exact_matches:
+            alternative_times = [
+                format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+                for item in attributed_slots
+            ]
+            shown_slots = attributed_slots[:_MAX_OFFERED_SLOTS]
+            offered_slots = self._serialize_attributed_offered_slots(
+                shown_slots,
+                specialty_name=specialty_name,
+                display_date=requested_date,
+            ) if shown_slots else []
+            return ChatReceptionistReply(
+                intent=(
+                    ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+                    if not shown_slots
+                    else ChatReceptionistIntent.AVAILABILITY_RESULTS
+                ),
+                content=self._format_exact_time_unavailable_with_alternatives(
+                    provider_name=specialty_name,
+                    parsed_date=parsed_requested_date,
+                    requested_exact_time=requested_exact_time,
+                    alternative_times=alternative_times[:_MAX_OFFERED_SLOTS],
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": (
+                        APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+                        if shown_slots
+                        else APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+                    ),
+                },
+                availability_checked=True,
+                offered_slot_count=len(offered_slots),
+            )
+
+        return None
 
     def _extract_offered_time(self, message: str) -> str | None:
         normalized = normalize_appointment_time_expression(message, allow_bare_hour=True)

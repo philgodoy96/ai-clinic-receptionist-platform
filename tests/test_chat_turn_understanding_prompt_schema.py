@@ -165,6 +165,8 @@ def test_prompt_describes_time_normalization_and_offered_slot_preference() -> No
     assert "selected_slot_reference" in prompt
     assert "not offered" in prompt
     assert "ambiguous_fields" in prompt
+    assert "It could be at 10" in prompt
+    assert "Could it be on Monday 2pm" in prompt
 
 
 def test_existing_receptionist_schema_and_prompt_metadata_remain_unchanged() -> None:

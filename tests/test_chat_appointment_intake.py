@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from uuid import uuid4
 
+import pytest
+
 from app.domain.chat_turn_understanding import (
     ChatTurnIntent,
     ChatTurnUnderstandingRequest,
@@ -964,3 +966,100 @@ def test_backend_does_not_guess_when_multiple_slots_match_time() -> None:
     result = orchestrator.handle(message="that one", chat_context=context)
 
     assert "selected_availability_slot_id" not in result.chat_context_updates
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["It could be at 10", "Could be 10", "at 2pm"],
+)
+def test_backend_selects_unique_slot_from_contextual_time(message: str) -> None:
+    context = _slot_selection_context()
+    if "2pm" in message:
+        expected_slot = "slot-2pm"
+        expected_time = "14:00"
+    else:
+        existing_slots = context["offered_slots"]
+        assert isinstance(existing_slots, list)
+        context["offered_slots"] = [
+            {
+                "availability_slot_id": "slot-10am",
+                "start_time": "2026-07-02T10:00:00+00:00",
+                "display_time": "10:00",
+                "doctor_name": "Dr. Emily Carter",
+            },
+            *existing_slots,
+        ]
+        expected_slot = "slot-10am"
+        expected_time = "10:00"
+
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.9,
+            reason="contextual slot selection",
+            extracted_fields=ExtractedTurnFields(
+                appointment_time=expected_time,
+                appointment_time_raw=message,
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(message=message, chat_context=context)
+
+    assert result.intent == "appointment_intake"
+    assert result.chat_context_updates["selected_availability_slot_id"] == expected_slot
+
+
+def test_backend_rejects_unmatched_contextual_time_with_clarification() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.SLOT_SELECTION,
+            confidence=0.9,
+            reason="contextual slot selection",
+            extracted_fields=ExtractedTurnFields(
+                appointment_time="09:00",
+                appointment_time_raw="It could be at 9",
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(
+        message="It could be at 9",
+        chat_context=_slot_selection_context(),
+    )
+
+    assert result.intent == "clarification"
+    assert "could not match" in (result.content or "").lower()
+    assert "selected_availability_slot_id" not in result.chat_context_updates
+
+
+def test_exact_time_availability_inquiry_sets_requested_exact_time() -> None:
+    interpreter = StubChatTurnUnderstandingInterpreter(
+        ChatTurnUnderstandingResult(
+            intent=ChatTurnIntent.AVAILABILITY_REQUEST,
+            confidence=0.9,
+            reason="exact time availability inquiry",
+            extracted_fields=ExtractedTurnFields(
+                appointment_date="2026-07-06",
+                appointment_date_raw="Monday",
+                appointment_time="14:00",
+                appointment_time_raw="2pm",
+            ),
+        ),
+    )
+    orchestrator = _create_orchestrator(interpreter=interpreter)
+
+    result = orchestrator.handle(
+        message="Could it be on Monday 2pm?",
+        chat_context={
+            "selected_doctor_id": "doctor-1",
+            "selected_doctor_name": "Dr. Emily Carter",
+            "appointment_intake_awaiting": "date_or_time_preference",
+        },
+    )
+
+    assert result.intent == "appointment_intake"
+    assert result.chat_context_updates["requested_date"] == "2026-07-06"
+    assert result.chat_context_updates["requested_exact_time"] == "14:00"
