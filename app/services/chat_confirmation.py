@@ -82,6 +82,47 @@ _RESCHEDULE_REJECTED_PHRASES = (
     "not anymore",
 )
 
+# Plain rejections accepted only while awaiting the FINAL booking confirmation,
+# where a bare "no" unambiguously means "do not book it". These are deliberately
+# kept out of the earlier identity steps (e.g. "have you been seen before?")
+# where a bare "no" answers the question instead of aborting the booking.
+_PLAIN_BOOKING_DENIAL_PHRASES = (
+    "no",
+    "nope",
+    "nah",
+    "no thanks",
+    "no thank you",
+)
+
+# Unambiguous "abort the booking" phrases. Safe to honor at any active booking
+# step (a hold is held) because they cannot be mistaken for a seen-before answer
+# or for identity details. Scoped to the booking flow so cancellation/reschedule
+# confirmation semantics are untouched.
+_EXPLICIT_BOOKING_ABORT_PHRASES = (
+    "don't book it",
+    "do not book it",
+    "dont book it",
+    "don't book",
+    "do not book",
+    "dont book",
+    "i don't want to book it",
+    "i do not want to book it",
+    "i dont want to book it",
+    "i don't want to book",
+    "i do not want to book",
+    "i dont want to book",
+    "don't want to book",
+    "do not want to book",
+    "cancel this booking",
+    "cancel the booking",
+    "cancel booking",
+    "never mind",
+    "nevermind",
+    "stop",
+    "i changed my mind",
+    "changed my mind",
+)
+
 _WANTS_CHANGE_PHRASES = (
     "change",
     "change it",
@@ -186,6 +227,35 @@ def is_confirmation_rejected(
         understand_confirmation(confirmation_type=confirmation_type, message=message).decision
         is ConfirmationDecision.REJECTED
     )
+
+
+def is_explicit_booking_abort(message: str) -> bool:
+    """Unambiguous "abort the booking" request during an active booking flow.
+
+    Matches phrases like "don't book it", "cancel this booking", "never mind",
+    "stop", and "I changed my mind". A bare "no"/"nope" is intentionally NOT
+    treated as an abort here so it can still answer earlier identity prompts
+    (e.g. "have you been seen here before?").
+    """
+    normalized = _normalize_message(message)
+    if not normalized:
+        return False
+    return _match_phrase_list(normalized, _EXPLICIT_BOOKING_ABORT_PHRASES) is not None
+
+
+def is_booking_denial(message: str) -> bool:
+    """Denial while awaiting the FINAL booking confirmation.
+
+    Covers plain rejections ("no", "no thanks") plus the explicit abort phrases.
+    Scoped to the booking flow only, so cancellation/reschedule confirmation
+    semantics are not affected.
+    """
+    normalized = _normalize_message(message)
+    if not normalized:
+        return False
+    if _match_phrase_list(normalized, _PLAIN_BOOKING_DENIAL_PHRASES) is not None:
+        return True
+    return _match_phrase_list(normalized, _EXPLICIT_BOOKING_ABORT_PHRASES) is not None
 
 
 def is_simple_affirmative(message: str) -> bool:

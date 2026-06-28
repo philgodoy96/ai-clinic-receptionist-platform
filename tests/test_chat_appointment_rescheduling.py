@@ -56,6 +56,7 @@ from app.services.time_preferences import TimePreferenceParser
 from tests.clinic_time_test_support import REFERENCE_CLINIC_NOW_UTC
 from tests.test_chat_appointment_cancellation import (
     _add_appointments,
+    _clinic_local_appointment,
     _complete_cancellation,
     _create_chat_service_with_patient,
     _felipe_patient,
@@ -978,7 +979,7 @@ def test_reschedule_selection_zero_match_reprompts() -> None:
         == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
     )
     assert chat_context.get("selected_appointment_id") is None
-    assert "Please choose one of the appointments I listed." in result.reply
+    assert "Please choose one of the listed appointments" in result.reply
 
 
 def test_reschedule_selection_ambiguous_match_asks_clarification() -> None:
@@ -2767,4 +2768,151 @@ def test_reschedule_selection_h_suffix_no_match_does_not_select() -> None:
         == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
     )
     assert chat_context.get("selected_appointment_id") is None
-    assert "Please choose one of the appointments I listed." in result.reply
+    assert "Please choose one of the listed appointments" in result.reply
+
+
+def test_reschedule_selection_combined_phrase_selects_unique_match() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _selection_result, conversation_id = _reach_reschedule_appointment_selection(
+        service,
+        appointments=[
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=10,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=11,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=11,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=14,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=15,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=7,
+                hour=14,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="reschedule the one on Monday at 10 with Dr. Emily",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+    assert "Monday" in chat_context["selected_appointment_summary"]
+    assert "10:00" in chat_context["selected_appointment_summary"]
+    assert "Dr. Emily Carter" in chat_context["selected_appointment_summary"]
+    assert "what day or time" in result.reply.lower()
+
+
+def test_reschedule_new_time_preference_revision_replaces_selected_appointment() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    appointments = [
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=10,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=reed.id,
+            specialty_id=reed.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=11,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=14,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=7,
+            hour=14,
+        ),
+    ]
+    _selection_result, conversation_id = _reach_reschedule_appointment_selection(
+        service,
+        appointments=appointments,
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="Monday at 10", conversation_id=conversation_id),
+    )
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Actually the Tuesday one instead",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+    summary = chat_context["selected_appointment_summary"]
+    assert "Tuesday" in summary
+    assert "14:00" in summary
+    assert "Monday" not in summary
+    assert "what day or time" in result.reply.lower()
