@@ -1,8 +1,8 @@
 # Chat Appointment Management — Contextual Written-Chat Flows
 
-Branch: `feat/contextual-appointment-management-reschedule-flow`
-
 Written chat supports end-to-end **appointment management** in a single conversation: booking, scheduled appointment lookup, rescheduling, and cancellation. These flows use a shared **appointment-management task frame** alongside the separate **appointment intake** frame used for new scheduling.
+
+The written chat is a **deterministic simulator** with state guards around booking, cancellation, rescheduling, lookup, and human escalation. Routing, confirmation gates, and domain execution are backend-controlled. The backend validates conversation state before holds, bookings, cancellations, reschedules, or email jobs run. No destructive domain action occurs until explicit confirmation where required.
 
 Manual testing: [Chat Appointment Management Manual Testing](../testing/chat-appointment-management.md).
 
@@ -16,19 +16,20 @@ Related:
 - [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md) — voice channel uses the same rescheduling domain service
 - [Appointment Slot Holds](appointment-holds.md) — Redis hold model and TTL policy
 
-Retell/voice orchestration is **unchanged** by this slice. Voice remains provider-driven through Retell tool callbacks.
+Retell/voice orchestration is separate from written chat. Voice remains provider-driven through Retell tool callbacks.
 
 ## Feature overview
 
-The written-chat receptionist (`POST /api/v1/chat/messages`) now supports:
+The written-chat receptionist (`POST /api/v1/chat/messages`) supports these **demo flows**:
 
-| Capability | Example user intent |
-| --- | --- |
-| **Book appointments** | `I'd like to schedule with a dermatologist` |
-| **View scheduled appointments** | `show my appointments`, `what appointments do I have?` |
-| **Reschedule appointments** | `reschedule my appointment`, `move my appointment to Wednesday` |
-| **Cancel appointments** | `I want to cancel my appointment` |
-| **Continue after completion** | After booking, cancel, or reschedule completes, the user can start a new intent in the same conversation |
+| Flow | Example user intent | Backend outcome |
+| --- | --- | --- |
+| **Schedule appointment** | `I'd like to schedule with a dermatologist` | Availability → hold → identity → confirmation → appointment + confirmation email job when applicable |
+| **Reschedule appointment** | `reschedule my appointment`, `move my appointment to Wednesday` | Identity → appointment selection → new slot → confirmation → successor appointment + email job when applicable |
+| **Cancel appointment** | `I want to cancel my appointment` | Identity → selection → confirmation → cancelled appointment |
+| **Lookup appointments** | `show my appointments`, `what appointments do I have?` | Identity (if needed) → upcoming scheduled list; follow-up cancel/reschedule supported |
+| **Human handoff request** | `I need to speak to a person` | Handoff priority over active flows; internal escalation record and notification job — no live human in the demo |
+| **Continue after completion** | New intent after a flow completes | Post-completion routing starts the next flow in the same conversation |
 
 All of the above are **written-chat** functionality. The backend orchestrates conversation state, validation, and domain execution. Retell voice uses a separate provider-orchestrated path documented under `docs/operations/retell-*` and `docs/architecture/retell-*`.
 
@@ -132,6 +133,43 @@ Specialized orchestrators:
 
 Internal IDs exist in `chat_context` for backend validation and idempotency. They are **never** included in assistant replies.
 
+## Booking flow behavior
+
+Written-chat booking follows a strict sequence:
+
+1. **Availability lookup** — specialty, doctor, date, and time preferences resolve to offered slots.
+2. **Hold before final booking** — the user selects a specific offered time; the backend creates a Redis hold before identity collection.
+3. **Identity collection only after valid booking context** — offered slots alone do not start identity intake. A bare name opener without scheduling context does not trigger booking identity. Revision or denial phrases are not parsed as patient names.
+4. **Final confirmation** — after identity is complete, the assistant asks for explicit confirmation before creating the appointment.
+5. **Decline at final confirmation** — replying `No` (or equivalent) aborts booking, releases or safely clears the hold, and does **not** create an appointment or confirmation email job.
+
+For manual verification, use seeded demo patients (see [Demo seed data](#demo-seed-data)).
+
+## Reschedule flow behavior
+
+Written-chat rescheduling follows:
+
+1. **Identity verification** — name + DOB (with partial memory and slash-form DOB support such as `1992/09/03`).
+2. **Appointment selection** — when multiple upcoming appointments exist, the user may select by ordinal (`the second one`), weekday/date, time, clinician, or specialty.
+3. **Progressive refinement** — ambiguous matches can be narrowed with follow-up turns before confirmation.
+4. **New slot selection** — availability for the new time; a hold may be placed on the target slot.
+5. **Final confirmation** — explicit confirmation before the domain service moves the appointment.
+6. **Decline during new-slot selection** — replying `No` does **not** reschedule; the original appointment remains unchanged.
+
+## Selection and revision behavior
+
+Selection and revision are allowed **before final confirmation**. No hold refresh, booking, cancellation, or reschedule commit occurs until the user explicitly confirms the pending action.
+
+| Example | Expected behavior |
+| --- | --- |
+| `Tuesday 15` / `Tuesday at 14` | Contextual weekday + bare hour interpreted as clinic-local time (`15:00`, `14:00`) when scheduling context makes the hour unambiguous |
+| `The one on Monday` | Selects from offered appointments or slots by weekday when unambiguous |
+| `The one at 14` | Selects by offered time when unambiguous |
+| `On second thought, I want the one at 14` | Revises the pending slot or appointment selection before confirmation |
+| `Actually, Wednesday` | Revises date preference during intake or offered-slot revision before a hold exists |
+
+Offered-slot revision before a hold exists asks for scheduling clarification rather than jumping to identity intake.
+
 ## Patient identity behavior
 
 Written chat collects patient identity using **full name + date of birth** for lookup, cancel, and reschedule flows. Booking identity intake may also collect email and new-patient details.
@@ -139,7 +177,9 @@ Written chat collects patient identity using **full name + date of birth** for l
 | Behavior | Detail |
 | --- | --- |
 | **Partial identity memory** | If the user provides only name or only DOB, the assistant asks only for the missing field |
+| **Slash-form DOB** | Values such as `1985/04/12` or `1992/09/03` are accepted alongside other supported formats |
 | **Ambiguous numeric DOB** | Values such as `01/02/2000` trigger clarification (MM/DD vs DD/MM) before resolution |
+| **Identity-only fresh openers** | A bare full name at conversation start does not start booking identity without scheduling context |
 | **Resolved patient reuse** | After successful resolution, `resolved_patient_id` and related fields persist in `chat_context` for subsequent lookup, cancel, and reschedule turns in the same conversation |
 | **Ownership validation** | Cancel and reschedule still verify `appointment.patient_id == resolved_patient_id` before domain execution |
 | **Email without redundant confirmation** | When the user types a valid email in written chat, the backend accepts it and moves on — no separate “is that correct?” step for typed addresses |
@@ -214,8 +254,22 @@ Reliability rule: **the assistant prompt must match what the next turn accepts.*
 | Exactly one slot offered + hold prompt | `yes`, `sure`, `that works` create a hold — not generic fallback |
 | Multiple offered slots | User must select explicitly (time, ordinal, or option number); bare `yes` does not silently pick a slot |
 | Flow completed (`*_awaiting = completed`) | Post-completion classifier routes new booking, lookup, cancel, or reschedule intents |
+| Human handoff during active flow | Explicit human request takes priority; active booking/management state yields to escalation |
+| Confirmable intent switch | User may switch between booking, lookup, cancel, and reschedule with confirmation when another flow is active |
+| Fresh conversation, bare `Yes` | Does not trigger orphan booking confirmation without active booking context |
 
 Misaligned prompts are treated as reliability bugs. Backend validation remains authoritative even when turn understanding extracts a candidate.
+
+## Demo seed data
+
+After `python -m scripts.seed_demo_data`, manual written-chat identity verification should use these seeded patients:
+
+| Name | Date of birth | Email |
+| --- | --- | --- |
+| John Miller | 1985-04-12 | `john.miller@example.test` |
+| Ava Thompson | 1992-09-03 | `ava.thompson@example.test` |
+
+These are the canonical demo patients for written-chat lookup, cancel, reschedule, and returning-patient booking tests. Do not assume other sample names such as John Smith or Felipe Marques exist in seed data unless you create them during the session.
 
 ## Local demo behavior
 
@@ -235,19 +289,24 @@ RETELL_ENABLED=false
 
 See [Local Development](../operations/local-development.md).
 
-## Limitations and roadmap
+## Demo limitations and safety scope
 
-| Item | Status |
+The written-chat demo is intentionally scoped:
+
+| Topic | Demo scope |
 | --- | --- |
-| Retell/voice integration | Provider-driven and separate; unchanged by this slice |
-| Human agent in demo | No real human agent; escalation creates internal records and simulated notification jobs |
-| Public frontend demo | `web/` shell exists; richer patient-portal UX is out of scope |
-| Real provider integrations | Require auth, rate limits, and cost controls for public exposure |
-| Third-party / family patient management | Not supported |
-| Patient portal features | Scheduled lookup only; richer portal features are out of scope |
-| Patient-aware hold recovery (voice) | Not implemented for Retell; written chat refreshes holds at booking confirmation only |
-| Hold renewal with max absolute timeout | Future work |
-| Timezone/seed presentation audit | Demo slot display may need alignment review |
+| **Conversational model** | Deterministic written-chat simulator with backend state guards — not a full production conversational AI |
+| **Voice / agent layer** | Retell and LLM adapters represent the real integration boundary; voice remains provider-orchestrated separately |
+| **Human escalation** | Creates an internal record and notification job path; does not connect to a live human agent in the demo |
+| **Clinical use** | Not intended for clinical advice, diagnosis, emergency triage, or medical decision support |
+| **Patient profile updates** | Changing email, address, insurance, or medical record details is outside demo scope |
+| **Moderation and recovery** | Advanced unsafe-message moderation, abusive-message policy, and repeated-failure conversational recovery are outside demo scope |
+| **Demo focus** | Appointment workflow reliability, state handling, confirmation boundaries, and backend execution safety |
+| **Third-party / family patients** | Not supported |
+| **Patient portal** | Scheduled lookup only; richer portal features are outside demo scope |
+| **Public frontend** | `web/` shell for portfolio demo; not a full patient portal |
+
+Retell/voice integration, real provider keys on public routes, and hold-renewal policies remain separate production-hardening concerns documented under voice and operations guides.
 
 ## Relationship to appointment intake
 
