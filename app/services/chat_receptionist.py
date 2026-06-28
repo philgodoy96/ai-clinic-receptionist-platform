@@ -145,6 +145,7 @@ from app.services.conversation_health import (
     ConversationHealthResult,
     ConversationHealthService,
     EscalationReason,
+    detect_explicit_human_request,
 )
 from app.services.conversations import (
     ConversationCreate,
@@ -550,6 +551,15 @@ def _cleared_completed_flow_for_new_intent_updates() -> dict[str, Any]:
         **_cleared_appointment_management_completed_flow_updates(),
         "appointment_id": None,
         "booking_identity_step": None,
+    }
+
+
+def _cleared_active_flow_for_escalation_updates() -> dict[str, Any]:
+    """Clear sticky flow keys after human escalation without releasing active holds."""
+    return {
+        **_cleared_appointment_management_completed_flow_updates(),
+        "booking_identity_step": None,
+        "pending_confirmation_email": None,
     }
 
 
@@ -1321,12 +1331,23 @@ class ChatReceptionistService:
                     )
                 else:
                     slot_filling_result = self._skipped_slot_filling_result()
-        reply = self._generate_reply(
-            payload.message,
-            conversation,
-            request_patient_id=payload.patient_id,
-        )
-        if reply.chat_context_updates:
+        normalized_message = payload.message.lower()
+        explicit_human_request = detect_explicit_human_request(payload.message)
+        if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
+            reply = self.responder.generate_reply(message=payload.message)
+        elif explicit_human_request:
+            reply = self._build_user_requested_human_escalation_reply()
+            conversation = self.conversations.update_conversation_status(
+                conversation_id=conversation.id,
+                status=ConversationStatus.ESCALATED,
+            )
+        else:
+            reply = self._generate_reply(
+                payload.message,
+                conversation,
+                request_patient_id=payload.patient_id,
+            )
+        if reply.chat_context_updates and not explicit_human_request:
             conversation = self.conversations.merge_chat_context(
                 conversation_id=conversation.id,
                 chat_context=reply.chat_context_updates,
@@ -1365,6 +1386,17 @@ class ChatReceptionistService:
                 human_handoff_notification_email_job_id = (
                     escalation_recording.notification_email_job_id
                 )
+
+        if (
+            health_result is not None
+            and health_result.should_escalate_immediately
+            and health_result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN
+            and reply.chat_context_updates
+        ):
+            conversation = self.conversations.merge_chat_context(
+                conversation_id=conversation.id,
+                chat_context=reply.chat_context_updates,
+            )
 
         generated_response = render_chat_reply(
             chat_reply_snapshot_from_reply(reply),
@@ -1497,27 +1529,16 @@ class ChatReceptionistService:
     ) -> tuple[ChatReceptionistReply, Conversation]:
         if health_result.should_escalate_immediately:
             if health_result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN:
-                conversation = self.conversations.update_conversation_status(
-                    conversation_id=conversation.id,
-                    status=ConversationStatus.ESCALATED,
-                )
+                if conversation.status != ConversationStatus.ESCALATED:
+                    conversation = self.conversations.update_conversation_status(
+                        conversation_id=conversation.id,
+                        status=ConversationStatus.ESCALATED,
+                    )
+                if reply.intent == ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED:
+                    return reply, conversation
+
                 return (
-                    replace(
-                        reply,
-                        intent=ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED,
-                        content=_HUMAN_HANDOFF_MESSAGE,
-                        chat_context_updates={},
-                        availability_checked=False,
-                        offered_slot_count=None,
-                        hold_created=None,
-                        hold_id=None,
-                        appointment_id=None,
-                        booking_attempted=False,
-                        booking_confirmed=False,
-                        booked_patient_id=None,
-                        booked_appointment_start_time=None,
-                        pending_hold_release=None,
-                    ),
+                    self._build_user_requested_human_escalation_reply(),
                     conversation,
                 )
 
@@ -1539,6 +1560,23 @@ class ChatReceptionistService:
             )
 
         return reply, conversation
+
+    def _build_user_requested_human_escalation_reply(self) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED,
+            content=_HUMAN_HANDOFF_MESSAGE,
+            chat_context_updates=_cleared_active_flow_for_escalation_updates(),
+            availability_checked=False,
+            offered_slot_count=None,
+            hold_created=None,
+            hold_id=None,
+            appointment_id=None,
+            booking_attempted=False,
+            booking_confirmed=False,
+            booked_patient_id=None,
+            booked_appointment_start_time=None,
+            pending_hold_release=None,
+        )
 
     def _record_human_escalation_if_needed(
         self,
