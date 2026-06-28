@@ -29,6 +29,7 @@ from app.services.conversations import ConversationService
 from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     EmailJobService,
+    build_appointment_confirmation_idempotency_key,
 )
 from app.services.scheduling import SchedulingService
 from tests.chat_booking_flow_support import (
@@ -383,7 +384,142 @@ def test_successful_booking_api_creates_confirmation_email_job() -> None:
     assert body["confirmation_email_queued"] is True
     assert email_jobs is not None
     assert len(email_jobs.jobs) == 1
-    assert email_jobs.jobs[0].payload["source"] == "chat_booking"
+    email_job = email_jobs.jobs[0]
+    assert email_job.payload["source"] == "chat_booking"
+    assert email_job.recipient_email == "jane.doe@example.com"
+    assert email_job.payload["patient_name"] == "Jane Doe"
+    assert email_job.payload["doctor_name"] == "Dr. Emily Carter"
+    assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        email_job.appointment_id,
+    )
+    assert "Jane Doe" in email_job.body
+    assert "Dr. Emily Carter" in email_job.body
+
+
+def test_chat_booking_confirmation_email_enqueue_is_idempotent() -> None:
+    from uuid import UUID, uuid4
+
+    from app.api.routes.chat import _enqueue_confirmation_email_if_allowed
+    from tests.demo_guardrail_support import (
+        FakeRedisClient,
+        make_disabled_guardrail_settings,
+        make_service,
+    )
+    from tests.test_email_jobs import FakeEmailJobRepository
+
+    appointment_id = uuid4()
+    patient_id = uuid4()
+    conversation_id = uuid4()
+    repository = FakeEmailJobRepository()
+    email_jobs = EmailJobService(repository=repository)
+    guardrails = make_service(FakeRedisClient(), settings=make_disabled_guardrail_settings())
+
+    def enqueue() -> tuple[UUID | None, bool]:
+        return _enqueue_confirmation_email_if_allowed(
+            guardrails=guardrails,
+            client_ip="127.0.0.1",
+            email_jobs=email_jobs,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            appointment_start_time="2026-07-02T09:00:00+00:00",
+            conversation_id=conversation_id,
+            hold_id="hold-1",
+            recipient_email="jane.doe@example.com",
+            patient_name="Jane Doe",
+            doctor_name="Dr. Emily Carter",
+            specialty_name="Dermatology",
+        )
+
+    first_job_id, first_queued = enqueue()
+    second_job_id, second_queued = enqueue()
+
+    assert first_queued is True
+    assert second_queued is True
+    assert first_job_id == second_job_id
+    assert len(repository.email_jobs) == 1
+    assert repository.email_jobs[0].idempotency_key == (
+        f"appointment_confirmation:{appointment_id}"
+    )
+
+
+def test_chat_booking_does_not_call_resend_directly() -> None:
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    from tests.demo_guardrail_support import (
+        create_guarded_chat_app,
+        make_chat_booking_guardrail_settings,
+    )
+
+    app, _, email_jobs = create_guarded_chat_app(
+        make_chat_booking_guardrail_settings(),
+        track_email_jobs=True,
+    )
+
+    with patch("app.email.resend_provider.ResendEmailProvider.send") as resend_send:
+        with TestClient(app) as client:
+            availability = client.post(
+                "/api/v1/chat/messages",
+                json={"message": "Dr. Emily Carter on 2026-07-02"},
+            )
+            conversation_id = availability.json()["conversation_id"]
+            client.post(
+                "/api/v1/chat/messages",
+                json={
+                    "message": "I'll take 09:00",
+                    "conversation_id": conversation_id,
+                },
+            )
+            booking = _post_new_patient_booking_messages(client, conversation_id)
+
+    app.dependency_overrides.clear()
+
+    assert booking.status_code == 200
+    assert booking.json()["booking_confirmed"] is True
+    resend_send.assert_not_called()
+    assert email_jobs is not None
+    assert len(email_jobs.jobs) == 1
+    assert email_jobs.jobs[0].recipient_email == "jane.doe@example.com"
+
+
+def test_extract_chat_confirmation_email_context_uses_confirmed_booking_email() -> None:
+    from app.api.routes.chat import _extract_chat_confirmation_email_context
+
+    recipient_email, patient_name, doctor_name, specialty_name = (
+        _extract_chat_confirmation_email_context(
+            {
+                "confirmed_booking_email": "jane.doe@example.com",
+                "resolved_patient_name": "Jane Doe",
+                "selected_doctor_name": "Dr. Emily Carter",
+                "selected_specialty_name": "Dermatology",
+            },
+        )
+    )
+
+    assert recipient_email == "jane.doe@example.com"
+    assert patient_name == "Jane Doe"
+    assert doctor_name == "Dr. Emily Carter"
+    assert specialty_name == "Dermatology"
+
+
+def test_extract_chat_confirmation_email_context_falls_back_to_patient_identity_name() -> None:
+    from app.api.routes.chat import _extract_chat_confirmation_email_context
+
+    recipient_email, patient_name, doctor_name, specialty_name = (
+        _extract_chat_confirmation_email_context(
+            {
+                "confirmed_booking_email": "jane.doe@example.com",
+                "patient_identity": {"full_name": "Jane Doe"},
+                "selected_doctor_name": "Dr. Emily Carter",
+            },
+        )
+    )
+
+    assert recipient_email == "jane.doe@example.com"
+    assert patient_name == "Jane Doe"
+    assert doctor_name == "Dr. Emily Carter"
+    assert specialty_name is None
 
 
 def test_dispatch_publish_failure_does_not_rollback_booking() -> None:

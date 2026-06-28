@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
@@ -86,6 +86,10 @@ def send_chat_message(
             and result.booked_appointment_start_time is not None
         ):
             guardrails.record_appointment_created(client_ip)
+            chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+            recipient_email, patient_name, doctor_name, specialty_name = (
+                _extract_chat_confirmation_email_context(chat_context)
+            )
             confirmation_email_job_id, confirmation_email_queued = (
                 _enqueue_confirmation_email_if_allowed(
                     guardrails=guardrails,
@@ -96,6 +100,10 @@ def send_chat_message(
                     appointment_start_time=result.booked_appointment_start_time.isoformat(),
                     conversation_id=result.conversation.id,
                     hold_id=result.hold_id_to_release,
+                    recipient_email=recipient_email,
+                    patient_name=patient_name,
+                    doctor_name=doctor_name,
+                    specialty_name=specialty_name,
                 )
             )
 
@@ -189,6 +197,30 @@ def send_chat_message(
     )
 
 
+def _optional_chat_context_str(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def _extract_chat_confirmation_email_context(
+    chat_context: dict[str, Any],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    recipient_email = _optional_chat_context_str(chat_context.get("confirmed_booking_email"))
+
+    patient_name = _optional_chat_context_str(chat_context.get("resolved_patient_name"))
+    if patient_name is None:
+        patient_identity = chat_context.get("patient_identity")
+        if isinstance(patient_identity, dict):
+            patient_name = _optional_chat_context_str(patient_identity.get("full_name"))
+
+    doctor_name = _optional_chat_context_str(chat_context.get("selected_doctor_name"))
+    specialty_name = _optional_chat_context_str(chat_context.get("selected_specialty_name"))
+
+    return recipient_email, patient_name, doctor_name, specialty_name
+
+
 def _enqueue_confirmation_email_if_allowed(
     *,
     guardrails: DemoGuardrailService,
@@ -199,6 +231,10 @@ def _enqueue_confirmation_email_if_allowed(
     appointment_start_time: str,
     conversation_id: UUID,
     hold_id: str | None,
+    recipient_email: str | None = None,
+    patient_name: str | None = None,
+    doctor_name: str | None = None,
+    specialty_name: str | None = None,
 ) -> tuple[UUID | None, bool]:
     idempotency_key = build_appointment_confirmation_idempotency_key(appointment_id)
     existing = email_jobs.get_by_idempotency_key(
@@ -234,16 +270,23 @@ def _enqueue_confirmation_email_if_allowed(
         )
         return None, False
 
+    job_payload: dict[str, Any] = {
+        "source": CHAT_BOOKING_SOURCE,
+        "hold_id": hold_id,
+        "conversation_id": str(conversation_id),
+    }
+    if specialty_name is not None:
+        job_payload["specialty_name"] = specialty_name
+
     result = email_jobs.get_or_create_appointment_confirmation_email_job(
         AppointmentConfirmationEmailJobCreate(
             appointment_id=appointment_id,
             patient_id=patient_id,
+            recipient_email=recipient_email,
+            patient_name=patient_name,
+            doctor_name=doctor_name,
             appointment_start_time=appointment_start_time,
-            payload={
-                "source": CHAT_BOOKING_SOURCE,
-                "hold_id": hold_id,
-                "conversation_id": str(conversation_id),
-            },
+            payload=job_payload,
         ),
     )
     if result.created:
