@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from app.domain.appointment_rescheduling import (
@@ -33,6 +34,8 @@ from app.repositories.scheduling import (
     AppointmentRepository,
     AvailabilitySlotRepository,
     DoctorRepository,
+    PatientRepository,
+    SpecialtyRepository,
 )
 from app.services.appointment_holds import (
     AppointmentHoldMismatchError,
@@ -67,6 +70,8 @@ class AppointmentReschedulingService:
         audit_logs: AuditLogService,
         conversations: ConversationService | None = None,
         email_jobs: EmailJobService | None = None,
+        patients: PatientRepository | None = None,
+        specialties: SpecialtyRepository | None = None,
     ) -> None:
         self.appointments = appointments
         self.availability_slots = availability_slots
@@ -76,6 +81,8 @@ class AppointmentReschedulingService:
         self.audit_logs = audit_logs
         self.conversations = conversations
         self.email_jobs = email_jobs
+        self.patients = patients
+        self.specialties = specialties
 
     def reschedule_appointment(
         self,
@@ -369,19 +376,66 @@ class AppointmentReschedulingService:
         if self.email_jobs is None:
             return False
 
-        email_job_result = self.email_jobs.get_or_create_appointment_confirmation_email_job(
-            AppointmentConfirmationEmailJobCreate(
-                appointment_id=new_appointment.id,
-                patient_id=new_appointment.patient_id,
-                appointment_start_time=new_appointment.start_time.isoformat(),
-                payload={
-                    "source": request.source or APPOINTMENT_RESCHEDULING_SOURCE,
-                    "original_appointment_id": str(request.appointment_id),
-                    "conversation_id": request.conversation_id,
-                },
-            ),
-        )
+        try:
+            email_job_result = self.email_jobs.get_or_create_appointment_confirmation_email_job(
+                self._build_reschedule_confirmation_email_job_create(
+                    request=request,
+                    new_appointment=new_appointment,
+                ),
+            )
+        except Exception:
+            return False
+
         return email_job_result.created
+
+    def _build_reschedule_confirmation_email_job_create(
+        self,
+        *,
+        request: AppointmentReschedulingRequest,
+        new_appointment: Appointment,
+    ) -> AppointmentConfirmationEmailJobCreate:
+        recipient_email: str | None = None
+        patient_name: str | None = None
+        if self.patients is not None:
+            patient = self.patients.get_by_id(new_appointment.patient_id)
+            if patient is not None:
+                recipient_email = _optional_non_empty_str(patient.email)
+                patient_name = _optional_non_empty_str(patient.full_name)
+
+        doctor_name: str | None = None
+        doctor = self.doctors.get_by_id(new_appointment.doctor_id)
+        if doctor is not None:
+            doctor_name = _optional_non_empty_str(doctor.full_name)
+
+        job_payload: dict[str, Any] = {
+            "source": request.source or APPOINTMENT_RESCHEDULING_SOURCE,
+            "confirmation_reason": "reschedule",
+            "original_appointment_id": str(request.appointment_id),
+            "conversation_id": request.conversation_id,
+        }
+        specialty_name = self._resolve_specialty_name(new_appointment.specialty_id)
+        if specialty_name is not None:
+            job_payload["specialty_name"] = specialty_name
+
+        return AppointmentConfirmationEmailJobCreate(
+            appointment_id=new_appointment.id,
+            patient_id=new_appointment.patient_id,
+            recipient_email=recipient_email,
+            patient_name=patient_name,
+            doctor_name=doctor_name,
+            appointment_start_time=new_appointment.start_time.isoformat(),
+            payload=job_payload,
+        )
+
+    def _resolve_specialty_name(self, specialty_id: UUID) -> str | None:
+        if self.specialties is None:
+            return None
+
+        specialty = self.specialties.get_by_id(specialty_id)
+        if specialty is None:
+            return None
+
+        return _optional_non_empty_str(specialty.name)
 
     def _update_conversation_metadata_best_effort(
         self,
@@ -549,3 +603,11 @@ class AppointmentReschedulingService:
                 already_rescheduled=already_rescheduled,
             ),
         )
+
+
+def _optional_non_empty_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    stripped = value.strip()
+    return stripped or None
