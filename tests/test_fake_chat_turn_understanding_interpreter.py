@@ -465,3 +465,18 @@ def test_does_not_expose_side_effect_action_fields() -> None:
 
     dumped = result.model_dump()
     assert SIDE_EFFECT_FIELD_NAMES.isdisjoint(dumped.keys())
+
+
+def test_classifies_scheduled_appointment_lookup_as_list_appointments() -> None:
+    result = _interpret(
+        "Sure, I'd like to see what my scheduled appointments are",
+        allowed_intents=[
+            ChatTurnIntent.APPOINTMENT_REQUEST,
+            ChatTurnIntent.CANCEL_REQUEST,
+            ChatTurnIntent.RESCHEDULE_REQUEST,
+            ChatTurnIntent.LIST_APPOINTMENTS,
+            ChatTurnIntent.FALLBACK,
+        ],
+    )
+
+    assert result.intent is ChatTurnIntent.LIST_APPOINTMENTS

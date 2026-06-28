@@ -23,6 +23,7 @@ class ConversationState(StrEnum):
     CONFIRMING_BOOKING = "confirming_booking"
     CANCELLATION_INTAKE = "cancellation_intake"
     RESCHEDULE_INTAKE = "reschedule_intake"
+    APPOINTMENT_LOOKUP_INTAKE = "appointment_lookup_intake"
     ESCALATED = "escalated"
 
 
@@ -49,6 +50,7 @@ class ChatTurnIntent(StrEnum):
     CHANGE_REQUEST = "change_request"
     CANCEL_REQUEST = "cancel_request"
     RESCHEDULE_REQUEST = "reschedule_request"
+    LIST_APPOINTMENTS = "list_appointments"
     HUMAN_ESCALATION_REQUEST = "human_escalation_request"
     EMERGENCY = "emergency"
     FALLBACK = "fallback"

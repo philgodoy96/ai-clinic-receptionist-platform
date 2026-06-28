@@ -69,6 +69,7 @@ class FakeChatTurnUnderstandingInterpreter:
             self._try_change_request,
             self._try_confirmation,
             self._try_patient_status_and_identity,
+            self._try_list_appointments,
             self._try_exact_time_availability_inquiry,
             self._try_slot_selection,
             self._try_appointment_request,
@@ -266,6 +267,38 @@ class FakeChatTurnUnderstandingInterpreter:
             extracted_fields=extracted,
             ambiguous_fields=ambiguous_fields,
             patient_status_answer=patient_status_answer,
+        )
+
+    def _try_list_appointments(
+        self,
+        request: ChatTurnUnderstandingRequest,
+        message: str,
+        normalized: str,
+    ) -> ChatTurnUnderstandingResult | None:
+        del request, message
+        lookup_phrases = (
+            "show my scheduled appointments",
+            "see my scheduled appointments",
+            "what my scheduled appointments",
+            "see what my scheduled appointments",
+            "what appointments do i have",
+            "what are my upcoming appointments",
+            "can i see my appointments",
+            "do i have any appointments scheduled",
+            "list my appointments",
+            "my upcoming appointments",
+            "my scheduled appointments",
+        )
+        if not any(phrase in normalized for phrase in lookup_phrases):
+            return None
+
+        if any(keyword in normalized for keyword in ("cancel", "cancellation", "reschedule")):
+            return None
+
+        return self._build_result(
+            ChatTurnIntent.LIST_APPOINTMENTS,
+            confidence=0.9,
+            reason="User asked to view or list their scheduled appointments.",
         )
 
     def _try_slot_selection(

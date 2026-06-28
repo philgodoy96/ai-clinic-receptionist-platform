@@ -83,6 +83,18 @@ from app.services.chat_appointment_intake import (
     ChatAppointmentIntakeOrchestrator,
     ChatAppointmentIntakeResult,
 )
+from app.services.chat_appointment_lookup import (
+    _LOOKUP_IDENTITY_DOB_ONLY_MESSAGE,
+    _LOOKUP_IDENTITY_ENTRY_MESSAGE,
+    _LOOKUP_IDENTITY_NAME_ONLY_MESSAGE,
+    _LOOKUP_IDENTITY_REPROMPT_MESSAGE,
+    APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
+    ChatAppointmentLookupOrchestrator,
+    LookupFlowResult,
+)
+from app.services.chat_appointment_lookup import (
+    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY as LOOKUP_AWAITING_PATIENT_IDENTITY,
+)
 from app.services.chat_appointment_rescheduling import (
     APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
@@ -214,6 +226,20 @@ _RESCHEDULE_KEYWORDS = [
     "move appointment",
     "move my appointment",
     "move an appointment",
+]
+_APPOINTMENT_LOOKUP_PHRASES = [
+    "show my scheduled appointments",
+    "see my scheduled appointments",
+    "what my scheduled appointments",
+    "see what my scheduled appointments",
+    "what appointments do i have",
+    "what are my upcoming appointments",
+    "can i see my appointments",
+    "do i have any appointments scheduled",
+    "list my appointments",
+    "view my appointments",
+    "my upcoming appointments",
+    "my scheduled appointments",
 ]
 _CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
     "Of course. I can look it up first. What is the patient's full name and date of birth?"
@@ -471,6 +497,24 @@ def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None
     return resolved[1]
 
 
+def _is_appointment_lookup_request(normalized_message: str) -> bool:
+    if any(keyword in normalized_message for keyword in _CANCEL_KEYWORDS):
+        return False
+    if any(keyword in normalized_message for keyword in _RESCHEDULE_KEYWORDS):
+        return False
+    if any(phrase in normalized_message for phrase in _APPOINTMENT_LOOKUP_PHRASES):
+        return True
+    if "book" in normalized_message and "appointment" in normalized_message:
+        return False
+    if "upcoming" in normalized_message and "appointment" in normalized_message:
+        return True
+    if "scheduled" in normalized_message and "appointment" in normalized_message:
+        viewing_verbs = ("see", "show", "list", "view", "check", "look up", "lookup")
+        if any(verb in normalized_message for verb in viewing_verbs):
+            return True
+    return False
+
+
 def _parse_natural_date_of_birth(message: str) -> str | None:
     match = _NATURAL_DOB_PATTERN.search(message)
     if match is None:
@@ -582,6 +626,18 @@ def _is_in_post_cancellation_frame(chat_context: dict[str, Any]) -> bool:
     return True
 
 
+def _is_awaiting_lookup_patient_identity(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_LOOKUP
+        and chat_context.get("appointment_management_awaiting")
+        == LOOKUP_AWAITING_PATIENT_IDENTITY
+    )
+
+
+def _is_in_lookup_flow(chat_context: dict[str, Any]) -> bool:
+    return _is_awaiting_lookup_patient_identity(chat_context)
+
+
 def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
     if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_CANCEL:
         return False
@@ -689,6 +745,20 @@ def _resolve_contextual_fallback_reply(
             _CANCELLATION_CONFIRMATION_REPROMPT,
         )
 
+    if _is_awaiting_lookup_patient_identity(chat_context):
+        identity_raw = chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY)
+        identity = identity_raw if isinstance(identity_raw, dict) else {}
+        prompt = appointment_management_missing_identity_prompt(
+            identity,
+            both_prompt=_LOOKUP_IDENTITY_REPROMPT_MESSAGE,
+            name_prompt=_LOOKUP_IDENTITY_NAME_ONLY_MESSAGE,
+            dob_prompt=_LOOKUP_IDENTITY_DOB_ONLY_MESSAGE,
+        )
+        return (
+            ChatReceptionistIntent.LIST_APPOINTMENTS,
+            prompt or _LOOKUP_IDENTITY_REPROMPT_MESSAGE,
+        )
+
     if chat_context.get("appointment_id"):
         return None
 
@@ -729,6 +799,7 @@ class ChatReceptionistIntent(StrEnum):
     APPOINTMENT_REQUEST = "appointment_request"
     CANCEL_REQUEST = "cancel_request"
     RESCHEDULE_REQUEST = "reschedule_request"
+    LIST_APPOINTMENTS = "list_appointments"
     EMERGENCY = "emergency"
     LIST_SPECIALTIES = "list_specialties"
     LIST_DOCTORS = "list_doctors"
@@ -1075,6 +1146,13 @@ class ChatReceptionistService:
             appointment_holds=appointment_holds,
             appointment_rescheduling=appointment_rescheduling,
             chat_appointment_hold_ttl_seconds=chat_appointment_hold_ttl_seconds,
+        )
+        self._appointment_lookup = ChatAppointmentLookupOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            appointments=scheduling.appointments,
+            scheduling_metadata=scheduling,
+            clinic_time_service=effective_clinic_time,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
         )
 
     def _clinic_timezone(self) -> ZoneInfo:
@@ -1577,6 +1655,15 @@ class ChatReceptionistService:
                 ),
             )
 
+        if _is_in_lookup_flow(existing_context):
+            return finish(
+                self._handle_lookup_flow(
+                    message=message,
+                    conversation=conversation,
+                    chat_context=existing_context,
+                ),
+            )
+
         if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
             return finish(
                 self._enter_cancellation_task_frame(
@@ -1589,6 +1676,15 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
             return finish(
                 self._enter_reschedule_task_frame(
+                    context_updates={},
+                    message=message,
+                    chat_context=existing_context,
+                ),
+            )
+
+        if _is_appointment_lookup_request(normalized_message):
+            return finish(
+                self._enter_lookup_task_frame(
                     context_updates={},
                     message=message,
                     chat_context=existing_context,
@@ -2366,6 +2462,75 @@ class ChatReceptionistService:
                     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
                 ),
                 # Start the intake with a clean partial-identity buffer.
+                APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
+            },
+        )
+
+    def _handle_lookup_flow(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        awaiting = chat_context.get("appointment_management_awaiting")
+        if awaiting == LOOKUP_AWAITING_PATIENT_IDENTITY:
+            flow = self._appointment_lookup.handle_patient_identity_intake(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+                parse_patient_fields=self._parse_booking_patient_fields,
+            )
+            return self._lookup_flow_result_to_reply(flow)
+
+        return self._enter_lookup_task_frame(
+            context_updates={},
+            message=message,
+            chat_context=chat_context,
+        )
+
+    def _lookup_flow_result_to_reply(
+        self,
+        flow: LookupFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+        )
+
+    def _enter_lookup_task_frame(
+        self,
+        *,
+        context_updates: dict[str, Any],
+        message: str = "",
+        chat_context: dict[str, Any] | None = None,
+    ) -> ChatReceptionistReply:
+        if chat_context is not None and not self._wants_different_patient(
+            message=message,
+            chat_context=chat_context,
+        ):
+            reuse = self._appointment_lookup.list_appointments_for_resolved_patient(
+                chat_context=chat_context,
+            )
+            if reuse is not None:
+                if context_updates:
+                    reuse = replace(
+                        reuse,
+                        chat_context_updates={
+                            **context_updates,
+                            **reuse.chat_context_updates,
+                        },
+                    )
+                return self._lookup_flow_result_to_reply(reuse)
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+            content=_LOOKUP_IDENTITY_ENTRY_MESSAGE,
+            chat_context_updates={
+                **context_updates,
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
+                "appointment_management_awaiting": LOOKUP_AWAITING_PATIENT_IDENTITY,
                 APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
             },
         )
