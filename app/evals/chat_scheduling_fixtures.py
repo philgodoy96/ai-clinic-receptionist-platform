@@ -316,8 +316,24 @@ class _EvalAppointmentRepository:
                 appointment
                 for appointment in self.appointments
                 if appointment.patient_id == patient_id
-                and appointment.status
-                in (AppointmentStatus.SCHEDULED, AppointmentStatus.RESCHEDULED)
+                and appointment.status == AppointmentStatus.SCHEDULED
+                and appointment.start_time >= start_from
+            ),
+            key=lambda appointment: appointment.start_time,
+        )
+
+    def list_reschedulable_for_patient(
+        self,
+        *,
+        patient_id: UUID,
+        start_from: datetime,
+    ) -> Sequence[Appointment]:
+        return sorted(
+            (
+                appointment
+                for appointment in self.appointments
+                if appointment.patient_id == patient_id
+                and appointment.status == AppointmentStatus.SCHEDULED
                 and appointment.start_time >= start_from
             ),
             key=lambda appointment: appointment.start_time,
@@ -465,15 +481,15 @@ def _create_eval_scheduling_service() -> SchedulingService:
         AvailabilitySlot(
             id=_EMILY_JULY_SLOT_1_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
-            end_time=datetime(2026, 7, 2, 9, 30, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
+            end_time=datetime(2026, 7, 2, 13, 30, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
         AvailabilitySlot(
             id=_EMILY_JULY_SLOT_2_ID,
             doctor_id=emily_carter.id,
-            start_time=datetime(2026, 7, 2, 10, 30, tzinfo=UTC),
-            end_time=datetime(2026, 7, 2, 11, 0, tzinfo=UTC),
+            start_time=datetime(2026, 7, 2, 14, 30, tzinfo=UTC),
+            end_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
             status=AvailabilitySlotStatus.AVAILABLE,
         ),
     ]
@@ -514,10 +530,14 @@ def _create_chat_receptionist_service(
     )
     from typing import cast
 
+    from app.services.appointment_rescheduling import AppointmentReschedulingService
     from app.services.audit_logs import AuditLogService
     from tests.test_appointment_booking_api import FakeAuditLogService
     from tests.test_appointment_cancellation_service import (
         FakeAppointmentCancellationAttemptRepository,
+    )
+    from tests.test_appointment_rescheduling_service import (
+        FakeAppointmentRescheduleAttemptRepository,
     )
 
     cancellation = AppointmentCancellationService(
@@ -525,6 +545,15 @@ def _create_chat_receptionist_service(
         cancellation_attempts=FakeAppointmentCancellationAttemptRepository(),
         audit_logs=cast(AuditLogService, FakeAuditLogService()),
         availability_slots=scheduling.availability_slots,
+    )
+    rescheduling = AppointmentReschedulingService(
+        appointments=scheduling.appointments,
+        availability_slots=scheduling.availability_slots,
+        doctors=scheduling.doctors,
+        hold_service=holds,
+        reschedule_attempts=FakeAppointmentRescheduleAttemptRepository(),
+        audit_logs=cast(AuditLogService, FakeAuditLogService()),
+        conversations=conversations,
     )
     return ChatReceptionistService(
         conversations=conversations,
@@ -545,6 +574,7 @@ def _create_chat_receptionist_service(
             ),
         ),
         appointment_cancellation=cancellation,
+        appointment_rescheduling=rescheduling,
     )
 
 

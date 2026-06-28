@@ -229,13 +229,12 @@ Set `CHAT_TURN_UNDERSTANDING_INTERPRETER=fake`, restart the API, and run the seq
 
 ## Out of scope / follow-ups
 
-- **Cancel contextual task frame** — implemented; see [Chat Cancellation Flow Manual Testing](chat-cancellation-flow.md).
-- **Reschedule contextual task frame** — future slice; current reschedule paths unchanged.
+- **Appointment management flows** — booking, lookup, cancel, and reschedule are documented in [Chat Appointment Management Manual Testing](chat-appointment-management.md).
 - **Timezone/seed audit** — future slice; demo availability display may be offset if UTC storage and clinic-local time are not aligned. Do not treat as fixed in this branch.
 - **No second LLM response composer** — reply phrasing remains deterministic by default.
 - **Retell voice flow** — not modified.
 - **Public demos with real LLM providers** — require auth, rate limits, and cost controls.
-- **Post-booking lifecycle** — currently handled as a small state-aware conversation closure; broader multi-intent post-booking flows can expand in future appointment-management work.
+- **Post-booking lifecycle** — post-completion routing supports new booking, lookup, cancel, and reschedule intents in the same conversation. See [Chat Appointment Management Manual Testing](chat-appointment-management.md).
 
 ## Automated coverage
 

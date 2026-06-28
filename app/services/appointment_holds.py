@@ -61,6 +61,7 @@ class AppointmentHoldService:
         start_time: datetime,
         end_time: datetime,
         owner_id: str,
+        ttl_seconds: int | None = None,
     ) -> AppointmentHold:
         normalized_owner_id = owner_id.strip()
 
@@ -78,8 +79,12 @@ class AppointmentHoldService:
             owner_id=normalized_owner_id,
         )
 
+        effective_ttl_seconds = self.ttl_seconds if ttl_seconds is None else ttl_seconds
+        if effective_ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be greater than zero")
+
         try:
-            created = self.repository.create(hold, ttl_seconds=self.ttl_seconds)
+            created = self.repository.create(hold, ttl_seconds=effective_ttl_seconds)
         except RedisError as exc:
             raise AppointmentHoldStoreUnavailableError(
                 "appointment hold store is unavailable",

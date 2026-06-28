@@ -10,7 +10,7 @@ from app.services.post_completion_turn_classification import (
 )
 
 
-class PostCancellationTurnDecision(StrEnum):
+class PostRescheduleTurnDecision(StrEnum):
     END_CONVERSATION = "end_conversation"
     NEEDS_MORE_HELP = "needs_more_help"
     NEW_SCHEDULING_REQUEST = "new_scheduling_request"
@@ -21,43 +21,43 @@ class PostCancellationTurnDecision(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class PostCancellationTurnUnderstanding:
-    decision: PostCancellationTurnDecision
+class PostRescheduleTurnUnderstanding:
+    decision: PostRescheduleTurnDecision
     normalized_message: str
     reason: str
 
 
-class PostCancellationTurnClassifier(Protocol):
+class PostRescheduleTurnClassifier(Protocol):
     def classify(
         self,
         *,
         message: str,
         chat_context: dict[str, Any],
-    ) -> PostCancellationTurnUnderstanding:
+    ) -> PostRescheduleTurnUnderstanding:
         raise NotImplementedError
 
 
-class DeterministicPostCancellationTurnClassifier:
-    """Local/test-double classifier for the post-cancellation follow-up frame."""
+class DeterministicPostRescheduleTurnClassifier:
+    """Local/test-double classifier for the post-reschedule follow-up frame."""
 
     def classify(
         self,
         *,
         message: str,
         chat_context: dict[str, Any],
-    ) -> PostCancellationTurnUnderstanding:
+    ) -> PostRescheduleTurnUnderstanding:
         del chat_context  # reserved for future LLM/state-aware classification
-        return classify_post_cancellation_turn(message=message)
+        return classify_post_reschedule_turn(message=message)
 
 
-def classify_post_cancellation_turn(
+def classify_post_reschedule_turn(
     *,
     message: str,
     chat_context: dict[str, Any] | None = None,
-) -> PostCancellationTurnUnderstanding:
+) -> PostRescheduleTurnUnderstanding:
     del chat_context  # reserved for future state-aware classification
     understanding = classify_post_completion_turn(message=message)
-    return PostCancellationTurnUnderstanding(
+    return PostRescheduleTurnUnderstanding(
         decision=_map_completion_decision(understanding.decision),
         normalized_message=understanding.normalized_message,
         reason=understanding.reason,
@@ -66,5 +66,5 @@ def classify_post_cancellation_turn(
 
 def _map_completion_decision(
     decision: PostCompletionTurnDecision,
-) -> PostCancellationTurnDecision:
-    return PostCancellationTurnDecision(decision.value)
+) -> PostRescheduleTurnDecision:
+    return PostRescheduleTurnDecision(decision.value)

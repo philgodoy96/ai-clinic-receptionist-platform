@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -252,3 +252,18 @@ class ClinicTimeService:
 def _minutes_from_hhmm(value: str) -> int:
     hour, minute = map(int, value.split(":"))
     return hour * 60 + minute
+
+
+def to_clinic_local_datetime(value: datetime, timezone: ZoneInfo) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(timezone)
+
+
+def format_clinic_local_time_label(value: datetime, timezone: ZoneInfo) -> str:
+    return to_clinic_local_datetime(value, timezone).strftime("%H:%M")
+
+
+def format_clinic_local_slot_summary(value: datetime, timezone: ZoneInfo) -> str:
+    localized = to_clinic_local_datetime(value, timezone)
+    return f"{localized.strftime('%A')} at {localized.strftime('%H:%M')}"

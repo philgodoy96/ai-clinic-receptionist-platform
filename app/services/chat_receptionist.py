@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -7,6 +8,9 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
+
+from redis.exceptions import RedisError
 
 from app.ai.receptionist_output import ReceptionistLLMIntent
 from app.ai.reliability import LLMFailureReason
@@ -21,6 +25,7 @@ from app.domain.human_escalations import (
     HumanEscalationSource,
 )
 from app.domain.receptionist.enums import ReceptionistResponseMode
+from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.availability import AvailabilityCheckStatus
 from app.domain.scheduling.expressions import (
     DateExpression,
@@ -33,6 +38,7 @@ from app.schemas.retell_tools import CheckAvailabilityToolArguments
 from app.schemas.scheduling_expressions import DateExpressionSchema
 from app.services.appointment_booking import (
     AppointmentBookingRequest,
+    AppointmentBookingResult,
     AppointmentBookingService,
     AppointmentSlotAlreadyBookedError,
     BookingAvailabilitySlotNotFoundError,
@@ -46,15 +52,19 @@ from app.services.appointment_holds import (
     AppointmentHoldNotFoundError,
     AppointmentHoldOwnershipError,
     AppointmentHoldService,
+    AppointmentHoldServiceError,
     AppointmentHoldStoreUnavailableError,
     AppointmentSlotAlreadyHeldError,
 )
+from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
 from app.services.chat_appointment_cancellation import (
     _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
     _CANCELLATION_CONFIRMATION_REPROMPT,
+    _CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
+    _CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
     _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
     APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION,
@@ -73,21 +83,62 @@ from app.services.chat_appointment_intake import (
     ChatAppointmentIntakeOrchestrator,
     ChatAppointmentIntakeResult,
 )
+from app.services.chat_appointment_lookup import (
+    _LOOKUP_IDENTITY_DOB_ONLY_MESSAGE,
+    _LOOKUP_IDENTITY_ENTRY_MESSAGE,
+    _LOOKUP_IDENTITY_NAME_ONLY_MESSAGE,
+    _LOOKUP_IDENTITY_REPROMPT_MESSAGE,
+    APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
+    ChatAppointmentLookupOrchestrator,
+    LookupFlowResult,
+    is_appointment_lookup_message,
+)
+from app.services.chat_appointment_lookup import (
+    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY as LOOKUP_AWAITING_PATIENT_IDENTITY,
+)
+from app.services.chat_appointment_rescheduling import (
+    APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION,
+    APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
+    APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION,
+    APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+    RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+    RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
+    RESCHEDULE_IDENTITY_DOB_ONLY_MESSAGE,
+    RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
+    RESCHEDULE_IDENTITY_NAME_ONLY_MESSAGE,
+    RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+    RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
+    RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
+    ChatAppointmentReschedulingOrchestrator,
+    RescheduleFlowResult,
+)
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
+    APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     BookingIdentityFlowResult,
     ChatBookingIdentityOrchestrator,
     ChatBookingIdentityStep,
     ParsedPatientFields,
+    appointment_management_missing_identity_prompt,
+    build_resolved_patient_context_updates,
+    read_resolved_patient_context,
 )
 from app.services.chat_confirmation import (
     ConfirmationType,
     is_confirmation_confirmed,
+    is_simple_affirmative,
     normalize_email_address,
     normalize_patient_display_name,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
-from app.services.clinic_time import ClinicTimeService
+from app.services.clinic_time import (
+    ClinicTimeService,
+    format_clinic_local_time_label,
+    to_clinic_local_datetime,
+)
 from app.services.conversation_health import (
     ConversationHealthResult,
     ConversationHealthService,
@@ -120,6 +171,15 @@ from app.services.post_cancellation_turn import (
     PostCancellationTurnDecision,
     classify_post_cancellation_turn,
 )
+from app.services.post_completion_turn_classification import (
+    POST_COMPLETION_ACTIONABLE_DECISIONS,
+    PostCompletionTurnDecision,
+    classify_post_completion_turn,
+)
+from app.services.post_reschedule_turn import (
+    PostRescheduleTurnDecision,
+    classify_post_reschedule_turn,
+)
 from app.services.receptionist_response_generator import (
     DeterministicReceptionistResponseGenerator,
     ReceptionistResponseGenerator,
@@ -148,8 +208,13 @@ from app.services.time_preferences import (
     is_time_in_window,
 )
 
+logger = logging.getLogger(__name__)
+
 _ISO_DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+# A message that is exactly an integer (e.g. ``1`` or ``10``), used for
+# slot-aware option-number / clock-time interpretation during slot selection.
+_BARE_INTEGER_PATTERN = re.compile(r"\d{1,2}")
 _DR_MENTION_PATTERN = re.compile(r"\bdr\.?\s+[a-z]", re.IGNORECASE)
 _SPECIALTY_MENTION_PATTERN = re.compile(
     r"\b\w+(?:ology|iatry|surgery|ologist)\b",
@@ -166,9 +231,29 @@ _EMERGENCY_KEYWORDS = [
     "cannot breathe",
 ]
 _CANCEL_KEYWORDS = ["cancel", "cancellation"]
-_RESCHEDULE_KEYWORDS = ["reschedule", "move appointment"]
+_RESCHEDULE_KEYWORDS = [
+    "reschedule",
+    "move appointment",
+    "move my appointment",
+    "move an appointment",
+]
 _CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
     "Of course. I can look it up first. What is the patient's full name and date of birth?"
+)
+# Phrases that signal the request is for a different patient than the one already
+# resolved in the conversation. Kept intentionally small; this is not broad
+# family-member support, just a guard against silently reusing the wrong patient.
+_DIFFERENT_PATIENT_PHRASES = (
+    "someone else",
+    "somebody else",
+    "different patient",
+    "another patient",
+    "different person",
+    "another person",
+    "not me",
+    "not for me",
+    "it's for my",
+    "it is for my",
 )
 _SPECIALTY_LIST_KEYWORDS = [
     "specialties",
@@ -215,6 +300,26 @@ _ORDINAL_SLOT_KEYWORDS = {
 _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\s\-().]{6,}\d|\b\d{10,14}\b)")
 _MY_NAME_IS_PATTERN = re.compile(r"my name is\s+(.+)", re.IGNORECASE)
+_NATURAL_DOB_PATTERN = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})\b",
+    re.IGNORECASE,
+)
+_MONTH_TOKEN_TO_NUMBER = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
 _PATIENT_IDENTITY_FIELD_LABELS = {
     "full_name": "full name",
     "date_of_birth": "date of birth",
@@ -241,6 +346,7 @@ _TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "Please specify a time-of-day preference such as morning, afternoon, or "
     "evening, or provide an exact time in HH:MM format."
 )
+_SELECTED_TIME_STILL_AVAILABLE_SUFFIX = " That time is still available."
 _HELD_TIME_PREFERENCE_CLARIFICATION_MESSAGE = (
     "You already have a time held. Please complete or release that hold before "
     "changing your time-of-day preference."
@@ -266,6 +372,7 @@ _ALREADY_CONFIRMED_MESSAGE = (
     "Is there anything else I can help with?"
 )
 _POST_BOOKING_CLOSING_MESSAGE = "You're all set. Have a great day!"
+_BOOKING_SUCCESS_FOLLOW_UP_SUFFIX = " Is there anything else I can help with?"
 _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE = (
     "Sure — would you like to schedule, cancel, or reschedule an appointment?"
 )
@@ -275,6 +382,10 @@ _POST_BOOKING_UNKNOWN_MESSAGE = (
 )
 _POST_CANCELLATION_UNKNOWN_MESSAGE = (
     "Your appointment has been cancelled. Would you like to schedule, cancel, "
+    "or reschedule anything else?"
+)
+_POST_RESCHEDULE_UNKNOWN_MESSAGE = (
+    "Your appointment has been rescheduled. Would you like to schedule, cancel, "
     "or reschedule anything else?"
 )
 
@@ -382,6 +493,114 @@ def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None
     return resolved[1]
 
 
+def _is_appointment_lookup_request(normalized_message: str) -> bool:
+    return is_appointment_lookup_message(normalized_message)
+
+
+def _cleared_appointment_management_completed_flow_updates() -> dict[str, Any]:
+    """Clear stale appointment-management frame keys after a completed flow."""
+    return {
+        "appointment_management_mode": None,
+        "appointment_management_awaiting": None,
+        APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: None,
+        "cancellation_status": None,
+        "reschedule_status": None,
+        "lookup_status": None,
+        "offered_appointments": None,
+        "offered_slots": [],
+        "appointment_intake_awaiting": None,
+    }
+
+
+def _cleared_post_conversation_terminal_updates() -> dict[str, Any]:
+    """Clear completed-flow keys after the user closes the conversation."""
+    return {
+        **_cleared_appointment_management_completed_flow_updates(),
+        "appointment_id": None,
+        "booking_identity_step": None,
+    }
+
+
+def _cleared_completed_flow_for_new_intent_updates() -> dict[str, Any]:
+    """Clear completed-flow keys so a new intent can start in the same conversation."""
+    return {
+        **_cleared_appointment_management_completed_flow_updates(),
+        "appointment_id": None,
+        "booking_identity_step": None,
+    }
+
+
+def _post_completion_decision_is_actionable(
+    decision: PostCompletionTurnDecision,
+) -> bool:
+    return decision in POST_COMPLETION_ACTIONABLE_DECISIONS
+
+
+def _parse_natural_date_of_birth(message: str) -> str | None:
+    match = _NATURAL_DOB_PATTERN.search(message)
+    if match is None:
+        return None
+
+    month_token = match.group(1).lower()[:3]
+    month = _MONTH_TOKEN_TO_NUMBER.get(month_token)
+    if month is None:
+        return None
+
+    day = int(match.group(2))
+    year = int(match.group(3))
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+
+    return f"{year}-{month:02d}-{day:02d}"
+
+
+def _is_awaiting_reschedule_patient_identity(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+    )
+
+
+def _is_awaiting_reschedule_appointment_selection(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+
+
+def _is_awaiting_reschedule_new_time_preference(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+
+
+def _is_awaiting_reschedule_new_slot_selection(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+    )
+
+
+def _is_awaiting_reschedule_confirmation(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode")
+        == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+        and chat_context.get("appointment_management_awaiting")
+        == APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION
+    )
+
+
 def _is_awaiting_cancellation_patient_identity(chat_context: dict[str, Any]) -> bool:
     return (
         chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_CANCEL
@@ -428,6 +647,33 @@ def _is_in_post_cancellation_frame(chat_context: dict[str, Any]) -> bool:
     return True
 
 
+def _is_in_post_booking_follow_up_frame(chat_context: dict[str, Any]) -> bool:
+    if not chat_context.get("appointment_id"):
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    booking_step = chat_context.get("booking_identity_step")
+    if isinstance(booking_step, str) and booking_step != (
+        ChatBookingIdentityStep.BOOKING_COMPLETED.value
+    ):
+        return False
+    return True
+
+
+def _is_awaiting_lookup_patient_identity(chat_context: dict[str, Any]) -> bool:
+    return (
+        chat_context.get("appointment_management_mode") == APPOINTMENT_MANAGEMENT_MODE_LOOKUP
+        and chat_context.get("appointment_management_awaiting")
+        == LOOKUP_AWAITING_PATIENT_IDENTITY
+    )
+
+
+def _is_in_lookup_flow(chat_context: dict[str, Any]) -> bool:
+    return _is_awaiting_lookup_patient_identity(chat_context)
+
+
 def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
     if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_CANCEL:
         return False
@@ -437,13 +683,116 @@ def _is_in_cancellation_flow(chat_context: dict[str, Any]) -> bool:
     )
 
 
+def _is_in_reschedule_flow(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE:
+        return False
+    return (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+
+
+def _is_in_post_reschedule_frame(chat_context: dict[str, Any]) -> bool:
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE:
+        return False
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return False
+    if chat_context.get("reschedule_status") != "rescheduled":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    booking_step = chat_context.get("booking_identity_step")
+    if isinstance(booking_step, str) and booking_step != (
+        ChatBookingIdentityStep.BOOKING_COMPLETED.value
+    ):
+        return False
+    return True
+
+
+def _appointment_management_empty_followup(chat_context: dict[str, Any]) -> str | None:
+    """Return the empty-state follow-up mode, if the turn is in that frame.
+
+    After an appointment-management flow resolves a patient but finds nothing to
+    list/cancel/reschedule, it parks in a safe completed state and records how an
+    affirmative reply should be honored. This frame lets the next turn accept
+    yes/no, a fresh intent, or a farewell without re-asking for patient identity.
+    """
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return None
+    if chat_context.get("hold_id"):
+        return None
+    if chat_context.get("appointment_intake_awaiting"):
+        return None
+    followup = chat_context.get(APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY)
+    if followup in {
+        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING,
+        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
+    }:
+        return str(followup)
+    return None
+
+
 def _resolve_contextual_fallback_reply(
     chat_context: dict[str, Any],
 ) -> tuple[ChatReceptionistIntent, str] | None:
+    if _is_awaiting_reschedule_patient_identity(chat_context):
+        identity_raw = chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY)
+        identity = identity_raw if isinstance(identity_raw, dict) else {}
+        prompt = appointment_management_missing_identity_prompt(
+            identity,
+            both_prompt=RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+            name_prompt=RESCHEDULE_IDENTITY_NAME_ONLY_MESSAGE,
+            dob_prompt=RESCHEDULE_IDENTITY_DOB_ONLY_MESSAGE,
+        )
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            prompt or RESCHEDULE_IDENTITY_REPROMPT_MESSAGE,
+        )
+
+    if _is_awaiting_reschedule_appointment_selection(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+        )
+
+    if _is_awaiting_reschedule_new_time_preference(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT,
+        )
+
+    if _is_awaiting_reschedule_new_slot_selection(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_NEW_SLOT_SELECTION_REPROMPT,
+        )
+
+    if _is_awaiting_reschedule_confirmation(chat_context):
+        return (
+            ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
+        )
+
     if _is_awaiting_cancellation_patient_identity(chat_context):
+        identity_raw = chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY)
+        identity = identity_raw if isinstance(identity_raw, dict) else {}
+        prompt = appointment_management_missing_identity_prompt(
+            identity,
+            both_prompt=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+            name_prompt=_CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
+            dob_prompt=_CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
+        )
         return (
             ChatReceptionistIntent.CANCEL_REQUEST,
-            _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+            prompt or _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
         )
 
     if _is_awaiting_cancellation_appointment_selection(chat_context):
@@ -456,6 +805,20 @@ def _resolve_contextual_fallback_reply(
         return (
             ChatReceptionistIntent.CANCEL_REQUEST,
             _CANCELLATION_CONFIRMATION_REPROMPT,
+        )
+
+    if _is_awaiting_lookup_patient_identity(chat_context):
+        identity_raw = chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY)
+        identity = identity_raw if isinstance(identity_raw, dict) else {}
+        prompt = appointment_management_missing_identity_prompt(
+            identity,
+            both_prompt=_LOOKUP_IDENTITY_REPROMPT_MESSAGE,
+            name_prompt=_LOOKUP_IDENTITY_NAME_ONLY_MESSAGE,
+            dob_prompt=_LOOKUP_IDENTITY_DOB_ONLY_MESSAGE,
+        )
+        return (
+            ChatReceptionistIntent.LIST_APPOINTMENTS,
+            prompt or _LOOKUP_IDENTITY_REPROMPT_MESSAGE,
         )
 
     if chat_context.get("appointment_id"):
@@ -498,6 +861,7 @@ class ChatReceptionistIntent(StrEnum):
     APPOINTMENT_REQUEST = "appointment_request"
     CANCEL_REQUEST = "cancel_request"
     RESCHEDULE_REQUEST = "reschedule_request"
+    LIST_APPOINTMENTS = "list_appointments"
     EMERGENCY = "emergency"
     LIST_SPECIALTIES = "list_specialties"
     LIST_DOCTORS = "list_doctors"
@@ -648,6 +1012,12 @@ class _TimePreferenceExtraction:
 
 
 @dataclass(frozen=True, slots=True)
+class _OfferedSlotSelection:
+    slot: dict[str, Any] | None = None
+    ambiguous: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ChatReceptionistReply:
     intent: ChatReceptionistIntent
     content: str
@@ -722,15 +1092,6 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
-                content=(
-                    "I can help with rescheduling. Please tell me which appointment "
-                    "you want to move and your preferred new time."
-                ),
-            )
-
         if self._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
@@ -784,9 +1145,11 @@ class ChatReceptionistService:
         ),
         patient_identity_resolution: PatientIdentityResolutionService,
         appointment_cancellation: AppointmentCancellationService,
+        appointment_rescheduling: AppointmentReschedulingService,
         chat_turn_understanding_records: ChatTurnUnderstandingRecordService | None = None,
         chat_turn_understanding_interpreter: ChatTurnUnderstandingInterpreter | None = None,
         post_booking_turn_classifier: PostBookingTurnClassifier | None = None,
+        chat_appointment_hold_ttl_seconds: int = 600,
     ) -> None:
         self.conversations = conversations
         self.scheduling = scheduling
@@ -805,14 +1168,15 @@ class ChatReceptionistService:
         self.response_generation_mode = response_generation_mode
         self.patient_identity_resolution = patient_identity_resolution
         self.chat_turn_understanding_records = chat_turn_understanding_records
-        self._booking_identity = ChatBookingIdentityOrchestrator(
-            patient_identity_resolution=patient_identity_resolution,
-            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
-        )
         effective_clinic_time = clinic_time_service or scheduling._clinic_time_service
         if effective_clinic_time is None:
             msg = "clinic_time_service is required for appointment cancellation"
             raise ValueError(msg)
+        self._booking_identity = ChatBookingIdentityOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+            clinic_timezone=effective_clinic_time.timezone,
+        )
         self._appointment_cancellation = ChatAppointmentCancellationOrchestrator(
             patient_identity_resolution=patient_identity_resolution,
             appointments=scheduling.appointments,
@@ -831,6 +1195,36 @@ class ChatReceptionistService:
         self._post_booking_turn_classifier = (
             post_booking_turn_classifier or DeterministicPostBookingTurnClassifier()
         )
+        self._chat_appointment_hold_ttl_seconds = chat_appointment_hold_ttl_seconds
+        self._appointment_rescheduling = ChatAppointmentReschedulingOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            appointments=scheduling.appointments,
+            scheduling=scheduling,
+            scheduling_metadata=scheduling,
+            clinic_time_service=effective_clinic_time,
+            date_parser=date_parser,
+            time_preference_parser=time_preference_parser,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+            appointment_holds=appointment_holds,
+            appointment_rescheduling=appointment_rescheduling,
+            chat_appointment_hold_ttl_seconds=chat_appointment_hold_ttl_seconds,
+        )
+        self._appointment_lookup = ChatAppointmentLookupOrchestrator(
+            patient_identity_resolution=patient_identity_resolution,
+            appointments=scheduling.appointments,
+            scheduling_metadata=scheduling,
+            clinic_time_service=effective_clinic_time,
+            chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        )
+
+    def _clinic_timezone(self) -> ZoneInfo:
+        if self.clinic_time_service is not None:
+            return self.clinic_time_service.timezone
+        clinic_time = self.scheduling._clinic_time_service
+        if clinic_time is not None:
+            return clinic_time.timezone
+        msg = "clinic_time_service is required for clinic-local time formatting"
+        raise ValueError(msg)
 
     def handle_message(self, payload: ChatMessageInput) -> ChatMessageResult:
         conversation = self._get_or_create_conversation(payload)
@@ -1255,29 +1649,150 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
             return self.responder.generate_reply(message=message)
 
-        if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
-            return self.responder.generate_reply(message=message)
+        # If the user starts a new scheduling request while stuck in a stale final
+        # booking confirmation whose hold is gone, clear the stale confirmation/hold
+        # state so normal scheduling intake/routing can restart instead of looping
+        # on the confirmation prompt.
+        stale_confirmation_cleanup: dict[str, Any] = {}
+        if self._should_override_stale_final_confirmation(
+            existing_context=existing_context,
+            message=message,
+            normalized_message=normalized_message,
+        ):
+            stale_confirmation_cleanup = self._cleared_hold_context_updates()
+            existing_context = {**existing_context, **stale_confirmation_cleanup}
+
+        completed_flow_cleanup: dict[str, Any] = {}
 
         if _is_in_post_cancellation_frame(existing_context):
-            post_cancellation_reply = self._handle_post_cancellation_message(
+            cancellation_decision = self._resolve_post_cancellation_decision(
                 message=message,
-                merged_context=existing_context,
+                chat_context=existing_context,
             )
-            if post_cancellation_reply is not None:
-                return post_cancellation_reply
+            if cancellation_decision is PostCancellationTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    self._post_cancellation_reply_for_decision(
+                        decision=cancellation_decision,
+                        context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(
+                PostCompletionTurnDecision(cancellation_decision.value),
+            ):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                existing_context = {**existing_context, **completed_flow_cleanup}
+            else:
+                post_cancellation_reply = self._post_cancellation_reply_for_decision(
+                    decision=cancellation_decision,
+                    context_updates={},
+                )
+                if post_cancellation_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_cancellation_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+
+        if _is_in_post_reschedule_frame(existing_context):
+            reschedule_decision = self._resolve_post_reschedule_decision(
+                message=message,
+                chat_context=existing_context,
+            )
+            if reschedule_decision is PostRescheduleTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    self._post_reschedule_reply_for_decision(
+                        decision=reschedule_decision,
+                        context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(
+                PostCompletionTurnDecision(reschedule_decision.value),
+            ):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                existing_context = {**existing_context, **completed_flow_cleanup}
+            else:
+                post_reschedule_reply = self._post_reschedule_reply_for_decision(
+                    decision=reschedule_decision,
+                    context_updates={},
+                )
+                if post_reschedule_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_reschedule_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+
+        if _is_in_post_booking_follow_up_frame(existing_context):
+            post_booking_understanding = self._resolve_post_booking_decision(
+                message=message,
+                chat_context=existing_context,
+            )
+            booking_decision = post_booking_understanding.decision
+            if booking_decision is PostBookingTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    self._post_booking_reply_for_decision(
+                        decision=booking_decision,
+                        appointment_id=existing_context["appointment_id"],
+                        hold_id=existing_context.get("hold_id"),
+                        context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(
+                PostCompletionTurnDecision(booking_decision.value),
+            ):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                existing_context = {**existing_context, **completed_flow_cleanup}
+            else:
+                post_booking_reply = self._post_booking_reply_for_decision(
+                    decision=booking_decision,
+                    appointment_id=existing_context["appointment_id"],
+                    hold_id=existing_context.get("hold_id"),
+                    context_updates={},
+                )
+                if post_booking_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_booking_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+
+        empty_followup = _appointment_management_empty_followup(existing_context)
+        if empty_followup is not None:
+            empty_state_reply = self._handle_appointment_management_empty_followup(
+                message=message,
+                followup=empty_followup,
+            )
+            if empty_state_reply is not None:
+                return self._finish_reply_with_context(
+                    empty_state_reply,
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            # An actionable intent (e.g. "cancel", "book another") was detected:
+            # clear the parked empty-state frame and let normal routing handle it.
+            completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+            existing_context = {**existing_context, **completed_flow_cleanup}
 
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
 
         def finish(reply: ChatReceptionistReply) -> ChatReceptionistReply:
-            if date_extraction.date_parsing is not None:
-                reply = replace(reply, date_parsing=date_extraction.date_parsing)
-            if time_extraction.time_preference_parsing is not None:
-                reply = replace(
-                    reply,
-                    time_preference_parsing=time_extraction.time_preference_parsing,
-                )
-            return reply
+            return self._finish_reply_with_context(
+                reply,
+                stale_confirmation_cleanup=stale_confirmation_cleanup,
+                completed_flow_cleanup=completed_flow_cleanup,
+                date_extraction=date_extraction,
+                time_extraction=time_extraction,
+            )
 
         if _is_in_cancellation_flow(existing_context):
             return finish(
@@ -1288,9 +1803,49 @@ class ChatReceptionistService:
                 ),
             )
 
+        if _is_in_reschedule_flow(existing_context):
+            return finish(
+                self._handle_reschedule_flow(
+                    message=message,
+                    conversation=conversation,
+                    chat_context=existing_context,
+                ),
+            )
+
+        if _is_in_lookup_flow(existing_context):
+            return finish(
+                self._handle_lookup_flow(
+                    message=message,
+                    conversation=conversation,
+                    chat_context=existing_context,
+                ),
+            )
+
         if self.responder._contains_any(normalized_message, _CANCEL_KEYWORDS):
             return finish(
-                self._enter_cancellation_task_frame(context_updates={}),
+                self._enter_cancellation_task_frame(
+                    context_updates={},
+                    message=message,
+                    chat_context=existing_context,
+                ),
+            )
+
+        if self.responder._contains_any(normalized_message, _RESCHEDULE_KEYWORDS):
+            return finish(
+                self._enter_reschedule_task_frame(
+                    context_updates={},
+                    message=message,
+                    chat_context=existing_context,
+                ),
+            )
+
+        if _is_appointment_lookup_request(normalized_message):
+            return finish(
+                self._enter_lookup_task_frame(
+                    context_updates={},
+                    message=message,
+                    chat_context=existing_context,
+                ),
             )
 
         intake_result = self._try_appointment_intake(
@@ -1658,6 +2213,87 @@ class ChatReceptionistService:
 
         return True
 
+    def _should_override_stale_final_confirmation(
+        self,
+        *,
+        existing_context: dict[str, Any],
+        message: str,
+        normalized_message: str,
+    ) -> bool:
+        if existing_context.get("appointment_id"):
+            return False
+
+        if (
+            existing_context.get("booking_identity_step")
+            != ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION.value
+        ):
+            return False
+
+        hold_id_raw = existing_context.get("hold_id")
+        if not hold_id_raw:
+            return False
+
+        # A genuine confirmation is handled by the booking flow (which now refreshes
+        # an expired hold), so only override for clearly new scheduling requests.
+        if is_confirmation_confirmed(
+            confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,
+            message=message,
+        ):
+            return False
+
+        if not self._looks_like_new_scheduling_request(normalized_message):
+            return False
+
+        # Only override when the hold is actually missing/expired; an active hold
+        # means the pending confirmation is still valid.
+        return not self._hold_is_present(hold_id_raw)
+
+    def _looks_like_new_scheduling_request(self, normalized_message: str) -> bool:
+        if not normalized_message:
+            return False
+
+        if any(
+            phrase in normalized_message
+            for phrase in ("start over", "start again", "restart")
+        ):
+            return True
+
+        if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
+            return True
+
+        if self._is_availability_request(normalized_message):
+            return True
+
+        if self.responder._contains_any(normalized_message, _SPECIALTY_LIST_KEYWORDS):
+            return True
+
+        if self.responder._contains_any(normalized_message, _DOCTOR_LIST_KEYWORDS):
+            return True
+
+        if self._match_specialty_in_message(normalized_message) is not None:
+            return True
+
+        if self._mentions_unknown_specialty(normalized_message):
+            return True
+
+        if self._match_doctor_in_message(normalized_message) is not None:
+            return True
+
+        return self._mentions_unknown_doctor(normalized_message)
+
+    def _hold_is_present(self, hold_id_raw: Any) -> bool:
+        try:
+            hold_id = UUID(str(hold_id_raw))
+        except (ValueError, TypeError):
+            return False
+
+        try:
+            return self.appointment_holds.get_hold_by_id(hold_id) is not None
+        except (RedisError, AppointmentHoldServiceError):
+            # If the hold store cannot confirm the hold, treat it as gone so the
+            # user is not trapped repeating the confirmation prompt.
+            return False
+
     def _appointment_intake_context_updates(
         self,
         intake_result: ChatAppointmentIntakeResult | None,
@@ -1742,12 +2378,25 @@ class ChatReceptionistService:
         booking_context: bool = False,
     ) -> str | None:
         match = _ISO_DATE_PATTERN.search(message)
-        if match is None:
-            return None
+        if match is not None:
+            try:
+                date.fromisoformat(match.group(1))
+            except ValueError:
+                return None
 
-        try:
-            date.fromisoformat(match.group(1))
-        except ValueError:
+            has_dob_cue = bool(
+                re.search(r"\b(dob|date of birth|born)\b", message, re.IGNORECASE)
+                or "," in message
+                or _MY_NAME_IS_PATTERN.search(message)
+                or booking_context
+            )
+            if not has_dob_cue:
+                return None
+
+            return match.group(1)
+
+        natural = _parse_natural_date_of_birth(message)
+        if natural is None:
             return None
 
         has_dob_cue = bool(
@@ -1759,7 +2408,7 @@ class ChatReceptionistService:
         if not has_dob_cue:
             return None
 
-        return match.group(1)
+        return natural
 
     def _extract_full_name(
         self,
@@ -1800,6 +2449,7 @@ class ChatReceptionistService:
 
             if cut_points:
                 remainder = remainder[: min(cut_points)].strip()
+                remainder = re.sub(r"\s+and\s+my$", "", remainder, flags=re.IGNORECASE).strip()
 
             normalized = normalize_patient_display_name(remainder) if remainder else None
             return normalized or None
@@ -1938,7 +2588,27 @@ class ChatReceptionistService:
         self,
         *,
         context_updates: dict[str, Any],
+        message: str = "",
+        chat_context: dict[str, Any] | None = None,
     ) -> ChatReceptionistReply:
+        if chat_context is not None and not self._wants_different_patient(
+            message=message,
+            chat_context=chat_context,
+        ):
+            reuse = self._appointment_cancellation.list_appointments_for_resolved_patient(
+                chat_context=chat_context,
+            )
+            if reuse is not None:
+                if context_updates:
+                    reuse = replace(
+                        reuse,
+                        chat_context_updates={
+                            **context_updates,
+                            **reuse.chat_context_updates,
+                        },
+                    )
+                return self._cancellation_flow_result_to_reply(reuse)
+
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.CANCEL_REQUEST,
             content=_CANCELLATION_IDENTITY_ENTRY_MESSAGE,
@@ -1948,8 +2618,213 @@ class ChatReceptionistService:
                 "appointment_management_awaiting": (
                     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
                 ),
+                # Start the intake with a clean partial-identity buffer.
+                APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
             },
         )
+
+    def _handle_lookup_flow(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        awaiting = chat_context.get("appointment_management_awaiting")
+        if awaiting == LOOKUP_AWAITING_PATIENT_IDENTITY:
+            flow = self._appointment_lookup.handle_patient_identity_intake(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+                parse_patient_fields=self._parse_booking_patient_fields,
+            )
+            return self._lookup_flow_result_to_reply(flow)
+
+        return self._enter_lookup_task_frame(
+            context_updates={},
+            message=message,
+            chat_context=chat_context,
+        )
+
+    def _lookup_flow_result_to_reply(
+        self,
+        flow: LookupFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+        )
+
+    def _enter_lookup_task_frame(
+        self,
+        *,
+        context_updates: dict[str, Any],
+        message: str = "",
+        chat_context: dict[str, Any] | None = None,
+    ) -> ChatReceptionistReply:
+        if chat_context is not None and not self._wants_different_patient(
+            message=message,
+            chat_context=chat_context,
+        ):
+            reuse = self._appointment_lookup.list_appointments_for_resolved_patient(
+                chat_context=chat_context,
+            )
+            if reuse is not None:
+                if context_updates:
+                    reuse = replace(
+                        reuse,
+                        chat_context_updates={
+                            **context_updates,
+                            **reuse.chat_context_updates,
+                        },
+                    )
+                return self._lookup_flow_result_to_reply(reuse)
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+            content=_LOOKUP_IDENTITY_ENTRY_MESSAGE,
+            chat_context_updates={
+                **context_updates,
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
+                "appointment_management_awaiting": LOOKUP_AWAITING_PATIENT_IDENTITY,
+                APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
+            },
+        )
+
+    def _handle_reschedule_flow(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        awaiting = chat_context.get("appointment_management_awaiting")
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY:
+            flow = self._appointment_rescheduling.handle_patient_identity_intake(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+                parse_patient_fields=self._parse_booking_patient_fields,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION:
+            flow = self._appointment_rescheduling.handle_appointment_selection(
+                message=message,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE:
+            flow = self._appointment_rescheduling.handle_new_time_preference(
+                message=message,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION:
+            flow = self._appointment_rescheduling.handle_new_slot_selection(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        if awaiting == APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION:
+            flow = self._appointment_rescheduling.handle_reschedule_confirmation(
+                message=message,
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+            return self._reschedule_flow_result_to_reply(flow)
+
+        return self._enter_reschedule_task_frame(
+            context_updates={},
+            message=message,
+            chat_context=chat_context,
+        )
+
+    def _reschedule_flow_result_to_reply(
+        self,
+        flow: RescheduleFlowResult,
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent(flow.intent),
+            content=flow.content,
+            chat_context_updates=flow.chat_context_updates,
+        )
+
+    def _enter_reschedule_task_frame(
+        self,
+        *,
+        context_updates: dict[str, Any],
+        message: str = "",
+        chat_context: dict[str, Any] | None = None,
+    ) -> ChatReceptionistReply:
+        if chat_context is not None and not self._wants_different_patient(
+            message=message,
+            chat_context=chat_context,
+        ):
+            reuse = self._appointment_rescheduling.list_appointments_for_resolved_patient(
+                chat_context=chat_context,
+            )
+            if reuse is not None:
+                if context_updates:
+                    reuse = replace(
+                        reuse,
+                        chat_context_updates={
+                            **context_updates,
+                            **reuse.chat_context_updates,
+                        },
+                    )
+                return self._reschedule_flow_result_to_reply(reuse)
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            content=RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
+            chat_context_updates={
+                **context_updates,
+                "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+                "appointment_management_awaiting": (
+                    APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                ),
+                # Start the intake with a clean partial-identity buffer.
+                APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
+            },
+        )
+
+    def _wants_different_patient(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> bool:
+        """Decide whether the user is asking about a different patient.
+
+        We only override a remembered patient through normal identity resolution,
+        so when the user clearly signals a different person (an explicit phrase, a
+        new date of birth, or a different full name) we skip reuse and fall back
+        to the standard name + date-of-birth intake.
+        """
+        resolved = read_resolved_patient_context(chat_context)
+        if resolved is None:
+            return False
+
+        normalized = message.lower()
+        if any(phrase in normalized for phrase in _DIFFERENT_PATIENT_PHRASES):
+            return True
+
+        parsed = self.parse_patient_identity(message, booking_context=False)
+        if parsed.date_of_birth:
+            return True
+        if parsed.full_name and resolved.name:
+            if (
+                normalize_patient_display_name(parsed.full_name).lower()
+                != resolved.name.lower()
+            ):
+                return True
+        return False
 
     def _hold_booking_identity_unavailable_reply(
         self,
@@ -1991,6 +2866,7 @@ class ChatReceptionistService:
             PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST,
             PostCancellationTurnDecision.CANCEL_REQUEST,
             PostCancellationTurnDecision.RESCHEDULE_REQUEST,
+            PostCancellationTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
         }:
             return None
 
@@ -2024,6 +2900,116 @@ class ChatReceptionistService:
             context_updates={},
         )
 
+    def _resolve_post_reschedule_decision(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> PostRescheduleTurnDecision:
+        return classify_post_reschedule_turn(
+            message=message,
+            chat_context=chat_context,
+        ).decision
+
+    def _post_reschedule_reply_for_decision(
+        self,
+        *,
+        decision: PostRescheduleTurnDecision,
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostRescheduleTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostRescheduleTurnDecision.CANCEL_REQUEST,
+            PostRescheduleTurnDecision.RESCHEDULE_REQUEST,
+            PostRescheduleTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
+        }:
+            return None
+
+        content_by_decision = {
+            PostRescheduleTurnDecision.END_CONVERSATION: _POST_BOOKING_CLOSING_MESSAGE,
+            PostRescheduleTurnDecision.NEEDS_MORE_HELP: _POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+            PostRescheduleTurnDecision.UNKNOWN: _POST_RESCHEDULE_UNKNOWN_MESSAGE,
+        }
+        content = content_by_decision.get(decision)
+        if content is None:
+            return None
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            content=content,
+            chat_context_updates=context_updates,
+        )
+
+    def _handle_post_reschedule_message(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        decision = self._resolve_post_reschedule_decision(
+            message=message,
+            chat_context=merged_context,
+        )
+        return self._post_reschedule_reply_for_decision(
+            decision=decision,
+            context_updates={},
+        )
+
+    def _handle_appointment_management_empty_followup(
+        self,
+        *,
+        message: str,
+        followup: str,
+    ) -> ChatReceptionistReply | None:
+        """Honor the follow-up after a "resolved patient, no appointments" state.
+
+        Returns ``None`` when the user expressed a fresh actionable intent (book,
+        cancel, reschedule, or list), so the caller clears the parked frame and
+        lets normal routing handle it. Otherwise returns the appropriate reply
+        for an affirmative, a farewell, or an unclear turn.
+        """
+        decision = classify_post_completion_turn(message=message).decision
+        if _post_completion_decision_is_actionable(decision):
+            return None
+
+        offers_booking = followup == APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
+        intent = (
+            ChatReceptionistIntent.APPOINTMENT_REQUEST
+            if offers_booking
+            else ChatReceptionistIntent.CANCEL_REQUEST
+        )
+
+        if decision is PostCompletionTurnDecision.END_CONVERSATION:
+            return ChatReceptionistReply(
+                intent=intent,
+                content=_POST_BOOKING_CLOSING_MESSAGE,
+                chat_context_updates=_cleared_post_conversation_terminal_updates(),
+            )
+
+        new_intent_cleanup = _cleared_completed_flow_for_new_intent_updates()
+
+        if decision is PostCompletionTurnDecision.NEEDS_MORE_HELP:
+            if offers_booking:
+                # Affirmative to "would you like to schedule/book?": start the
+                # existing appointment intake by asking what they want to book.
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                    content=self._format_missing_scheduling_target_prompt(),
+                    chat_context_updates=new_intent_cleanup,
+                )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.CANCEL_REQUEST,
+                content=_POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+                chat_context_updates=new_intent_cleanup,
+            )
+
+        # Unclear turn: clear the parked frame and offer a gentle next step.
+        return ChatReceptionistReply(
+            intent=intent,
+            content=_GENERIC_SCHEDULING_FALLBACK_MESSAGE,
+            chat_context_updates=new_intent_cleanup,
+        )
+
     def _resolve_post_booking_decision(
         self,
         *,
@@ -2047,6 +3033,7 @@ class ChatReceptionistService:
             PostBookingTurnDecision.NEW_SCHEDULING_REQUEST,
             PostBookingTurnDecision.CANCEL_REQUEST,
             PostBookingTurnDecision.RESCHEDULE_REQUEST,
+            PostBookingTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
         }:
             return None
 
@@ -2313,8 +3300,8 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
                 content=(
-                    "I still need to verify patient details before booking. "
-                    "Your hold is still active."
+                    "I still need to verify patient details before booking."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 chat_context_updates=identity_updates,
                 hold_id=hold_id,
@@ -2325,8 +3312,8 @@ class ChatReceptionistService:
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
                 content=(
-                    "I still need a confirmed email before booking. "
-                    "Your hold is still active."
+                    "I still need a confirmed email before booking."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 chat_context_updates=identity_updates,
                 hold_id=hold_id,
@@ -2356,38 +3343,25 @@ class ChatReceptionistService:
             )
 
         try:
-            booking_result = self.appointment_booking.book_appointment(
-                AppointmentBookingRequest(
-                    hold_id=UUID(hold_id),
-                    availability_slot_id=UUID(str(slot_id_raw)),
-                    patient_id=patient.id,
-                    owner_id=owner_id,
-                ),
-            )
-        except AppointmentHoldNotFoundError:
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
-                content=(
-                    "Your temporary hold was not found or has expired. "
-                    "Please check availability and choose a time again."
-                ),
-                chat_context_updates=identity_updates,
-                hold_id=hold_id,
-                booking_attempted=True,
+            booking_result = self._book_appointment_with_hold(
+                hold_id=UUID(hold_id),
+                availability_slot_id=UUID(str(slot_id_raw)),
+                patient_id=patient.id,
+                owner_id=owner_id,
             )
         except (
+            AppointmentHoldNotFoundError,
             AppointmentHoldMismatchError,
             AppointmentHoldOwnershipError,
         ):
-            return ChatReceptionistReply(
-                intent=ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
-                content=(
-                    "Your temporary hold is no longer valid for this booking. "
-                    "Please check availability and choose a time again."
-                ),
-                chat_context_updates=identity_updates,
-                hold_id=hold_id,
-                booking_attempted=True,
+            # Do not book without a valid hold. Try to recover by refreshing the
+            # hold for the still-selected slot, otherwise clear stale state.
+            return self._recover_missing_hold(
+                conversation=conversation,
+                merged_context=merged_context,
+                identity_updates=identity_updates,
+                slot_id_raw=slot_id_raw,
+                patient=patient,
             )
         except (
             AppointmentSlotAlreadyBookedError,
@@ -2408,6 +3382,42 @@ class ChatReceptionistService:
                 booking_attempted=True,
             )
 
+        return self._booking_success_reply(
+            booking_result=booking_result,
+            merged_context=merged_context,
+            identity_updates=identity_updates,
+            owner_id=owner_id,
+            hold_id=hold_id,
+            patient=patient,
+        )
+
+    def _book_appointment_with_hold(
+        self,
+        *,
+        hold_id: UUID,
+        availability_slot_id: UUID,
+        patient_id: UUID,
+        owner_id: str,
+    ) -> AppointmentBookingResult:
+        return self.appointment_booking.book_appointment(
+            AppointmentBookingRequest(
+                hold_id=hold_id,
+                availability_slot_id=availability_slot_id,
+                patient_id=patient_id,
+                owner_id=owner_id,
+            ),
+        )
+
+    def _booking_success_reply(
+        self,
+        *,
+        booking_result: AppointmentBookingResult,
+        merged_context: dict[str, Any],
+        identity_updates: dict[str, Any],
+        owner_id: str,
+        hold_id: str,
+        patient: Patient,
+    ) -> ChatReceptionistReply:
         appointment = booking_result.appointment
         hold = booking_result.hold
         doctor_name = str(merged_context.get("selected_doctor_name", "the selected doctor"))
@@ -2421,11 +3431,25 @@ class ChatReceptionistService:
                 f"Your appointment with {doctor_name} on {appointment_date} at "
                 f"{display_time} has been booked. A confirmation email will be sent "
                 "if an email address is available."
+                f"{_BOOKING_SUCCESS_FOLLOW_UP_SUFFIX}"
             ),
             chat_context_updates={
                 **identity_updates,
                 "appointment_id": str(appointment.id),
                 "booking_confirmed_at": booking_confirmed_at,
+                # Remember the resolved patient so a later cancellation/reschedule
+                # in this conversation can reuse it without re-asking name + DOB.
+                **build_resolved_patient_context_updates(
+                    patient_id=str(patient.id),
+                    name=patient.full_name,
+                    date_of_birth=patient.date_of_birth.isoformat(),
+                    email=patient.email,
+                    patient_resolution_id=(
+                        merged_context.get("patient_resolution_id")
+                        if isinstance(merged_context.get("patient_resolution_id"), str)
+                        else None
+                    ),
+                ),
                 **self._booking_identity.booking_completed_context_updates(),
             },
             hold_id=hold_id,
@@ -2440,6 +3464,164 @@ class ChatReceptionistService:
                 owner_id=owner_id,
             ),
         )
+
+    def _recover_missing_hold(
+        self,
+        *,
+        conversation: Conversation,
+        merged_context: dict[str, Any],
+        identity_updates: dict[str, Any],
+        slot_id_raw: Any,
+        patient: Patient,
+    ) -> ChatReceptionistReply:
+        """Recover from a missing/expired hold at final booking confirmation.
+
+        The hold is the concurrency boundary, so we never book without one. If the
+        previously selected slot is still available, we create a fresh hold (owned
+        by this conversation) and retry the booking. If the slot is gone or the
+        retry still fails, we clear stale hold/selection state and ask the user to
+        choose another time.
+        """
+        if not slot_id_raw:
+            return self._unrecoverable_hold_reply(identity_updates=identity_updates)
+
+        owner_id = str(conversation.id)
+
+        try:
+            slot = self.scheduling.get_available_slot_for_hold(UUID(str(slot_id_raw)))
+            refreshed_hold = self.appointment_holds.create_hold(
+                availability_slot_id=slot.id,
+                doctor_id=slot.doctor_id,
+                start_time=slot.start_time,
+                end_time=slot.end_time,
+                owner_id=owner_id,
+                ttl_seconds=self._chat_appointment_hold_ttl_seconds,
+            )
+        except (
+            AvailabilitySlotNotFoundError,
+            AvailabilitySlotUnavailableError,
+            AppointmentSlotAlreadyHeldError,
+            AppointmentHoldStoreUnavailableError,
+        ):
+            return self._unrecoverable_hold_reply(identity_updates=identity_updates)
+
+        hold_expires_at = refreshed_hold.created_at + timedelta(
+            seconds=self._chat_appointment_hold_ttl_seconds,
+        )
+        refreshed_hold_context = {
+            "selected_availability_slot_id": str(slot.id),
+            "selected_start_time": slot.start_time.isoformat(),
+            "selected_doctor_id": str(slot.doctor_id),
+            "hold_id": str(refreshed_hold.hold_id),
+            "hold_expires_at": hold_expires_at.isoformat(),
+            "hold_owner_id": owner_id,
+        }
+
+        try:
+            booking_result = self._book_appointment_with_hold(
+                hold_id=refreshed_hold.hold_id,
+                availability_slot_id=slot.id,
+                patient_id=patient.id,
+                owner_id=owner_id,
+            )
+        except (
+            AppointmentHoldNotFoundError,
+            AppointmentHoldMismatchError,
+            AppointmentHoldOwnershipError,
+            AppointmentSlotAlreadyBookedError,
+            BookingAvailabilitySlotUnavailableError,
+            BookingAvailabilitySlotNotFoundError,
+            BookingDoctorNotFoundError,
+            BookingPatientNotFoundError,
+            AppointmentSlotAlreadyHeldError,
+        ):
+            self._release_hold_safely(hold=refreshed_hold, owner_id=owner_id)
+            return self._unrecoverable_hold_reply(identity_updates=identity_updates)
+
+        return self._booking_success_reply(
+            booking_result=booking_result,
+            merged_context={**merged_context, **refreshed_hold_context},
+            identity_updates={**identity_updates, **refreshed_hold_context},
+            owner_id=owner_id,
+            hold_id=str(refreshed_hold.hold_id),
+            patient=patient,
+        )
+
+    def _unrecoverable_hold_reply(
+        self,
+        *,
+        identity_updates: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
+            content=(
+                "That time is no longer available, so I could not complete the booking. "
+                "Please choose another available time and I'll hold it for you."
+            ),
+            chat_context_updates={
+                **identity_updates,
+                **self._cleared_hold_context_updates(),
+            },
+            booking_attempted=True,
+        )
+
+    def _release_hold_safely(self, *, hold: AppointmentHold, owner_id: str) -> None:
+        try:
+            self.appointment_holds.release_hold(
+                doctor_id=hold.doctor_id,
+                start_time=hold.start_time,
+                owner_id=owner_id,
+            )
+        except (AppointmentHoldServiceError, RedisError):
+            logger.debug("failed to release refreshed hold after booking recovery failure")
+
+    def _cleared_hold_context_updates(self) -> dict[str, Any]:
+        """Transient keys to clear when a hold becomes unrecoverable.
+
+        Stable user/session context (selected doctor/specialty, patient identity)
+        is intentionally preserved so the user can retry quickly.
+        """
+        return {
+            "hold_id": None,
+            "hold_expires_at": None,
+            "hold_owner_id": None,
+            "selected_availability_slot_id": None,
+            "selected_start_time": None,
+            "offered_slots": [],
+            "booking_identity_step": None,
+            "pending_confirmation_email": None,
+            "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME,
+        }
+
+    @staticmethod
+    def _finish_reply_with_context(
+        reply: ChatReceptionistReply | None,
+        *,
+        stale_confirmation_cleanup: dict[str, Any],
+        completed_flow_cleanup: dict[str, Any],
+        date_extraction: _RequestedDateExtraction | None = None,
+        time_extraction: _TimePreferenceExtraction | None = None,
+    ) -> ChatReceptionistReply:
+        if reply is None:
+            msg = "expected a receptionist reply"
+            raise ValueError(msg)
+
+        context_updates = dict(reply.chat_context_updates)
+        if stale_confirmation_cleanup:
+            context_updates = {**stale_confirmation_cleanup, **context_updates}
+        if completed_flow_cleanup:
+            context_updates = {**completed_flow_cleanup, **context_updates}
+        if context_updates != reply.chat_context_updates:
+            reply = replace(reply, chat_context_updates=context_updates)
+
+        if date_extraction is not None and date_extraction.date_parsing is not None:
+            reply = replace(reply, date_parsing=date_extraction.date_parsing)
+        if time_extraction is not None and time_extraction.time_preference_parsing is not None:
+            reply = replace(
+                reply,
+                time_preference_parsing=time_extraction.time_preference_parsing,
+            )
+        return reply
 
     def _resolve_patient_for_booking(
         self,
@@ -2478,7 +3660,7 @@ class ChatReceptionistService:
         except ValueError:
             return "the selected time"
 
-        return parsed.strftime("%H:%M")
+        return format_clinic_local_time_label(parsed, self._clinic_timezone())
 
     def _format_booking_date(self, merged_context: dict[str, Any]) -> str:
         start_time_raw = merged_context.get("selected_start_time")
@@ -2620,6 +3802,17 @@ class ChatReceptionistService:
                 )
             slots = filtered_slots
 
+        exact_time_reply = self._handle_exact_time_doctor_availability(
+            slots=slots,
+            merged_context=merged_context,
+            context_updates=context_updates,
+            doctor_name=doctor_name,
+            requested_date=requested_date,
+            parsed_requested_date=parsed_requested_date,
+        )
+        if exact_time_reply is not None:
+            return exact_time_reply
+
         if slots:
             shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
             offered_slots = self._serialize_offered_slots(
@@ -2700,6 +3893,17 @@ class ChatReceptionistService:
                     offered_slot_count=0,
                 )
             attributed_slots = filtered_slots
+
+        exact_time_reply = self._handle_exact_time_specialty_availability(
+            attributed_slots=attributed_slots,
+            merged_context=merged_context,
+            context_updates=context_updates,
+            specialty_name=specialty_name,
+            requested_date=requested_date,
+            parsed_requested_date=parsed_requested_date,
+        )
+        if exact_time_reply is not None:
+            return exact_time_reply
 
         if attributed_slots:
             shown_slots = attributed_slots[:_MAX_OFFERED_SLOTS]
@@ -2889,12 +4093,11 @@ class ChatReceptionistService:
 
         if slots:
             shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
-            slot_date = shown_slots[0].start_time.date().isoformat()
             offered_slots = self._serialize_offered_slots(
                 shown_slots,
                 doctor_names={slot.doctor_id: doctor_name for slot in shown_slots},
                 specialty_name=merged_context.get("selected_specialty_name"),
-                display_date=slot_date,
+                use_slot_date=True,
             )
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
@@ -3260,9 +4463,11 @@ class ChatReceptionistService:
         doctor_name: str,
         label: str,
     ) -> str:
+        clinic_tz = self._clinic_timezone()
         grouped: dict[date, list[datetime]] = {}
         for slot in slots:
-            grouped.setdefault(slot.start_time.date(), []).append(slot.start_time)
+            local_start = to_clinic_local_datetime(slot.start_time, clinic_tz)
+            grouped.setdefault(local_start.date(), []).append(local_start)
 
         day_parts: list[str] = []
         for slot_date in sorted(grouped):
@@ -3284,9 +4489,11 @@ class ChatReceptionistService:
         specialty_name: str,
         label: str,
     ) -> str:
+        clinic_tz = self._clinic_timezone()
         grouped: dict[date, list[datetime]] = {}
         for item in slots:
-            grouped.setdefault(item.slot.start_time.date(), []).append(item.slot.start_time)
+            local_start = to_clinic_local_datetime(item.slot.start_time, clinic_tz)
+            grouped.setdefault(local_start.date(), []).append(local_start)
 
         day_parts: list[str] = []
         for slot_date in sorted(grouped):
@@ -3319,16 +4526,27 @@ class ChatReceptionistService:
         if not slots:
             return _EARLIEST_NO_AVAILABILITY_MESSAGE
 
-        slot_date = slots[0].start_time.date()
-        date_label = self._format_availability_date_label(slot_date)
-        times = [slot.start_time.strftime("%H:%M") for slot in slots]
-        times_text = self._join_names(times)
+        clinic_tz = self._clinic_timezone()
+        grouped: dict[date, list[datetime]] = {}
+        for slot in slots:
+            local_start = to_clinic_local_datetime(slot.start_time, clinic_tz)
+            grouped.setdefault(local_start.date(), []).append(local_start)
+
+        day_parts: list[str] = []
+        for slot_date in sorted(grouped):
+            date_label = self._format_availability_date_label(slot_date)
+            times_text = self._join_names(
+                [start.strftime("%H:%M") for start in sorted(grouped[slot_date])],
+            )
+            day_parts.append(f"{date_label} at {times_text}")
+
+        body = "; ".join(day_parts)
         suffix = ""
         if len(slots) > _MAX_OFFERED_SLOTS:
             suffix = f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
 
         return (
-            f"I found openings with {doctor_name} {date_label} at {times_text}. "
+            f"I found openings with {doctor_name} {body}. "
             f"Which time works better?{suffix}"
         )
 
@@ -3341,17 +4559,23 @@ class ChatReceptionistService:
         if not slots:
             return _EARLIEST_NO_AVAILABILITY_MESSAGE
 
+        clinic_tz = self._clinic_timezone()
         first = slots[0]
-        slot_date = first.slot.start_time.date()
+        first_local = to_clinic_local_datetime(first.slot.start_time, clinic_tz)
+        slot_date = first_local.date()
         date_label = self._format_availability_date_label(slot_date)
         doctor_name = first.doctor_name
         same_doctor_and_day = all(
-            item.doctor_name == doctor_name and item.slot.start_time.date() == slot_date
+            item.doctor_name == doctor_name
+            and to_clinic_local_datetime(item.slot.start_time, clinic_tz).date() == slot_date
             for item in slots
         )
 
         if same_doctor_and_day:
-            times = [item.slot.start_time.strftime("%H:%M") for item in slots]
+            times = [
+                format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+                for item in slots
+            ]
             times_text = self._join_names(times)
             return (
                 f"The earliest {specialty_name.lower()} openings I found are with "
@@ -3359,7 +4583,10 @@ class ChatReceptionistService:
             )
 
         opening_descriptions = [
-            f"{item.slot.start_time.strftime('%H:%M')} with {item.doctor_name}"
+            (
+                f"{format_clinic_local_time_label(item.slot.start_time, clinic_tz)} "
+                f"with {item.doctor_name}"
+            )
             for item in slots
         ]
         openings_text = self._join_names(opening_descriptions)
@@ -3599,6 +4826,7 @@ class ChatReceptionistService:
         use_slot_date: bool = False,
     ) -> list[dict[str, Any]]:
         doctor_names = doctor_names or {}
+        clinic_tz = self._clinic_timezone()
         return [
             {
                 "availability_slot_id": str(slot.id),
@@ -3606,9 +4834,11 @@ class ChatReceptionistService:
                 "doctor_name": doctor_names.get(slot.doctor_id, ""),
                 "specialty_name": specialty_name,
                 "start_time": slot.start_time.isoformat(),
-                "display_time": slot.start_time.strftime("%H:%M"),
+                "display_time": format_clinic_local_time_label(slot.start_time, clinic_tz),
                 "display_date": (
-                    slot.start_time.date().isoformat() if use_slot_date else display_date
+                    to_clinic_local_datetime(slot.start_time, clinic_tz).date().isoformat()
+                    if use_slot_date
+                    else display_date
                 ),
             }
             for slot in slots
@@ -3622,6 +4852,7 @@ class ChatReceptionistService:
         display_date: str | None = None,
         use_slot_date: bool = False,
     ) -> list[dict[str, Any]]:
+        clinic_tz = self._clinic_timezone()
         return [
             {
                 "availability_slot_id": str(item.slot.id),
@@ -3629,9 +4860,16 @@ class ChatReceptionistService:
                 "doctor_name": item.doctor_name,
                 "specialty_name": specialty_name,
                 "start_time": item.slot.start_time.isoformat(),
-                "display_time": item.slot.start_time.strftime("%H:%M"),
+                "display_time": format_clinic_local_time_label(
+                    item.slot.start_time,
+                    clinic_tz,
+                ),
                 "display_date": (
-                    item.slot.start_time.date().isoformat() if use_slot_date else display_date
+                    to_clinic_local_datetime(item.slot.start_time, clinic_tz)
+                    .date()
+                    .isoformat()
+                    if use_slot_date
+                    else display_date
                 ),
             }
             for item in slots
@@ -3645,7 +4883,10 @@ class ChatReceptionistService:
         requested_date: str,
     ) -> str:
         shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
-        times = [slot.start_time.strftime("%H:%M") for slot in shown_slots]
+        clinic_tz = self._clinic_timezone()
+        times = [
+            format_clinic_local_time_label(slot.start_time, clinic_tz) for slot in shown_slots
+        ]
         times_text = self._join_names(times)
         suffix = ""
 
@@ -3664,8 +4905,12 @@ class ChatReceptionistService:
         specialty_name: str,
         requested_date: str,
     ) -> str:
+        clinic_tz = self._clinic_timezone()
         opening_descriptions = [
-            f"{item.slot.start_time.strftime('%H:%M')} with {item.doctor_name}"
+            (
+                f"{format_clinic_local_time_label(item.slot.start_time, clinic_tz)} "
+                f"with {item.doctor_name}"
+            )
             for item in slots
         ]
         openings_text = self._join_names(opening_descriptions)
@@ -3817,11 +5062,12 @@ class ChatReceptionistService:
             start_time=start_time,
             end_time=end_time,
         )
+        clinic_tz = self._clinic_timezone()
         return [
             slot
             for slot in slots
             if is_time_in_window(
-                time_value=slot.start_time.strftime("%H:%M"),
+                time_value=format_clinic_local_time_label(slot.start_time, clinic_tz),
                 window=time_window,
             )
         ]
@@ -3846,11 +5092,15 @@ class ChatReceptionistService:
             start_time=start_time,
             end_time=end_time,
         )
+        clinic_tz = self._clinic_timezone()
         return [
             item
             for item in slots
             if is_time_in_window(
-                time_value=item.slot.start_time.strftime("%H:%M"),
+                time_value=format_clinic_local_time_label(
+                    item.slot.start_time,
+                    clinic_tz,
+                ),
                 window=time_window,
             )
         ]
@@ -3949,7 +5199,7 @@ class ChatReceptionistService:
         if not has_provider:
             return False
 
-        scheduling_fields = {"requested_date", "requested_time_window"}
+        scheduling_fields = {"requested_date", "requested_time_window", "requested_exact_time"}
         provider_fields = {"selected_doctor_id", "selected_specialty_id"}
 
         if scheduling_fields & context_updates.keys():
@@ -3992,6 +5242,12 @@ class ChatReceptionistService:
     ) -> bool:
         offered_slots = merged_context.get("offered_slots") or []
 
+        if self._is_single_slot_affirmative_hold_selection(
+            message=message,
+            merged_context=merged_context,
+        ):
+            return True
+
         if offered_slots and "book" in normalized_message:
             return True
 
@@ -4004,7 +5260,26 @@ class ChatReceptionistService:
         if offered_slots and self._extract_offered_time(message) is not None:
             return True
 
+        if offered_slots and _BARE_INTEGER_PATTERN.fullmatch(message.strip()):
+            return True
+
         return self._extract_iso_datetime(message) is not None
+
+    def _is_single_slot_affirmative_hold_selection(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        offered_slots = merged_context.get("offered_slots") or []
+        if len(offered_slots) != 1:
+            return False
+        if (
+            merged_context.get("appointment_intake_awaiting")
+            != APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+        ):
+            return False
+        return is_simple_affirmative(message)
 
     def _handle_hold_flow(
         self,
@@ -4027,11 +5302,30 @@ class ChatReceptionistService:
                 hold_created=False,
             )
 
-        selected_slot = self._select_offered_slot(
+        selection = self._select_offered_slot(
             message,
             normalized_message,
             offered_slots,
         )
+
+        if selection.ambiguous:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND,
+                content=(
+                    "I found more than one matching time. "
+                    "Please choose by option number or day."
+                ),
+                chat_context_updates=context_updates,
+                hold_created=False,
+            )
+
+        selected_slot = selection.slot
+
+        if selected_slot is None and self._is_single_slot_affirmative_hold_selection(
+            message=message,
+            merged_context=merged_context,
+        ):
+            selected_slot = offered_slots[0]
 
         if selected_slot is None:
             if self._message_has_slot_selection_attempt(normalized_message, message):
@@ -4066,6 +5360,7 @@ class ChatReceptionistService:
                 start_time=slot.start_time,
                 end_time=slot.end_time,
                 owner_id=owner_id,
+                ttl_seconds=self._chat_appointment_hold_ttl_seconds,
             )
         except AvailabilitySlotNotFoundError:
             return ChatReceptionistReply(
@@ -4099,9 +5394,14 @@ class ChatReceptionistService:
             )
 
         hold_expires_at = hold.created_at + timedelta(
-            seconds=self.appointment_holds.ttl_seconds,
+            seconds=self._chat_appointment_hold_ttl_seconds,
         )
-        display_time = str(selected_slot.get("display_time", slot.start_time.strftime("%H:%M")))
+        display_time = str(
+            selected_slot.get(
+                "display_time",
+                format_clinic_local_time_label(slot.start_time, self._clinic_timezone()),
+            ),
+        )
         doctor_name = str(
             selected_slot.get("doctor_name")
             or merged_context.get("selected_doctor_name", "the selected doctor"),
@@ -4139,24 +5439,75 @@ class ChatReceptionistService:
         message: str,
         normalized_message: str,
         offered_slots: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
+    ) -> _OfferedSlotSelection:
         for keyword, index in _ORDINAL_SLOT_KEYWORDS.items():
             if keyword in normalized_message and index < len(offered_slots):
-                return offered_slots[index]
-
-        normalized_time = self._extract_offered_time(message)
-        if normalized_time is not None:
-            for offered_slot in offered_slots:
-                if offered_slot.get("display_time") == normalized_time:
-                    return offered_slot
+                return _OfferedSlotSelection(slot=offered_slots[index])
 
         iso_datetime = self._extract_iso_datetime(message)
         if iso_datetime is not None:
             for offered_slot in offered_slots:
                 if offered_slot.get("start_time") == iso_datetime.isoformat():
-                    return offered_slot
+                    return _OfferedSlotSelection(slot=offered_slot)
 
-        return None
+        bare_number_selection = self._select_offered_slot_by_bare_number(
+            message,
+            offered_slots,
+        )
+        if bare_number_selection is not None:
+            return bare_number_selection
+
+        normalized_time = self._extract_offered_time(message)
+        if normalized_time is not None:
+            return self._match_offered_slots_by_time(normalized_time, offered_slots)
+
+        return _OfferedSlotSelection()
+
+    def _select_offered_slot_by_bare_number(
+        self,
+        message: str,
+        offered_slots: list[dict[str, Any]],
+    ) -> _OfferedSlotSelection | None:
+        """Resolve a bare integer message against offered slots.
+
+        Returns ``None`` when the message is not a bare integer, so the caller
+        can fall back to the regular clock-time interpretation. Slot-aware
+        interpretation lives here (rather than in the context-free normalizer)
+        because this layer knows the offered options:
+
+            * a bare integer that maps to an offered option index keeps the
+              existing option-number selection behavior; otherwise
+            * the integer is treated as an ``HH:00`` clock time and matched
+              against offered ``display_time`` values (preserving the
+              ambiguity-safe behavior when more than one slot matches).
+        """
+        candidate = message.strip()
+        if not _BARE_INTEGER_PATTERN.fullmatch(candidate):
+            return None
+
+        number = int(candidate)
+
+        if 1 <= number <= len(offered_slots):
+            return _OfferedSlotSelection(slot=offered_slots[number - 1])
+
+        return self._match_offered_slots_by_time(f"{number:02d}:00", offered_slots)
+
+    def _match_offered_slots_by_time(
+        self,
+        normalized_time: str,
+        offered_slots: list[dict[str, Any]],
+    ) -> _OfferedSlotSelection:
+        matches = [
+            offered_slot
+            for offered_slot in offered_slots
+            if offered_slot.get("display_time") == normalized_time
+        ]
+        distinct_starts = {match.get("start_time") for match in matches}
+        if len(distinct_starts) > 1:
+            return _OfferedSlotSelection(ambiguous=True)
+        if matches:
+            return _OfferedSlotSelection(slot=matches[0])
+        return _OfferedSlotSelection()
 
     def _message_has_slot_selection_attempt(
         self,
@@ -4172,10 +5523,247 @@ class ChatReceptionistService:
         if self._extract_offered_time(message) is not None:
             return True
 
+        if _BARE_INTEGER_PATTERN.fullmatch(message.strip()):
+            return True
+
         return self._extract_iso_datetime(message) is not None
 
     def _message_has_time_pattern(self, normalized_message: str) -> bool:
         return _TIME_PATTERN.search(normalized_message) is not None
+
+    def _requested_exact_time(self, merged_context: dict[str, Any]) -> str | None:
+        exact_time = merged_context.get("requested_exact_time")
+        if isinstance(exact_time, str) and exact_time:
+            return exact_time
+        return None
+
+    def _filter_slots_by_exact_time(
+        self,
+        slots: Sequence[AvailabilitySlot],
+        exact_time: str,
+    ) -> list[AvailabilitySlot]:
+        clinic_tz = self._clinic_timezone()
+        return [
+            slot
+            for slot in slots
+            if format_clinic_local_time_label(slot.start_time, clinic_tz) == exact_time
+        ]
+
+    def _filter_attributed_slots_by_exact_time(
+        self,
+        slots: Sequence[DoctorAttributedAvailabilitySlot],
+        exact_time: str,
+    ) -> list[DoctorAttributedAvailabilitySlot]:
+        clinic_tz = self._clinic_timezone()
+        return [
+            item
+            for item in slots
+            if format_clinic_local_time_label(item.slot.start_time, clinic_tz) == exact_time
+        ]
+
+    def _format_weekday_label(self, parsed_date: date) -> str:
+        return parsed_date.strftime("%A")
+
+    def _format_exact_time_available_hold_prompt(
+        self,
+        *,
+        provider_name: str,
+        parsed_date: date,
+        display_time: str,
+    ) -> str:
+        weekday = self._format_weekday_label(parsed_date)
+        return (
+            f"Yes, {provider_name} is available on {weekday} at {display_time}. "
+            "Would you like me to hold that time?"
+        )
+
+    def _format_exact_time_unavailable_with_alternatives(
+        self,
+        *,
+        provider_name: str,
+        parsed_date: date,
+        requested_exact_time: str,
+        alternative_times: Sequence[str],
+    ) -> str:
+        weekday = self._format_weekday_label(parsed_date)
+        if alternative_times:
+            alternatives_text = self._join_names(list(alternative_times))
+            return (
+                f"{requested_exact_time} is not available with {provider_name} on "
+                f"{weekday}, but I found these openings that day: {alternatives_text}. "
+                "Which time would you like?"
+            )
+        return (
+            f"I don't have {requested_exact_time} available with {provider_name} on "
+            f"{weekday}. Would you like me to check another day or time window?"
+        )
+
+    def _handle_exact_time_doctor_availability(
+        self,
+        *,
+        slots: Sequence[AvailabilitySlot],
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        doctor_name: str,
+        requested_date: str,
+        parsed_requested_date: date,
+    ) -> ChatReceptionistReply | None:
+        requested_exact_time = self._requested_exact_time(merged_context)
+        if requested_exact_time is None:
+            return None
+
+        exact_matches = self._filter_slots_by_exact_time(slots, requested_exact_time)
+        clinic_tz = self._clinic_timezone()
+
+        if len(exact_matches) == 1:
+            slot = exact_matches[0]
+            display_time = format_clinic_local_time_label(slot.start_time, clinic_tz)
+            offered_slots = self._serialize_offered_slots(
+                [slot],
+                doctor_names={slot.doctor_id: doctor_name},
+                specialty_name=merged_context.get("selected_specialty_name"),
+                display_date=requested_date,
+            )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
+                content=self._format_exact_time_available_hold_prompt(
+                    provider_name=doctor_name,
+                    parsed_date=parsed_requested_date,
+                    display_time=display_time,
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+                },
+                availability_checked=True,
+                offered_slot_count=1,
+            )
+
+        if not exact_matches:
+            alternative_times = [
+                format_clinic_local_time_label(slot.start_time, clinic_tz) for slot in slots
+            ]
+            shown_slots = list(slots[:_MAX_OFFERED_SLOTS])
+            offered_slots = self._serialize_offered_slots(
+                shown_slots,
+                doctor_names={slot.doctor_id: doctor_name for slot in shown_slots},
+                specialty_name=merged_context.get("selected_specialty_name"),
+                display_date=requested_date,
+            ) if shown_slots else []
+            return ChatReceptionistReply(
+                intent=(
+                    ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+                    if not shown_slots
+                    else ChatReceptionistIntent.AVAILABILITY_RESULTS
+                ),
+                content=self._format_exact_time_unavailable_with_alternatives(
+                    provider_name=doctor_name,
+                    parsed_date=parsed_requested_date,
+                    requested_exact_time=requested_exact_time,
+                    alternative_times=alternative_times[:_MAX_OFFERED_SLOTS],
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": (
+                        APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+                        if shown_slots
+                        else APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+                    ),
+                },
+                availability_checked=True,
+                offered_slot_count=len(offered_slots),
+            )
+
+        return None
+
+    def _handle_exact_time_specialty_availability(
+        self,
+        *,
+        attributed_slots: Sequence[DoctorAttributedAvailabilitySlot],
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        specialty_name: str,
+        requested_date: str,
+        parsed_requested_date: date,
+    ) -> ChatReceptionistReply | None:
+        requested_exact_time = self._requested_exact_time(merged_context)
+        if requested_exact_time is None:
+            return None
+
+        exact_matches = self._filter_attributed_slots_by_exact_time(
+            attributed_slots,
+            requested_exact_time,
+        )
+        clinic_tz = self._clinic_timezone()
+
+        if len(exact_matches) == 1:
+            item = exact_matches[0]
+            display_time = format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+            offered_slots = self._serialize_attributed_offered_slots(
+                [item],
+                specialty_name=specialty_name,
+                display_date=requested_date,
+            )
+            provider_name = item.doctor_name or specialty_name
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.AVAILABILITY_RESULTS,
+                content=self._format_exact_time_available_hold_prompt(
+                    provider_name=provider_name,
+                    parsed_date=parsed_requested_date,
+                    display_time=display_time,
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+                },
+                availability_checked=True,
+                offered_slot_count=1,
+            )
+
+        if not exact_matches:
+            alternative_times = [
+                format_clinic_local_time_label(item.slot.start_time, clinic_tz)
+                for item in attributed_slots
+            ]
+            shown_slots = attributed_slots[:_MAX_OFFERED_SLOTS]
+            offered_slots = self._serialize_attributed_offered_slots(
+                shown_slots,
+                specialty_name=specialty_name,
+                display_date=requested_date,
+            ) if shown_slots else []
+            return ChatReceptionistReply(
+                intent=(
+                    ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+                    if not shown_slots
+                    else ChatReceptionistIntent.AVAILABILITY_RESULTS
+                ),
+                content=self._format_exact_time_unavailable_with_alternatives(
+                    provider_name=specialty_name,
+                    parsed_date=parsed_requested_date,
+                    requested_exact_time=requested_exact_time,
+                    alternative_times=alternative_times[:_MAX_OFFERED_SLOTS],
+                ),
+                chat_context_updates={
+                    **context_updates,
+                    "offered_slots": offered_slots,
+                    "requested_exact_time": requested_exact_time,
+                    "appointment_intake_awaiting": (
+                        APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+                        if shown_slots
+                        else APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+                    ),
+                },
+                availability_checked=True,
+                offered_slot_count=len(offered_slots),
+            )
+
+        return None
 
     def _extract_offered_time(self, message: str) -> str | None:
         normalized = normalize_appointment_time_expression(message, allow_bare_hour=True)

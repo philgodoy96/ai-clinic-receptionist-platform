@@ -45,7 +45,13 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     appointment_hold_ttl_seconds: int = Field(
         default=300,
+        ge=1,
         alias="APPOINTMENT_HOLD_TTL_SECONDS",
+    )
+    chat_appointment_hold_ttl_seconds: int = Field(
+        default=600,
+        ge=1,
+        alias="CHAT_APPOINTMENT_HOLD_TTL_SECONDS",
     )
     scheduling_min_booking_lead_minutes: int = Field(
         default=60,

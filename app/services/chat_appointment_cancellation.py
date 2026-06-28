@@ -37,10 +37,18 @@ from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
+    APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     ParsedPatientFields,
+    ResolvedPatientContext,
     _dob_ambiguity_issue,
     _is_valid_iso_date,
     _merge_parsed_fields,
+    appointment_management_missing_identity_prompt,
+    build_resolved_patient_context_updates,
+    merge_appointment_management_identity,
+    read_resolved_patient_context,
 )
 from app.services.chat_confirmation import (
     ConfirmationDecision,
@@ -49,7 +57,16 @@ from app.services.chat_confirmation import (
     understand_confirmation,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
-from app.services.clinic_time import ClinicTimeService
+from app.services.clinic_time import (
+    ClinicTimeService,
+    format_clinic_local_time_label,
+    to_clinic_local_datetime,
+)
+from app.services.dob_ambiguity import (
+    detect_ambiguous_numeric_dob,
+    merge_dob_ambiguity_context_updates,
+    try_resolve_pending_dob_ambiguity,
+)
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 
 logger = logging.getLogger(__name__)
@@ -67,12 +84,19 @@ CHAT_CANCELLATION_SOURCE = "chat_cancellation"
 _CANCELLATION_IDENTITY_REPROMPT_MESSAGE = (
     "I still need the patient's full name and date of birth to look up the appointment."
 )
+_CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE = (
+    "Thanks. What is the patient's full name?"
+)
+_CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE = (
+    "Thanks. What is the patient's date of birth?"
+)
 _CANCELLATION_PATIENT_NOT_FOUND_MESSAGE = (
     "I couldn't find a matching patient profile with that name and date of birth. "
     "Could you check the details and try again?"
 )
 _CANCELLATION_NO_UPCOMING_APPOINTMENTS_MESSAGE = (
-    "I'm not seeing any upcoming appointments for that patient."
+    "I don't see any upcoming appointments that can be canceled. "
+    "Is there anything else I can help you with?"
 )
 _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT = (
     "Which appointment would you like to cancel?"
@@ -198,7 +222,7 @@ class ChatAppointmentCancellationOrchestrator:
         chat_context: dict[str, Any],
         parse_patient_fields: Callable[..., ParsedPatientFields],
     ) -> CancellationFlowResult:
-        base_updates = {
+        base_updates: dict[str, Any] = {
             "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
             "appointment_management_awaiting": (
                 APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
@@ -210,7 +234,23 @@ class ChatAppointmentCancellationOrchestrator:
             chat_context=chat_context,
             parse_patient_fields=parse_patient_fields,
         )
+
+        # Preserve fields collected on earlier turns so the patient only has to
+        # supply what is still missing, and so an ambiguous-DOB clarification can
+        # resume with the name already on hand.
+        identity = merge_appointment_management_identity(
+            chat_context.get(APPOINTMENT_MANAGEMENT_IDENTITY_KEY),
+            parsed,
+            include_date_of_birth=dob_issue is None,
+        )
+        base_updates = {**base_updates, APPOINTMENT_MANAGEMENT_IDENTITY_KEY: identity}
+
         if dob_issue is not None:
+            merge_dob_ambiguity_context_updates(
+                base_updates,
+                dob_issue=dob_issue,
+                date_of_birth=None,
+            )
             return CancellationFlowResult(
                 intent="cancel_request",
                 content=dob_issue.clarification_question or (
@@ -219,21 +259,34 @@ class ChatAppointmentCancellationOrchestrator:
                 chat_context_updates=base_updates,
             )
 
-        if parsed.full_name is None or parsed.date_of_birth is None:
+        full_name = identity.get("full_name")
+        date_of_birth = identity.get("date_of_birth")
+        merge_dob_ambiguity_context_updates(
+            base_updates,
+            dob_issue=None,
+            date_of_birth=date_of_birth if isinstance(date_of_birth, str) else None,
+        )
+        if not isinstance(full_name, str) or not isinstance(date_of_birth, str):
+            prompt = appointment_management_missing_identity_prompt(
+                identity,
+                both_prompt=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+                name_prompt=_CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
+                dob_prompt=_CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
+            )
             return CancellationFlowResult(
                 intent="cancel_request",
-                content=_CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
+                content=prompt or _CANCELLATION_IDENTITY_REPROMPT_MESSAGE,
                 chat_context_updates=base_updates,
             )
 
-        full_name = normalize_patient_display_name(parsed.full_name)
+        full_name = normalize_patient_display_name(full_name)
         resolution = self.patient_identity_resolution.resolve(
             PatientIdentityResolutionRequest(
                 patient_name=full_name,
-                patient_date_of_birth=date.fromisoformat(parsed.date_of_birth),
+                patient_date_of_birth=date.fromisoformat(date_of_birth),
                 conversation_id=conversation.id,
-                patient_email=parsed.email,
-                patient_phone=parsed.phone,
+                patient_email=identity.get("email"),
+                patient_phone=identity.get("phone"),
                 caller_claims_existing_patient=True,
                 allow_demo_patient_creation=False,
             ),
@@ -268,10 +321,12 @@ class ChatAppointmentCancellationOrchestrator:
             )
 
         if resolution.match_status is not PatientResolutionMatchStatus.EXACT_MATCH:
+            # The lookup failed even though both fields were provided; drop the
+            # buffered identity so the patient can correct it from scratch.
             return CancellationFlowResult(
                 intent="cancel_request",
                 content=_CANCELLATION_PATIENT_NOT_FOUND_MESSAGE,
-                chat_context_updates=base_updates,
+                chat_context_updates={**base_updates, APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None},
             )
 
         record = self.patient_identity_resolution.get_resolution_for_booking(
@@ -287,27 +342,64 @@ class ChatAppointmentCancellationOrchestrator:
 
         patient = self.patient_identity_resolution.patients.get_by_id(record.patient_id)
         resolved_name = patient.full_name if patient is not None else full_name
+        resolved_updates = build_resolved_patient_context_updates(
+            patient_id=str(record.patient_id),
+            name=resolved_name,
+            date_of_birth=(
+                patient.date_of_birth.isoformat() if patient is not None else date_of_birth
+            ),
+            email=patient.email if patient is not None else identity.get("email"),
+            patient_resolution_id=resolution.patient_resolution_id,
+        )
+        # Identity is now resolved; drop the partial intake buffer.
+        resolved_updates[APPOINTMENT_MANAGEMENT_IDENTITY_KEY] = None
+
         start_from = self.clinic_time_service.clinic_now()
         cancelable = self.appointments.list_cancelable_for_patient(
             patient_id=record.patient_id,
             start_from=start_from,
         )
 
+        return self._build_appointment_options_result(
+            resolved_context_updates=resolved_updates,
+            cancelable=cancelable,
+        )
+
+    def _build_appointment_options_result(
+        self,
+        *,
+        resolved_context_updates: dict[str, Any],
+        cancelable: Sequence[Appointment],
+    ) -> CancellationFlowResult:
         if not cancelable:
+            # The patient is resolved but has nothing to cancel. Move to a safe
+            # completed state with an open follow-up so the next turn can close
+            # politely or route a fresh intent, instead of trapping the user in
+            # patient-identity intake.
             return CancellationFlowResult(
                 intent="cancel_request",
                 content=_CANCELLATION_NO_UPCOMING_APPOINTMENTS_MESSAGE,
-                chat_context_updates=base_updates,
+                chat_context_updates={
+                    **resolved_context_updates,
+                    "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+                    "appointment_management_awaiting": (
+                        APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+                    ),
+                    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: (
+                        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP
+                    ),
+                    "cancellation_status": None,
+                    "offered_appointments": None,
+                    APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
+                },
             )
 
         presentations = [
             self._present_appointment(appointment) for appointment in cancelable
         ]
         shared_context = {
+            **resolved_context_updates,
             "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
-            "resolved_patient_id": str(record.patient_id),
-            "resolved_patient_name": resolved_name,
-            "patient_resolution_id": resolution.patient_resolution_id,
         }
 
         if len(presentations) == 1:
@@ -353,6 +445,47 @@ class ChatAppointmentCancellationOrchestrator:
                     for presentation in presentations
                 ],
             },
+        )
+
+    def list_appointments_for_resolved_patient(
+        self,
+        *,
+        chat_context: dict[str, Any],
+    ) -> CancellationFlowResult | None:
+        """Reuse an already-resolved patient to list cancelable appointments.
+
+        Returns ``None`` when no resolved patient identity is available, so the
+        caller can fall back to the normal identity intake. Ownership is still
+        validated by the repository/service before any cancellation executes.
+        """
+        resolved = read_resolved_patient_context(chat_context)
+        if resolved is None:
+            return None
+        try:
+            patient_id = UUID(resolved.patient_id)
+        except ValueError:
+            return None
+
+        start_from = self.clinic_time_service.clinic_now()
+        cancelable = self.appointments.list_cancelable_for_patient(
+            patient_id=patient_id,
+            start_from=start_from,
+        )
+        return self._build_appointment_options_result(
+            resolved_context_updates=self._resolved_patient_context_updates(resolved),
+            cancelable=cancelable,
+        )
+
+    @staticmethod
+    def _resolved_patient_context_updates(
+        resolved: ResolvedPatientContext,
+    ) -> dict[str, Any]:
+        return build_resolved_patient_context_updates(
+            patient_id=resolved.patient_id,
+            name=resolved.name,
+            date_of_birth=resolved.date_of_birth,
+            email=resolved.email,
+            patient_resolution_id=resolved.patient_resolution_id,
         )
 
     def handle_appointment_selection(
@@ -641,9 +774,7 @@ class ChatAppointmentCancellationOrchestrator:
             "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
             "cancellation_status": "cancelled",
             "cancelled_appointment_summary": cancelled_appointment_summary,
-            "resolved_patient_id": chat_context.get("resolved_patient_id"),
-            "resolved_patient_name": chat_context.get("resolved_patient_name"),
-            "patient_resolution_id": chat_context.get("patient_resolution_id"),
+            **self._resolved_patient_context(chat_context),
             "selected_appointment_id": None,
             "selected_appointment_summary": None,
             "offered_appointments": None,
@@ -665,9 +796,7 @@ class ChatAppointmentCancellationOrchestrator:
         return {
             "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
             "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
-            "resolved_patient_id": chat_context.get("resolved_patient_id"),
-            "resolved_patient_name": chat_context.get("resolved_patient_name"),
-            "patient_resolution_id": chat_context.get("patient_resolution_id"),
+            **self._resolved_patient_context(chat_context),
             "selected_appointment_id": None,
             "selected_appointment_summary": None,
             "offered_appointments": None,
@@ -680,15 +809,34 @@ class ChatAppointmentCancellationOrchestrator:
         chat_context: dict[str, Any],
         parse_patient_fields: Callable[..., ParsedPatientFields],
     ) -> tuple[ParsedPatientFields, FieldIssue | None]:
+        confirmed_iso, rejection_issue = try_resolve_pending_dob_ambiguity(
+            message,
+            chat_context,
+        )
+        if rejection_issue is not None:
+            return ParsedPatientFields(), rejection_issue
+
         deterministic = parse_patient_fields(message, booking_context=True)
         understanding = self._interpret_identity_turn(
             message=message,
             chat_context=chat_context,
         )
         if understanding is None or self._should_use_deterministic_only(understanding):
-            return deterministic, None
+            if confirmed_iso is not None:
+                return (
+                    ParsedPatientFields(
+                        full_name=deterministic.full_name,
+                        date_of_birth=confirmed_iso,
+                        email=deterministic.email,
+                        phone=deterministic.phone,
+                    ),
+                    None,
+                )
+            return deterministic, detect_ambiguous_numeric_dob(message)
 
         ctu_fields, dob_issue = self._validated_fields_from_understanding(understanding)
+        if dob_issue is None:
+            dob_issue = detect_ambiguous_numeric_dob(message)
         merged = _merge_parsed_fields(deterministic, ctu_fields)
         if deterministic.phone and not merged.phone:
             merged = ParsedPatientFields(
@@ -697,6 +845,14 @@ class ChatAppointmentCancellationOrchestrator:
                 email=merged.email,
                 phone=deterministic.phone,
             )
+        if confirmed_iso is not None:
+            merged = ParsedPatientFields(
+                full_name=merged.full_name,
+                date_of_birth=confirmed_iso,
+                email=merged.email,
+                phone=merged.phone,
+            )
+            dob_issue = None
         return merged, dob_issue
 
     def _interpret_identity_turn(
@@ -777,9 +933,10 @@ class ChatAppointmentCancellationOrchestrator:
     def _present_appointment(self, appointment: Appointment) -> _AppointmentPresentation:
         doctor_name = self._resolve_doctor_name(appointment.doctor_id)
         specialty_name = self._resolve_specialty_name(appointment.specialty_id)
-        localized_start = appointment.start_time.astimezone(self.clinic_time_service.timezone)
+        clinic_tz = self.clinic_time_service.timezone
+        localized_start = to_clinic_local_datetime(appointment.start_time, clinic_tz)
         weekday = localized_start.strftime("%A")
-        time_label = localized_start.strftime("%H:%M")
+        time_label = format_clinic_local_time_label(appointment.start_time, clinic_tz)
 
         list_summary = (
             f"{specialty_name} with {doctor_name} on {weekday} at {time_label}"
@@ -940,6 +1097,8 @@ class ChatAppointmentCancellationOrchestrator:
             for key in (
                 "resolved_patient_id",
                 "resolved_patient_name",
+                "resolved_patient_date_of_birth",
+                "resolved_patient_email",
                 "patient_resolution_id",
             )
             if key in chat_context

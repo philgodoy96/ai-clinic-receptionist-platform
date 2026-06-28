@@ -42,6 +42,39 @@ def test_create_hold_stores_temporary_slot_reservation() -> None:
     assert stored.owner_id == "call-123"
 
 
+def test_create_hold_uses_service_default_ttl_when_override_not_provided() -> None:
+    repository = FakeAppointmentHoldRepository()
+    service = AppointmentHoldService(repository=repository, ttl_seconds=300)
+    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+
+    service.create_hold(
+        availability_slot_id=uuid4(),
+        doctor_id=uuid4(),
+        start_time=start_time,
+        end_time=start_time + timedelta(minutes=30),
+        owner_id="call-123",
+    )
+
+    assert repository.create_ttl_seconds == [300]
+
+
+def test_create_hold_uses_override_ttl_when_provided() -> None:
+    repository = FakeAppointmentHoldRepository()
+    service = AppointmentHoldService(repository=repository, ttl_seconds=300)
+    start_time = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
+
+    service.create_hold(
+        availability_slot_id=uuid4(),
+        doctor_id=uuid4(),
+        start_time=start_time,
+        end_time=start_time + timedelta(minutes=30),
+        owner_id="chat-123",
+        ttl_seconds=600,
+    )
+
+    assert repository.create_ttl_seconds == [600]
+
+
 def test_create_hold_rejects_missing_owner() -> None:
     service = AppointmentHoldService(
         repository=FakeAppointmentHoldRepository(),
@@ -265,8 +298,10 @@ def test_redis_repository_sets_ttl_on_slot_and_hold_id_keys() -> None:
 class FakeAppointmentHoldRepository:
     def __init__(self) -> None:
         self.holds: dict[tuple[UUID, datetime], AppointmentHold] = {}
+        self.create_ttl_seconds: list[int] = []
 
     def create(self, hold: AppointmentHold, ttl_seconds: int) -> bool:
+        self.create_ttl_seconds.append(ttl_seconds)
         key = (hold.doctor_id, hold.start_time)
 
         if key in self.holds:

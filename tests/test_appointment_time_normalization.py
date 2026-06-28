@@ -52,3 +52,63 @@ def test_bare_hour_disabled_when_not_allowed() -> None:
 def test_invalid_colon_time_is_rejected() -> None:
     assert normalize_appointment_time_expression("25:00") is None
     assert normalize_appointment_time_expression("12:99") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_value", "expected_raw"),
+    [
+        ("10h", "10:00", "10h"),
+        ("10 h", "10:00", "10 h"),
+        ("10hs", "10:00", "10hs"),
+        ("10 hs", "10:00", "10 hs"),
+        ("10h30", "10:30", "10h30"),
+        ("10 h 30", "10:30", "10 h 30"),
+        ("9h", "09:00", "9h"),
+        ("9h05", "09:05", "9h05"),
+        ("23h", "23:00", "23h"),
+        ("0h", "00:00", "0h"),
+    ],
+)
+def test_normalizes_h_suffix_time_expressions(
+    text: str,
+    expected_value: str,
+    expected_raw: str,
+) -> None:
+    normalized = normalize_appointment_time_expression(text)
+
+    assert normalized is not None
+    assert normalized.value == expected_value
+    assert normalized.raw == expected_raw
+
+
+def test_h_suffix_works_even_when_bare_hour_disallowed() -> None:
+    # ``10h`` is an explicit clock expression, not an ambiguous bare ``10``.
+    normalized = normalize_appointment_time_expression("10h", allow_bare_hour=False)
+
+    assert normalized is not None
+    assert normalized.value == "10:00"
+
+
+@pytest.mark.parametrize("text", ["25h", "10h99", "2 hrs", "2 hours"])
+def test_rejects_invalid_or_non_clock_h_expressions(text: str) -> None:
+    assert normalize_appointment_time_expression(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_value"),
+    [
+        ("It could be at 10", "10:00"),
+        ("Could be 10", "10:00"),
+        ("I can do 10", "10:00"),
+        ("at 2pm", "14:00"),
+        ("Could it be on Monday 2pm?", "14:00"),
+    ],
+)
+def test_normalizes_contextual_time_selection_phrases(
+    text: str,
+    expected_value: str,
+) -> None:
+    normalized = normalize_appointment_time_expression(text)
+
+    assert normalized is not None
+    assert normalized.value == expected_value

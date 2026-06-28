@@ -17,7 +17,6 @@ NEW_PATIENT_IDENTITY_STEPS = (
     "Jane Doe.",
     "1990-05-15",
     "jane.doe@example.com",
-    "Yes",
 )
 FINAL_BOOKING_CONFIRM = "Yes"
 
@@ -25,7 +24,6 @@ EXISTING_PATIENT_IDENTITY_STEPS = (
     "Yes.",
     "John Miller, 1985-04-12",
     "john.miller@example.test",
-    "Yes, that email is correct.",
 )
 
 

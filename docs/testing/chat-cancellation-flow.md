@@ -2,7 +2,9 @@
 
 Manual test guide for the contextual cancellation task frame on branch `feat/contextual-appointment-management-cancel-flow`.
 
-Architecture and behavior: [Chat Appointment Management — Contextual Cancellation](../architecture/chat-appointment-management.md).
+Architecture and behavior: [Chat Appointment Management](../architecture/chat-appointment-management.md).
+
+End-to-end QA (book → lookup → reschedule → cancel): [Chat Appointment Management Manual Testing](chat-appointment-management.md).
 
 Configuration: [configuration.md](../configuration.md).
 
@@ -92,7 +94,7 @@ Each successful selection should move to explicit confirmation, not immediate ca
 
 ## Out of scope / follow-ups
 
-- **Rescheduling task frame** — future slice; post-cancellation `RESCHEDULE_REQUEST` falls through to normal routing but no dedicated reschedule frame yet.
+- **Rescheduling** — implemented in written chat; see [Chat Appointment Management Manual Testing](chat-appointment-management.md).
 - **Retell voice flow** — not modified.
 - **Timezone/seed audit** — future slice; demo slot times may appear offset if UTC storage and clinic-local presentation are misaligned.
 - **Public demo with real LLM providers** — requires auth, rate limits, and cost controls.

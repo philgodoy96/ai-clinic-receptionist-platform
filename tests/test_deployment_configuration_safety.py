@@ -25,6 +25,7 @@ ENV_DOCUMENTATION_FILES = (
     PROJECT_ROOT / "docs" / "configuration.md",
     PROJECT_ROOT / "docs" / "operations" / "public-demo-deployment.md",
 )
+COMMITTED_CONFIG_FILES = (PROJECT_ROOT / "docker-compose.yml",)
 
 SECRET_LIKE_PATTERNS = (
     re.compile(r"gsk_[a-zA-Z0-9]{10,}"),
@@ -283,4 +284,22 @@ def test_example_env_docs_contain_no_real_secrets(doc_file: Path) -> None:
     for line_number, value in _iter_env_assignment_values(doc_file):
         assert not _line_looks_like_real_secret(value), (
             f"{doc_file.name}:{line_number} looks like a real secret placeholder"
+        )
+
+
+@pytest.mark.parametrize("config_file", COMMITTED_CONFIG_FILES)
+def test_committed_config_files_contain_no_real_secrets(config_file: Path) -> None:
+    for line_number, line in enumerate(
+        config_file.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        _, _, value = stripped.partition(":")
+        normalized_value = value.strip()
+        if normalized_value.startswith("${") and normalized_value.endswith("}"):
+            continue
+        assert not _line_looks_like_real_secret(normalized_value), (
+            f"{config_file.name}:{line_number} looks like a real secret placeholder"
         )

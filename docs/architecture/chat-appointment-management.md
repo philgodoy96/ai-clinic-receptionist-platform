@@ -1,16 +1,36 @@
-# Chat Appointment Management — Contextual Cancellation
+# Chat Appointment Management — Contextual Written-Chat Flows
 
-Branch: `feat/contextual-appointment-management-cancel-flow`
+Branch: `feat/contextual-appointment-management-reschedule-flow`
 
-Written chat handles **appointment management** (cancel, and eventually reschedule) as a separate **task frame** from **appointment intake** (scheduling). Cancellation is the first completed slice of this frame.
+Written chat supports end-to-end **appointment management** in a single conversation: booking, scheduled appointment lookup, rescheduling, and cancellation. These flows use a shared **appointment-management task frame** alongside the separate **appointment intake** frame used for new scheduling.
 
-Manual testing: [Chat Cancellation Flow Manual Testing](../testing/chat-cancellation-flow.md).
+Manual testing: [Chat Appointment Management Manual Testing](../testing/chat-appointment-management.md).
 
 Related:
 
 - [Chat Turn Understanding Architecture](chat-turn-understanding.md) — CTU contract and appointment intake task frame
-- [Retell Voice Appointment Cancellation](retell-voice-cancellation.md) — shared `AppointmentCancellationService` on the voice channel
-- [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md) — future chat reschedule slice
+- [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md) — booking intake and slot selection
+- [Chat Cancellation Flow Manual Testing](../testing/chat-cancellation-flow.md) — cancellation-focused checklist
+- [Appointment Rescheduling Foundation](appointment-rescheduling-foundation.md) — shared `AppointmentReschedulingService`
+- [Retell Voice Appointment Cancellation](retell-voice-cancellation.md) — voice channel uses the same cancellation domain service
+- [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md) — voice channel uses the same rescheduling domain service
+- [Appointment Slot Holds](appointment-holds.md) — Redis hold model and TTL policy
+
+Retell/voice orchestration is **unchanged** by this slice. Voice remains provider-driven through Retell tool callbacks.
+
+## Feature overview
+
+The written-chat receptionist (`POST /api/v1/chat/messages`) now supports:
+
+| Capability | Example user intent |
+| --- | --- |
+| **Book appointments** | `I'd like to schedule with a dermatologist` |
+| **View scheduled appointments** | `show my appointments`, `what appointments do I have?` |
+| **Reschedule appointments** | `reschedule my appointment`, `move my appointment to Wednesday` |
+| **Cancel appointments** | `I want to cancel my appointment` |
+| **Continue after completion** | After booking, cancel, or reschedule completes, the user can start a new intent in the same conversation |
+
+All of the above are **written-chat** functionality. The backend orchestrates conversation state, validation, and domain execution. Retell voice uses a separate provider-orchestrated path documented under `docs/operations/retell-*` and `docs/architecture/retell-*`.
 
 ## Core principle
 
@@ -20,211 +40,240 @@ The LLM understands. The backend validates and decides. Domain services execute.
 
 In practice:
 
-- **Chat / CTU** may interpret natural language (for example patient identity fields during cancellation intake).
-- **Backend orchestration** owns task-frame state, patient resolution, offered-appointment lists, selection validation, confirmation gates, and ownership checks.
-- **Domain services** execute durable side effects only after validation passes — cancellation runs exclusively through `AppointmentCancellationService`.
-- **Assistant replies** must not expose internal IDs, UUIDs, raw timestamps, or other backend implementation details.
+- **Turn understanding / LLM layer** — identifies user intent and extracts normalized candidates (date, time, specialty, doctor, patient name, DOB, email, slot references, yes/no answers).
+- **Conversation orchestration layer** — maintains `chat_context`, preserves resolved patient context, tracks offered slots and appointments, aligns prompts with expected response types, and routes booking / lookup / cancel / reschedule intents.
+- **Domain service layer** — validates patient ownership, appointment status transitions, and holds; executes booking, cancellation, and reschedule; records audit events and email jobs.
+- **Persistence / infrastructure** — PostgreSQL for durable records; Redis for temporary appointment holds; RabbitMQ for email job wake-up messages; fake providers for local demo mode.
 
-The interpreter and orchestrator never cancel appointments directly.
+The interpreter and orchestrator never book, cancel, or reschedule appointments directly. Assistant replies must not expose internal IDs, UUIDs, raw timestamps, or other backend implementation details.
 
 ## Architecture overview
 
-Cancellation is not part of appointment intake (`appointment_intake_awaiting`). It uses a parallel **appointment-management task frame** keyed by `appointment_management_mode` and `appointment_management_awaiting`.
+Written chat uses two parallel task frames:
 
-High-level flow:
+| Frame | Marker | Purpose |
+| --- | --- | --- |
+| **Appointment intake** | `appointment_intake_awaiting` | New booking: specialty/doctor, date/time, slot selection, hold, identity, confirmation |
+| **Appointment management** | `appointment_management_mode` + `appointment_management_awaiting` | Lookup, cancel, reschedule for an existing patient |
 
-1. **Chat detects cancellation intent** — top-level keywords (`cancel`, `cancellation`) enter the cancellation task frame.
-2. **Backend enters cancellation mode** — `appointment_management_mode = "cancel"` and `appointment_management_awaiting = "patient_identity"`.
-3. **Patient identity is resolved** before any appointment lookup — full name and date of birth are required; `PatientIdentityResolutionService` resolves the patient.
-4. **Appointments are listed only for the resolved patient** — `AppointmentRepository.list_cancelable_for_patient` returns upcoming cancelable appointments from clinic-local now.
-5. **User selection is validated against offered appointments** — selection signals resolve only against `offered_appointments` stored in `chat_context`.
-6. **Cancellation requires explicit confirmation** — selecting an appointment does not cancel it; confirmation uses `ConfirmationType.CANCELLATION_CONFIRMATION`.
-7. **Domain cancellation execution** — on confirmed intent, `AppointmentCancellationService.cancel_appointment` runs with an idempotency key and audit metadata.
+High-level layer responsibilities:
 
-Primary modules:
+### Turn understanding / LLM layer
+
+- Identifies intents such as scheduling, cancellation, reschedule, and appointment lookup.
+- Extracts normalized fields from natural language (`It could be at 10`, `Monday 2pm`, `check my appointments`).
+- Optional via `CHAT_TURN_UNDERSTANDING_INTERPRETER` (`disabled`, `fake`, `groq`). When disabled, deterministic parsers still handle many flows.
+
+### Conversation orchestration layer
+
+Primary module: `app/services/chat_receptionist.py`.
+
+Specialized orchestrators:
 
 | Module | Role |
 | --- | --- |
-| `app/services/chat_appointment_cancellation.py` | `ChatAppointmentCancellationOrchestrator` — identity intake, listing, selection, confirmation, service delegation |
-| `app/services/chat_receptionist.py` | Task-frame routing, entry on cancel keywords, post-cancellation follow-up |
-| `app/services/chat_confirmation.py` | `ConfirmationType.CANCELLATION_CONFIRMATION` phrase matching |
-| `app/services/appointment_cancellation.py` | Shared domain cancellation service (also used by Retell voice) |
-| `app/services/post_cancellation_turn.py` | Post-cancellation semantic decision classification |
-| `app/services/post_completion_turn_classification.py` | Shared phrase lists for post-completion turns (booking and cancellation) |
+| `app/services/chat_appointment_intake.py` | Specialty, doctor, date/time, slot selection for new bookings |
+| `app/services/chat_booking_identity.py` | Patient identity collection, partial memory, DOB ambiguity, email intake |
+| `app/services/chat_appointment_lookup.py` | Scheduled appointment listing |
+| `app/services/chat_appointment_cancellation.py` | Cancellation identity, listing, selection, confirmation |
+| `app/services/chat_appointment_rescheduling.py` | Reschedule identity, listing, new slot selection, confirmation |
+| `app/services/chat_confirmation.py` | Typed yes/no confirmation for booking, cancellation, and reschedule |
+| `app/services/post_completion_turn_classification.py` | Post-completion routing for new intents |
 
-## Cancellation task frame
+### Domain service layer
 
-### Mode and awaiting keys
+| Service | Side effects |
+| --- | --- |
+| `AppointmentBookingService` | Create `SCHEDULED` appointment, release hold, enqueue confirmation email |
+| `AppointmentCancellationService` | Transition appointment to `CANCELLED`, audit, optional email job |
+| `AppointmentReschedulingService` | Original → `RESCHEDULED`, successor → `SCHEDULED`, slot release/book, audit, email job |
+| `PatientIdentityResolutionService` | Resolve patient by name + DOB |
+| `AppointmentHoldService` | Redis hold create, validate, release |
 
-| `appointment_management_mode` | `appointment_management_awaiting` | Meaning |
-| --- | --- | --- |
-| `"cancel"` | `"patient_identity"` | Waiting for full name and date of birth |
-| `"cancel"` | `"appointment_selection"` | Waiting for user to pick one of multiple offered appointments |
-| `"cancel"` | `"cancellation_confirmation"` | Waiting for explicit cancel confirmation |
-| `"cancel"` | `"completed"` | Cancellation flow finished (cancelled, declined, or terminal error) |
+### Persistence / infrastructure
 
-When `appointment_management_awaiting` is not `"completed"`, the receptionist routes all turns through the cancellation orchestrator instead of appointment intake or generic fallback.
+- **PostgreSQL** — patients, appointments, conversations, audit logs, email jobs
+- **Redis** — temporary appointment holds with channel-specific TTL
+- **RabbitMQ** — wake-up messages for email worker (`email_job_id` only)
+- **Fake providers** — `LLM_PROVIDER=fake`, `EMAIL_PROVIDER=fake`, `CHAT_TURN_UNDERSTANDING_INTERPRETER=fake` for local demo without external keys
 
-### Supporting context keys
+## Appointment management task frame
+
+### Modes
+
+| `appointment_management_mode` | Purpose |
+| --- | --- |
+| `"lookup"` | List upcoming scheduled appointments |
+| `"cancel"` | Cancel an existing appointment |
+| `"reschedule"` | Move an appointment to a new slot |
+
+### Awaiting states (shared pattern)
+
+| `appointment_management_awaiting` | Meaning |
+| --- | --- |
+| `"patient_identity"` | Waiting for full name and/or date of birth |
+| `"appointment_selection"` | Waiting for user to pick one of multiple offered appointments |
+| `"cancellation_confirmation"` | Waiting for explicit cancel confirmation |
+| `"reschedule_confirmation"` | Waiting for explicit reschedule confirmation |
+| `"new_slot_selection"` | Reschedule only — waiting for a new time selection |
+| `"completed"` | Flow finished; post-completion routing applies |
+
+### Shared context keys
 
 | Key | Purpose |
 | --- | --- |
 | `resolved_patient_id` | Backend-only patient UUID after successful identity resolution |
 | `resolved_patient_name` | Display name for replies |
-| `patient_resolution_id` | Resolution record reference (for possible-match flows) |
+| `resolved_patient_email` | Email reused across flows when known |
+| `patient_resolution_id` | Resolution record reference for possible-match flows |
 | `offered_appointments` | List of `{ appointment_id, summary }` objects the user may choose from |
-| `selected_appointment_id` | Backend-only UUID for the appointment pending confirmation or execution |
+| `selected_appointment_id` | Backend-only UUID for the appointment pending action |
 | `selected_appointment_summary` | Human-readable summary (specialty, doctor, weekday, time) |
-| `cancellation_status` | `"cancelled"` or `"declined"` when the flow completes |
-| `cancelled_appointment_summary` | Summary of the appointment that was cancelled |
 
-Internal IDs (`resolved_patient_id`, `selected_appointment_id`, entries in `offered_appointments`) exist in `chat_context` for backend validation and idempotency. They are **never** included in assistant replies.
+Internal IDs exist in `chat_context` for backend validation and idempotency. They are **never** included in assistant replies.
 
-## Flow behavior
+## Patient identity behavior
 
-End-to-end cancellation sequence:
+Written chat collects patient identity using **full name + date of birth** for lookup, cancel, and reschedule flows. Booking identity intake may also collect email and new-patient details.
 
-1. User asks to cancel (for example `I want to cancel my appointment`).
-2. Assistant asks for full name and date of birth.
-3. Backend resolves patient via `PatientIdentityResolutionService`.
-4. Backend lists cancelable upcoming appointments for that patient.
-5. **Single appointment** — assistant asks whether this is the appointment to cancel (skips explicit selection step).
-6. **Multiple appointments** — assistant lists numbered summaries and asks which to cancel.
-7. User selects an offered appointment (ordinal, number, specialty, doctor, weekday, or time signal).
-8. Assistant asks for explicit confirmation (`Please confirm: should I cancel your …?`).
-9. User confirms (`yes, cancel it`) or rejects (`no, don't cancel it`).
-10. Backend cancels through `AppointmentCancellationService` only after confirmation.
-11. Assistant confirms cancellation and asks `Is there anything else I can help with?`
-12. User may close the conversation or start a new request (schedule, cancel, reschedule) via post-cancellation routing.
-
-Edge cases handled in orchestration:
-
-- Incomplete identity → reprompt for full name and DOB.
-- Patient not found → safe message; no appointment lookup.
-- No upcoming cancelable appointments → informative message; flow stays in identity context.
-- Possible or multiple patient matches → clarification before listing appointments.
-- Ownership mismatch at execution → rejection; no cancellation.
-- Already-cancelled appointment → idempotent handling via the service.
-
-## Appointment selection
-
-When multiple appointments exist, `offered_appointments` is populated and `appointment_management_awaiting = "appointment_selection"`.
-
-Supported selection signals (resolved only against `offered_appointments`):
-
-| Signal type | Examples |
+| Behavior | Detail |
 | --- | --- |
-| Ordinal | `the first one`, `first one`, `the second one`, `second one`, … |
-| Option number | `1`, `2`, `number 1` |
-| Specialty phrase | `the dermatology one`, bare specialty name when it matches an offered row |
-| Doctor name | `Dr. Emily`, partial last name when unique among offered rows |
-| Weekday | `Wednesday` when it matches an offered appointment |
-| Time | `10 AM`, `10:00` — normalized via `normalize_appointment_time_expression` and matched to offered `HH:MM` labels |
+| **Partial identity memory** | If the user provides only name or only DOB, the assistant asks only for the missing field |
+| **Ambiguous numeric DOB** | Values such as `01/02/2000` trigger clarification (MM/DD vs DD/MM) before resolution |
+| **Resolved patient reuse** | After successful resolution, `resolved_patient_id` and related fields persist in `chat_context` for subsequent lookup, cancel, and reschedule turns in the same conversation |
+| **Ownership validation** | Cancel and reschedule still verify `appointment.patient_id == resolved_patient_id` before domain execution |
+| **Email without redundant confirmation** | When the user types a valid email in written chat, the backend accepts it and moves on — no separate “is that correct?” step for typed addresses |
+| **Third-party patients** | Booking or managing appointments on behalf of family members or other patients is **not** supported as a product feature |
 
-Selection rules:
+## Appointment hold behavior
 
-- **Zero match** — reprompt (`Please choose one of the appointments I listed.`).
-- **Ambiguous match** — ask clarification (`I found more than one matching appointment. Which one would you like to cancel?`).
-- **Unique match** — set `selected_appointment_id` / `selected_appointment_summary` and move to `cancellation_confirmation`.
-- The backend **never** selects an appointment that was not in `offered_appointments`.
+Holds protect appointment slots from concurrent booking during an active scheduling flow.
 
-Messages containing cancel keywords during selection are treated as off-topic and reprompt for selection rather than re-entering identity intake.
-
-## Confirmation safety
-
-Cancellation is a two-step commit after selection:
-
-1. **Selection** — records intent only; does not call `AppointmentCancellationService`.
-2. **Confirmation** — explicit user consent required before any domain execution.
-
-Confirmation uses `understand_confirmation(confirmation_type=ConfirmationType.CANCELLATION_CONFIRMATION, …)` in `app/services/chat_confirmation.py`.
-
-| User response | Decision | Behavior |
+| Setting | Default | Channel |
 | --- | --- | --- |
-| `yes`, `yes, cancel it`, `cancel it`, `please cancel it`, … | `CONFIRMED` | Proceed to ownership check and service call |
-| `no`, `don't cancel`, `do not cancel`, `keep it`, `never mind`, … | `REJECTED` | Decline safely; `cancellation_status = "declined"`; no service call |
-| `maybe`, empty, or other unclear text | `UNCLEAR` | Reprompt; confirmation frame stays active |
-| Change requests (`different time`, `wait`, …) | `WANTS_CHANGE` | Reprompt; confirmation frame stays active |
+| `APPOINTMENT_HOLD_TTL_SECONDS` | `300` (5 minutes) | Retell voice and general/default holds |
+| `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` | `600` (10 minutes) | Written chat holds |
 
-Ambiguous responses never execute cancellation.
+Written chat uses a longer TTL so users can pause while typing identity and confirmation details. Retell tools do not control TTL; the backend applies the configured value.
 
-## Ownership and idempotency
+Rules:
 
-Before calling the cancellation service, the orchestrator:
+- **No booking without a valid hold** — `AppointmentBookingService` requires an active hold owned by the conversation.
+- **Expired hold at final confirmation** — if the hold expired while the user was confirming, the backend attempts to create a fresh hold on the same slot when it is still available, then retries booking. If the slot cannot be re-held, stale hold state is cleared and the user is asked to choose another time.
+- **Redis TTL on abandonment** — if the user leaves chat mid-flow, the hold expires automatically and the slot returns to availability.
+- **Reschedule holds** — rescheduling creates channel-scoped holds on the new target slot using `CHAT_APPOINTMENT_HOLD_TTL_SECONDS`.
 
-1. Loads the appointment by `selected_appointment_id`.
-2. Verifies `appointment.patient_id == resolved_patient_id`.
-3. Verifies the appointment is cancelable (or already cancelled for idempotent replay).
+See [Appointment Slot Holds](appointment-holds.md) and [configuration.md](../configuration.md).
 
-On ownership mismatch, the user receives a safe message and the flow completes without side effects.
+## Reschedule semantics
 
-**Idempotency key format:**
+Rescheduling delegates to `AppointmentReschedulingService`:
 
-```text
-chat-cancel:{conversation_id}:{appointment_id}
+1. Validate the original appointment is active and reschedulable.
+2. Reserve the new target slot (hold).
+3. Require explicit user confirmation.
+4. Perform the durable transition atomically.
+
+Status semantics:
+
+| Record | Status after reschedule | Visible in list/cancel/reschedule? |
+| --- | --- | --- |
+| Original appointment | `RESCHEDULED` | **No** — historical/superseded |
+| Successor appointment | `SCHEDULED` | **Yes** — the active appointment |
+
+Only future active `SCHEDULED` appointments appear in lookup, cancellation, and reschedule listing. `RESCHEDULED`, `CANCELLED`, `COMPLETED`, and past appointments are excluded.
+
+The domain service releases the old slot and books the new slot. Idempotency keys prevent duplicate successor appointments on replay.
+
+## Scheduled appointment lookup
+
+Written chat supports natural requests such as:
+
+- `show my appointments`
+- `check my appointments`
+- `what appointments do I have?`
+- `do I have any appointments scheduled?`
+
+Behavior:
+
+1. If the patient is already resolved in `chat_context`, list appointments directly.
+2. Otherwise collect identity (name + DOB) first.
+3. Query `list_upcoming_for_patient` — future appointments with status `SCHEDULED` only.
+4. Present summaries in **clinic-local time** via `ClinicTimeService`.
+5. Offer follow-up: cancel or reschedule any listed appointment.
+
+Lookup does not expose internal appointment IDs. Selection in cancel/reschedule flows uses the same `offered_appointments` validation model as cancellation.
+
+## Prompt / state alignment
+
+Reliability rule: **the assistant prompt must match what the next turn accepts.**
+
+| Situation | Expected behavior |
+| --- | --- |
+| Yes/no question asked | Next state accepts yes/no via `chat_confirmation` or `is_simple_affirmative` |
+| Exactly one slot offered + hold prompt | `yes`, `sure`, `that works` create a hold — not generic fallback |
+| Multiple offered slots | User must select explicitly (time, ordinal, or option number); bare `yes` does not silently pick a slot |
+| Flow completed (`*_awaiting = completed`) | Post-completion classifier routes new booking, lookup, cancel, or reschedule intents |
+
+Misaligned prompts are treated as reliability bugs. Backend validation remains authoritative even when turn understanding extracts a candidate.
+
+## Local demo behavior
+
+Local development runs without real Groq, Retell, or Resend keys when using fake providers:
+
+```env
+LLM_PROVIDER=fake
+EMAIL_PROVIDER=fake
+CHAT_TURN_UNDERSTANDING_INTERPRETER=fake
+RETELL_ENABLED=false
 ```
 
-Passed to `AppointmentCancellationRequest` with `explicit_confirmation=True`, `source=chat_cancellation`, and chat audit actor metadata.
+- Provider secrets belong in `.env` (from `.env.example`), never in committed config.
+- `.env.example` and `.env.demo.example` contain safe placeholders only.
+- Retell/voice remains separate from written-chat orchestration.
+- Seed demo data with `python -m scripts.seed_demo_data` and refresh availability with `python -m app.scripts.generate_demo_availability`.
 
-Duplicate confirmation in the same conversation should not double-cancel. Already-cancelled appointments are handled idempotently by `AppointmentCancellationService` (`result.already_cancelled`).
+See [Local Development](../operations/local-development.md).
 
-## Post-cancellation completion
+## Limitations and roadmap
 
-After successful cancellation, context includes:
-
-- `appointment_management_awaiting = "completed"`
-- `cancellation_status = "cancelled"`
-- `cancelled_appointment_summary`
-
-The success message ends with: `Is there anything else I can help with?`
-
-Post-cancellation turns are classified by `classify_post_cancellation_turn` (delegating to `classify_post_completion_turn`). Routing branches on semantic decisions rather than scattering phrase checks through the receptionist.
-
-### Semantic decision model
-
-| Decision | Typical user input | Assistant behavior |
-| --- | --- | --- |
-| `END_CONVERSATION` | `no thanks`, `that's all`, `nothing else`, `no`, … | Polite closing (`You're all set. Have a great day!`) |
-| `NEEDS_MORE_HELP` | `yes`, `yeah`, `sure`, … | Ask whether user wants to schedule, cancel, or reschedule |
-| `NEW_SCHEDULING_REQUEST` | `I want to schedule an appointment`, `book an appointment`, … | Return `None` from post-cancellation handler → normal top-level routing |
-| `CANCEL_REQUEST` | `cancel`, `cancellation`, … | Return `None` → re-enter cancellation task frame |
-| `RESCHEDULE_REQUEST` | `reschedule`, `move appointment`, … | Return `None` → normal routing (reschedule task frame is future work) |
-| `UNKNOWN` | Unrecognized follow-up | Clarify options (schedule, cancel, reschedule) |
-
-Phrase matching lives in `post_completion_turn_classification.py` and is isolated from orchestration logic. Actionable new requests (`NEW_SCHEDULING_REQUEST`, `CANCEL_REQUEST`, `RESCHEDULE_REQUEST`) fall through to standard receptionist routing.
+| Item | Status |
+| --- | --- |
+| Retell/voice integration | Provider-driven and separate; unchanged by this slice |
+| Human agent in demo | No real human agent; escalation creates internal records and simulated notification jobs |
+| Public frontend demo | `web/` shell exists; richer patient-portal UX is out of scope |
+| Real provider integrations | Require auth, rate limits, and cost controls for public exposure |
+| Third-party / family patient management | Not supported |
+| Patient portal features | Scheduled lookup only; richer portal features are out of scope |
+| Patient-aware hold recovery (voice) | Not implemented for Retell; written chat refreshes holds at booking confirmation only |
+| Hold renewal with max absolute timeout | Future work |
+| Timezone/seed presentation audit | Demo slot display may need alignment review |
 
 ## Relationship to appointment intake
 
-| Concern | Appointment intake | Cancellation (this slice) |
+| Concern | Appointment intake | Appointment management |
 | --- | --- | --- |
-| Task marker | `appointment_intake_awaiting` | `appointment_management_awaiting` |
-| Mode | Implicit (scheduling) | `appointment_management_mode = "cancel"` |
+| Task marker | `appointment_intake_awaiting` | `appointment_management_*` |
 | CTU role | Specialty, doctor, date, slot extraction | Optional identity extraction during `patient_identity` |
-| Side effect | Hold + booking via `AppointmentBookingService` | Cancel via `AppointmentCancellationService` |
-| Post-completion | Post-booking classifier | Post-cancellation classifier (shared phrase core) |
+| Side effect | Hold + booking | Lookup (read), cancel, or reschedule |
+| Post-completion | Post-booking classifier | Post-completion classifier (shared phrase core) |
 
-The two frames do not overlap: active cancellation suppresses appointment intake routing until completed or superseded by a new top-level request after the post-cancellation frame.
+Active management frames suppress appointment intake routing until completed or superseded by a new top-level request after the post-completion frame.
 
 ## Safety boundaries
 
 - No UUIDs or internal IDs in user-visible replies.
-- No cancellation without explicit confirmation after selection.
+- No cancellation or reschedule without explicit confirmation after selection.
 - No appointment selection outside `offered_appointments`.
-- No direct appointment row mutation from the chat layer — only through `AppointmentCancellationService`.
-- Retell voice cancellation path unchanged; both channels share the domain service.
-
-## Out of scope / follow-ups
-
-| Item | Status |
-| --- | --- |
-| Rescheduling task frame (`appointment_management_mode = "reschedule"`) | Future slice |
-| Retell voice flow | Not modified in this slice |
-| Timezone/seed audit for demo availability | Future slice |
-| Public demo with real LLM providers | Requires auth, rate limits, and cost controls |
-| Frontend newline rendering | API JSON `\n` escaping is expected; clients may need to render newlines in multi-line lists |
+- No direct appointment row mutation from the chat layer — only through domain services.
+- Retell voice paths unchanged; voice and chat share domain services where appropriate.
 
 ## Automated coverage
 
-- `tests/test_chat_appointment_cancellation.py` — orchestrator: identity, listing, selection, confirmation, ownership, idempotency
-- `tests/test_post_cancellation_turn.py` — post-cancellation semantic classification
-- `tests/test_chat_receptionist_service.py` — receptionist wiring and task-frame routing
+- `tests/test_chat_appointment_cancellation.py`
+- `tests/test_chat_appointment_rescheduling.py`
+- `tests/test_chat_appointment_lookup.py`
+- `tests/test_chat_booking_identity_orchestration.py`
+- `tests/test_chat_receptionist_service.py`
+- `tests/test_chat_booking_confirmation_flow.py` — hold refresh at confirmation
+- `tests/test_post_cancellation_turn.py` / `tests/test_post_booking_turn.py`
