@@ -91,21 +91,53 @@ Queue name:
 
 Email settings are documented in `docs/configuration.md`.
 
+### Provider modes
+
+| Mode | Setting | When to use |
+|------|---------|-------------|
+| Fake (default) | `EMAIL_PROVIDER=fake` | Local development, CI, and manual smoke tests. No Resend API key required. |
+| Resend (opt-in) | `EMAIL_PROVIDER=resend` | Real outbound mail. Set `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` locally or in a secret manager — never commit real keys. |
+
 Local development and CI should keep:
 
     EMAIL_PROVIDER=fake
 
-The fake provider records outbound messages in memory. No Resend API key is required.
+The fake provider records outbound messages in memory and returns a synthetic `provider_message_id`. No external mail is sent.
 
-Optional Resend configuration for a hosted public demo:
+Optional Resend configuration for controlled testing or a hosted public demo:
 
     EMAIL_PROVIDER=resend
     RESEND_API_KEY=re_...
     EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
 
-Enable public demo guardrails before using a real email provider.
+Enable `PUBLIC_DEMO_GUARDRAILS_ENABLED` before using a real email provider on an internet-facing deployment.
+
+### Runtime note
+
+Creating a booking or reschedule only inserts a pending `EmailJob`. You must run a worker for delivery:
+
+- **Polling (local default):** `python -m scripts.run_email_job_worker --once` or `python -m scripts.run_email_job_worker`
+- **RabbitMQ dispatch:** `EMAIL_JOB_DISPATCH_ENABLED=true` on the API plus `python -m scripts.run_email_job_consumer` or `python -m scripts.run_email_worker`
 
 See `docs/architecture/email-dispatch-reliability.md` for the full reliability model.
+
+### Appointment confirmation smoke tests
+
+#### Fake provider
+
+1. Set `EMAIL_PROVIDER=fake`.
+2. Confirm an appointment through chat or the scheduling API (patient must have an email).
+3. Run `python -m scripts.run_email_job_worker --once`.
+4. Inspect the `email_jobs` row (or Email Job Debug API): status `sent`, `recipient_email` set, subject/body rendered, `provider_message_id` present (for example `fake-0`).
+
+#### Resend provider
+
+1. Set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM_ADDRESS` in your local `.env` (do not commit).
+2. Start the API and an email worker/consumer.
+3. Confirm a booking to an inbox you control.
+4. Verify the email arrives and the `EmailJob` is `sent` with a Resend `provider_message_id`.
+
+Fake provider remains recommended for day-to-day local development.
 
 ## LLM Provider Configuration
 
