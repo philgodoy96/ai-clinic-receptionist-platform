@@ -611,8 +611,8 @@ def test_cancellation_multiple_appointments_sets_selection_context() -> None:
     assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
 
 
-def test_cancellation_no_appointments_returns_guidance_and_keeps_identity_awaiting() -> None:
-    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+def test_cancellation_no_appointments_offers_help_and_does_not_trap_identity() -> None:
+    service, _repository, patient, _emily, _reed = _create_chat_service_with_patient()
 
     started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
     result = service.handle_message(
@@ -622,15 +622,42 @@ def test_cancellation_no_appointments_returns_guidance_and_keeps_identity_awaiti
         ),
     )
 
+    reply = result.reply.lower()
     chat_context = result.conversation.conversation_metadata["chat_context"]
-    assert "not seeing any upcoming appointments" in result.reply.lower()
+    assert "that patient" not in reply
+    assert "don't see any upcoming appointments that can be canceled" in reply
+    assert "anything else" in reply
     assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
     assert (
         chat_context["appointment_management_awaiting"]
-        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
     )
     assert chat_context.get("selected_appointment_id") is None
     assert chat_context.get("offered_appointments") is None
+    # The resolved patient context is preserved for the follow-up turn.
+    assert chat_context.get("resolved_patient_id") == str(patient.id)
+
+
+def test_cancellation_no_appointments_no_closes_politely() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(ChatMessageInput(message="cancel my appointment"))
+    service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    follow_up = service.handle_message(
+        ChatMessageInput(message="no", conversation_id=started.conversation.id),
+    )
+
+    reply = follow_up.reply.lower()
+    assert "full name and date of birth" not in reply
+    context = follow_up.conversation.conversation_metadata["chat_context"]
+    assert context.get("appointment_management_awaiting") is None
+    assert context.get("appointment_management_empty_followup") is None
 
 
 def test_cancellation_incomplete_identity_reprompts() -> None:
@@ -1287,15 +1314,17 @@ def test_post_cancellation_cancel_request_decision_enters_cancellation_frame() -
     assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
     context = result.conversation.conversation_metadata["chat_context"]
     assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    # The resolved patient is reused, so we don't re-ask for name + DOB. The only
+    # appointment was just cancelled, so there are no upcoming ones left. The
+    # empty state parks in a safe completed follow-up instead of identity intake.
     assert (
         context["appointment_management_awaiting"]
-        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
     )
-    # The resolved patient is reused, so we don't re-ask for name + DOB. The only
-    # appointment was just cancelled, so there are no upcoming ones left.
     reply = result.reply.lower()
     assert "full name and date of birth" not in reply
-    assert "not seeing any upcoming appointments" in reply
+    assert "that patient" not in reply
+    assert "don't see any upcoming appointments that can be canceled" in reply
     assert context.get("resolved_patient_id") == str(patient.id)
 
 

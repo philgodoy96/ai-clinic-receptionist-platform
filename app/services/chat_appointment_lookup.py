@@ -23,6 +23,8 @@ from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, Doctor, Specialty
 from app.repositories.scheduling import AppointmentRepository
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING,
     APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     ParsedPatientFields,
     ResolvedPatientContext,
@@ -372,15 +374,22 @@ class ChatAppointmentLookupOrchestrator:
             "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
             "appointment_management_awaiting": APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
             "lookup_status": "listed",
+            # Default: no empty-state follow-up. Set only when nothing is found.
+            APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: None,
         }
 
         if not upcoming:
+            # Patient resolved but has no scheduled appointments. The message
+            # offers to book one, so the next "yes" must route to scheduling.
             return LookupFlowResult(
                 intent="list_appointments",
                 content=_LOOKUP_NO_APPOINTMENTS_MESSAGE,
                 chat_context_updates={
                     **shared_context,
                     "offered_appointments": None,
+                    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: (
+                        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
+                    ),
                 },
             )
 

@@ -37,6 +37,8 @@ from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
     APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     ParsedPatientFields,
     ResolvedPatientContext,
@@ -93,7 +95,8 @@ _CANCELLATION_PATIENT_NOT_FOUND_MESSAGE = (
     "Could you check the details and try again?"
 )
 _CANCELLATION_NO_UPCOMING_APPOINTMENTS_MESSAGE = (
-    "I'm not seeing any upcoming appointments for that patient."
+    "I don't see any upcoming appointments that can be canceled. "
+    "Is there anything else I can help you with?"
 )
 _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT = (
     "Which appointment would you like to cancel?"
@@ -369,8 +372,10 @@ class ChatAppointmentCancellationOrchestrator:
         cancelable: Sequence[Appointment],
     ) -> CancellationFlowResult:
         if not cancelable:
-            # Keep awaiting patient identity so the user can supply different
-            # details if they were looking for another patient's appointments.
+            # The patient is resolved but has nothing to cancel. Move to a safe
+            # completed state with an open follow-up so the next turn can close
+            # politely or route a fresh intent, instead of trapping the user in
+            # patient-identity intake.
             return CancellationFlowResult(
                 intent="cancel_request",
                 content=_CANCELLATION_NO_UPCOMING_APPOINTMENTS_MESSAGE,
@@ -378,8 +383,14 @@ class ChatAppointmentCancellationOrchestrator:
                     **resolved_context_updates,
                     "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
                     "appointment_management_awaiting": (
-                        APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                        APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
                     ),
+                    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: (
+                        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP
+                    ),
+                    "cancellation_status": None,
+                    "offered_appointments": None,
+                    APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
                 },
             )
 

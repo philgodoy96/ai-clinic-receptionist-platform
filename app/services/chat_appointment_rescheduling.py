@@ -57,6 +57,8 @@ from app.services.chat_appointment_cancellation import (
 )
 from app.services.chat_appointment_intake import EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING,
     APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     ParsedPatientFields,
     ResolvedPatientContext,
@@ -186,7 +188,8 @@ RESCHEDULE_PATIENT_NOT_FOUND_MESSAGE = (
     "Could you check the details and try again?"
 )
 RESCHEDULE_NO_UPCOMING_APPOINTMENTS_MESSAGE = (
-    "I'm not seeing any upcoming appointments that can be rescheduled for that patient."
+    "I don't see any upcoming appointments that can be rescheduled. "
+    "Would you like to schedule a new appointment instead?"
 )
 RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT = (
     "Which appointment would you like to reschedule?"
@@ -530,8 +533,9 @@ class ChatAppointmentReschedulingOrchestrator:
         reschedulable: Sequence[Appointment],
     ) -> RescheduleFlowResult:
         if not reschedulable:
-            # Keep awaiting patient identity so the user can supply different
-            # details if they were looking for another patient's appointments.
+            # The patient is resolved but has nothing to reschedule. Move to a
+            # safe completed state and offer to book instead, so the next "yes"
+            # routes to scheduling rather than re-asking for patient identity.
             return RescheduleFlowResult(
                 intent="reschedule_request",
                 content=RESCHEDULE_NO_UPCOMING_APPOINTMENTS_MESSAGE,
@@ -539,8 +543,14 @@ class ChatAppointmentReschedulingOrchestrator:
                     **resolved_context_updates,
                     "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
                     "appointment_management_awaiting": (
-                        APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+                        APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
                     ),
+                    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: (
+                        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
+                    ),
+                    "reschedule_status": None,
+                    "offered_appointments": None,
+                    APPOINTMENT_MANAGEMENT_IDENTITY_KEY: None,
                 },
             )
 
