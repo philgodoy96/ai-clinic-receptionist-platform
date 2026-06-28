@@ -169,3 +169,26 @@ DEMO_CHAT_MESSAGES_PER_MINUTE_PER_IP=1
 Then send two chat requests quickly — the first should succeed and the second should return `429`.
 
 See `docs/configuration.md` for all guardrail variables and `docs/architecture/public-demo-guardrails.md` for design details.
+
+## Written-Chat Appointment Management
+
+The written-chat receptionist supports booking, scheduled appointment lookup, rescheduling, and cancellation through `POST /api/v1/chat/messages`.
+
+Recommended local settings for reproducible manual testing:
+
+```env
+LLM_PROVIDER=fake
+EMAIL_PROVIDER=fake
+CHAT_TURN_UNDERSTANDING_INTERPRETER=fake
+RETELL_ENABLED=false
+APPOINTMENT_HOLD_TTL_SECONDS=300
+CHAT_APPOINTMENT_HOLD_TTL_SECONDS=600
+```
+
+Never commit real API keys. Copy from `.env.example` only.
+
+Manual QA script: [Chat Appointment Management Manual Testing](../testing/chat-appointment-management.md).
+
+Architecture: [Chat Appointment Management](../architecture/chat-appointment-management.md).
+
+Retell/voice remains a separate provider-driven path and is not required for written-chat testing.

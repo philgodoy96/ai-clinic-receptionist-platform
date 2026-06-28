@@ -45,12 +45,19 @@ The backend manages:
 - Conversation state
 - Messages
 - Slot collection
+- Appointment management (booking, scheduled lookup, reschedule, cancel)
 - Tool decisions
 - LLM responses
 - Persistence
 - Guardrails
 - Audit logs
 - Observability
+
+Written-chat appointment flows follow the principle:
+
+    The LLM understands. The backend validates and decides. Domain services execute.
+
+See [Chat Appointment Management](chat-appointment-management.md).
 
 ### Retell Voice Channel
 
@@ -167,9 +174,12 @@ Example Redis key pattern:
 
     appointment_hold:{doctor_id}:{start_time}
 
-Initial TTL:
+Channel-specific TTL (configured in environment):
 
-    5 minutes
+- `APPOINTMENT_HOLD_TTL_SECONDS` — default `300` (Retell voice and general holds)
+- `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` — default `600` (written chat)
+
+Written chat may refresh an expired hold at final booking confirmation when the slot is still available.
 
 ## Guardrails
 
