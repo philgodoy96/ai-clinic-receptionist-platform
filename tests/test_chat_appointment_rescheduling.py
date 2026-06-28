@@ -501,8 +501,8 @@ def test_reschedule_multiple_appointments_sets_selection_context() -> None:
     assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
 
 
-def test_reschedule_no_appointments_returns_guidance_and_keeps_identity_awaiting() -> None:
-    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+def test_reschedule_no_appointments_offers_to_book_and_does_not_trap_identity() -> None:
+    service, _repository, patient, _emily, _reed = _create_chat_service_with_patient()
 
     started = service.handle_message(ChatMessageInput(message="I need to reschedule"))
     result = service.handle_message(
@@ -512,15 +512,46 @@ def test_reschedule_no_appointments_returns_guidance_and_keeps_identity_awaiting
         ),
     )
 
+    reply = result.reply.lower()
     chat_context = result.conversation.conversation_metadata["chat_context"]
-    assert "not seeing any upcoming appointments that can be rescheduled" in result.reply.lower()
+    assert "that patient" not in reply
+    assert "don't see any upcoming appointments that can be rescheduled" in reply
+    assert "schedule a new appointment" in reply
     assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
     assert (
         chat_context["appointment_management_awaiting"]
-        == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
     )
     assert chat_context.get("selected_appointment_id") is None
     assert chat_context.get("offered_appointments") is None
+    # The resolved patient context is preserved for the follow-up turn.
+    assert chat_context.get("resolved_patient_id") == str(patient.id)
+
+
+def test_reschedule_no_appointments_yes_routes_to_scheduling() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(ChatMessageInput(message="I need to reschedule"))
+    service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    follow_up = service.handle_message(
+        ChatMessageInput(message="yes", conversation_id=started.conversation.id),
+    )
+
+    reply = follow_up.reply.lower()
+    assert follow_up.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    # We start the scheduling intake instead of re-asking for patient identity.
+    assert "full name and date of birth" not in reply
+    assert "what is the patient" not in reply
+    assert "appointment" in reply
+    context = follow_up.conversation.conversation_metadata["chat_context"]
+    assert context.get("appointment_management_awaiting") is None
+    assert chat_context_id_not_exposed(follow_up.reply, chat_context=context)
 
 
 def test_reschedule_incomplete_identity_reprompts() -> None:
@@ -2522,7 +2553,7 @@ def test_post_booking_reschedule_reuses_resolved_patient_without_identity_intake
     assert (
         "appointment you want to reschedule" in reply
         or "which one would you like to reschedule" in reply
-        or "not seeing any upcoming" in reply
+        or "don't see any upcoming appointments that can be rescheduled" in reply
     )
     context = result.conversation.conversation_metadata["chat_context"]
     assert context.get("resolved_patient_id")

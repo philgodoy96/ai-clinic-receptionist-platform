@@ -368,6 +368,34 @@ def test_lookup_no_appointments_offers_to_book() -> None:
     assert "book one" in result.reply.lower()
 
 
+def test_lookup_no_appointments_yes_routes_to_scheduling() -> None:
+    service, _repository, patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(
+        ChatMessageInput(message="what are my upcoming appointments?"),
+    )
+    service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    follow_up = service.handle_message(
+        ChatMessageInput(message="yes", conversation_id=started.conversation.id),
+    )
+
+    reply = follow_up.reply.lower()
+    assert follow_up.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "full name and date of birth" not in reply
+    assert "appointment" in reply
+    context = follow_up.conversation.conversation_metadata["chat_context"]
+    # The resolved patient context is preserved for the new booking.
+    assert context.get("resolved_patient_id") == str(patient.id)
+    assert context.get("appointment_management_awaiting") is None
+    assert chat_context_id_not_exposed(follow_up.reply, chat_context=context)
+
+
 def test_lookup_contextual_fallback_reprompts_partial_identity() -> None:
     resolved = _resolve_contextual_fallback_reply(
         {

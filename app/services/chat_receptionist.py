@@ -113,6 +113,9 @@ from app.services.chat_appointment_rescheduling import (
     RescheduleFlowResult,
 )
 from app.services.chat_booking_identity import (
+    APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING,
+    APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
     APPOINTMENT_MANAGEMENT_IDENTITY_KEY,
     BookingIdentityFlowResult,
     ChatBookingIdentityOrchestrator,
@@ -171,6 +174,7 @@ from app.services.post_cancellation_turn import (
 from app.services.post_completion_turn_classification import (
     POST_COMPLETION_ACTIONABLE_DECISIONS,
     PostCompletionTurnDecision,
+    classify_post_completion_turn,
 )
 from app.services.post_reschedule_turn import (
     PostRescheduleTurnDecision,
@@ -498,6 +502,7 @@ def _cleared_appointment_management_completed_flow_updates() -> dict[str, Any]:
     return {
         "appointment_management_mode": None,
         "appointment_management_awaiting": None,
+        APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY: None,
         "cancellation_status": None,
         "reschedule_status": None,
         "lookup_status": None,
@@ -707,6 +712,32 @@ def _is_in_post_reschedule_frame(chat_context: dict[str, Any]) -> bool:
     ):
         return False
     return True
+
+
+def _appointment_management_empty_followup(chat_context: dict[str, Any]) -> str | None:
+    """Return the empty-state follow-up mode, if the turn is in that frame.
+
+    After an appointment-management flow resolves a patient but finds nothing to
+    list/cancel/reschedule, it parks in a safe completed state and records how an
+    affirmative reply should be honored. This frame lets the next turn accept
+    yes/no, a fresh intent, or a farewell without re-asking for patient identity.
+    """
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return None
+    if chat_context.get("hold_id"):
+        return None
+    if chat_context.get("appointment_intake_awaiting"):
+        return None
+    followup = chat_context.get(APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY)
+    if followup in {
+        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING,
+        APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
+    }:
+        return str(followup)
+    return None
 
 
 def _resolve_contextual_fallback_reply(
@@ -1733,6 +1764,23 @@ class ChatReceptionistService:
                         stale_confirmation_cleanup=stale_confirmation_cleanup,
                         completed_flow_cleanup=completed_flow_cleanup,
                     )
+
+        empty_followup = _appointment_management_empty_followup(existing_context)
+        if empty_followup is not None:
+            empty_state_reply = self._handle_appointment_management_empty_followup(
+                message=message,
+                followup=empty_followup,
+            )
+            if empty_state_reply is not None:
+                return self._finish_reply_with_context(
+                    empty_state_reply,
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            # An actionable intent (e.g. "cancel", "book another") was detected:
+            # clear the parked empty-state frame and let normal routing handle it.
+            completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+            existing_context = {**existing_context, **completed_flow_cleanup}
 
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
@@ -2905,6 +2953,61 @@ class ChatReceptionistService:
         return self._post_reschedule_reply_for_decision(
             decision=decision,
             context_updates={},
+        )
+
+    def _handle_appointment_management_empty_followup(
+        self,
+        *,
+        message: str,
+        followup: str,
+    ) -> ChatReceptionistReply | None:
+        """Honor the follow-up after a "resolved patient, no appointments" state.
+
+        Returns ``None`` when the user expressed a fresh actionable intent (book,
+        cancel, reschedule, or list), so the caller clears the parked frame and
+        lets normal routing handle it. Otherwise returns the appropriate reply
+        for an affirmative, a farewell, or an unclear turn.
+        """
+        decision = classify_post_completion_turn(message=message).decision
+        if _post_completion_decision_is_actionable(decision):
+            return None
+
+        offers_booking = followup == APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
+        intent = (
+            ChatReceptionistIntent.APPOINTMENT_REQUEST
+            if offers_booking
+            else ChatReceptionistIntent.CANCEL_REQUEST
+        )
+
+        if decision is PostCompletionTurnDecision.END_CONVERSATION:
+            return ChatReceptionistReply(
+                intent=intent,
+                content=_POST_BOOKING_CLOSING_MESSAGE,
+                chat_context_updates=_cleared_post_conversation_terminal_updates(),
+            )
+
+        new_intent_cleanup = _cleared_completed_flow_for_new_intent_updates()
+
+        if decision is PostCompletionTurnDecision.NEEDS_MORE_HELP:
+            if offers_booking:
+                # Affirmative to "would you like to schedule/book?": start the
+                # existing appointment intake by asking what they want to book.
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                    content=self._format_missing_scheduling_target_prompt(),
+                    chat_context_updates=new_intent_cleanup,
+                )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.CANCEL_REQUEST,
+                content=_POST_BOOKING_NEEDS_MORE_HELP_MESSAGE,
+                chat_context_updates=new_intent_cleanup,
+            )
+
+        # Unclear turn: clear the parked frame and offer a gentle next step.
+        return ChatReceptionistReply(
+            intent=intent,
+            content=_GENERIC_SCHEDULING_FALLBACK_MESSAGE,
+            chat_context_updates=new_intent_cleanup,
         )
 
     def _resolve_post_booking_decision(

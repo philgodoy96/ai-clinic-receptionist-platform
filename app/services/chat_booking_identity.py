@@ -149,6 +149,19 @@ RESOLVED_PATIENT_CONTEXT_KEYS = (
 # field and so an ambiguous-DOB clarification can resume without re-asking name.
 APPOINTMENT_MANAGEMENT_IDENTITY_KEY = "appointment_management_identity"
 
+# Follow-up marker for "resolved patient but no appointments" empty states.
+# When an appointment-management flow resolves a patient but finds nothing to
+# list/cancel/reschedule, the flow moves to a safe completed state and records
+# how the next turn's affirmative ("yes") should be honored. This avoids leaving
+# the conversation trapped in patient-identity intake after the patient is known.
+APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY = "appointment_management_empty_followup"
+# An affirmative should start a new scheduling/booking intake (the empty-state
+# message offered to book/schedule a new appointment).
+APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING = "offer_booking"
+# An affirmative should ask what else the user needs (the empty-state message
+# asked an open "is there anything else?" follow-up).
+APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP = "offer_help"
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedPatientContext:

@@ -913,7 +913,7 @@ def test_post_booking_cancellation_reuses_resolved_patient_without_identity_inta
     assert (
         "appointment you want to cancel" in reply
         or "which one would you like to cancel" in reply
-        or "not seeing any upcoming" in reply
+        or "don't see any upcoming appointments that can be canceled" in reply
     )
     context = result.conversation.conversation_metadata["chat_context"]
     assert context.get("resolved_patient_id")
