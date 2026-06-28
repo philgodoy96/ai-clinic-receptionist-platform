@@ -82,10 +82,12 @@ _LOOKUP_NO_APPOINTMENTS_MESSAGE = (
 _LOOKUP_RESULTS_HEADER_SINGULAR = "Here is your upcoming scheduled appointment:"
 _LOOKUP_RESULTS_HEADER_PLURAL = "Here are your upcoming scheduled appointments:"
 _LOOKUP_RESULTS_FOLLOW_UP_SINGULAR = (
-    "Would you like to cancel or reschedule this appointment?"
+    "Would you like to cancel or reschedule this appointment, or book another "
+    "appointment?"
 )
 _LOOKUP_RESULTS_FOLLOW_UP_PLURAL = (
-    "Would you like to cancel or reschedule any of these?"
+    "Would you like to cancel or reschedule one of these, or book another "
+    "appointment?"
 )
 
 _APPOINTMENT_LOOKUP_CANCEL_BLOCKLIST = ("cancel", "cancellation")

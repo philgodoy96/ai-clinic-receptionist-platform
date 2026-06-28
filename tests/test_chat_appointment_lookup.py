@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 
@@ -11,14 +12,27 @@ from app.domain.chat_turn_understanding import (
     ExpectedResponseType,
 )
 from app.domain.scheduling.enums import AppointmentStatus
+from app.models.scheduling import Appointment
+from app.services.chat_appointment_cancellation import (
+    APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION,
+    APPOINTMENT_MANAGEMENT_MODE_CANCEL,
+)
 from app.services.chat_appointment_lookup import (
     APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED,
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
 )
+from app.services.chat_appointment_rescheduling import (
+    APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE,
+    APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
+)
 from app.services.chat_receptionist import (
+    _GENERIC_SCHEDULING_FALLBACK_MESSAGE,
+    _POST_LOOKUP_CLOSING_MESSAGE,
     ChatMessageInput,
+    ChatMessageResult,
     ChatReceptionistIntent,
+    ChatReceptionistService,
     _is_appointment_lookup_request,
     _resolve_contextual_fallback_reply,
 )
@@ -37,6 +51,29 @@ from tests.test_scheduling_services import create_appointment
 
 def _lookup_message() -> str:
     return "Sure, I'd like to see what my scheduled appointments are"
+
+
+def _reach_lookup_listed(
+    service: ChatReceptionistService,
+    *,
+    appointments: list[Appointment] | None = None,
+) -> tuple[ChatMessageResult, UUID]:
+    if appointments:
+        _add_appointments(service, appointments)
+    started = service.handle_message(ChatMessageInput(message="show my scheduled appointments"))
+    listed = service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+    chat_context = listed.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    )
+    assert chat_context.get("lookup_status") == "listed"
+    return listed, started.conversation.id
 
 
 @pytest.mark.parametrize(
@@ -124,7 +161,8 @@ def test_lookup_with_resolved_patient_lists_without_identity_prompt() -> None:
     assert result.intent == ChatReceptionistIntent.LIST_APPOINTMENTS
     assert "full name" not in result.reply.lower()
     assert "Here is your upcoming scheduled appointment:" in result.reply
-    assert "cancel or reschedule this appointment?" in result.reply.lower()
+    assert "cancel or reschedule this appointment" in result.reply.lower()
+    assert "book another appointment" in result.reply.lower()
     assert "Dermatology with Dr. Emily Carter" in result.reply
     assert "Wednesday, July 8" in result.reply
     assert "10:00" in result.reply
@@ -165,7 +203,8 @@ def test_lookup_single_appointment_uses_singular_wording() -> None:
 
     assert result.intent == ChatReceptionistIntent.LIST_APPOINTMENTS
     assert "Here is your upcoming scheduled appointment:" in result.reply
-    assert "cancel or reschedule this appointment?" in result.reply
+    assert "cancel or reschedule this appointment" in result.reply
+    assert "book another appointment" in result.reply
     assert "Here are your upcoming scheduled appointments:" not in result.reply
     assert "any of these" not in result.reply.lower()
 
@@ -488,3 +527,223 @@ def test_lookup_completed_context_allows_cancel_follow_up() -> None:
     cancel_context = cancel.conversation.conversation_metadata["chat_context"]
     assert cancel_context.get("resolved_patient_id") == str(patient.id)
     assert "cancel" in cancel.reply.lower()
+
+
+def test_lookup_listed_no_thats_all_closes_and_clears_state() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _listed, conversation_id = _reach_lookup_listed(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="no, that's all", conversation_id=conversation_id),
+    )
+
+    assert result.reply == _POST_LOOKUP_CLOSING_MESSAGE
+    assert _GENERIC_SCHEDULING_FALLBACK_MESSAGE.lower() not in result.reply.lower()
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("appointment_management_mode") is None
+    assert context.get("appointment_management_awaiting") is None
+    assert context.get("lookup_status") is None
+    assert context.get("offered_appointments") is None
+
+
+def test_lookup_listed_no_thanks_closes_without_repeated_anything_else() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _listed, conversation_id = _reach_lookup_listed(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+            _friday_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="no thanks", conversation_id=conversation_id),
+    )
+
+    assert result.reply == _POST_LOOKUP_CLOSING_MESSAGE
+    assert "anything else" not in result.reply.lower()
+
+
+def test_lookup_listed_book_another_clears_state_and_starts_booking() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _listed, conversation_id = _reach_lookup_listed(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I want to book another appointment",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "appointment" in result.reply.lower()
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("resolved_patient_id") == str(patient.id)
+    assert context.get("appointment_management_mode") is None
+    assert context.get("lookup_status") is None
+    assert context.get("offered_appointments") is None
+
+
+def test_lookup_listed_cancel_the_first_one_starts_cancellation_with_selection() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    listed, conversation_id = _reach_lookup_listed(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+            _friday_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+            ),
+        ],
+    )
+    offered = listed.conversation.conversation_metadata["chat_context"][
+        "offered_appointments"
+    ]
+
+    result = service.handle_message(
+        ChatMessageInput(message="cancel the first one", conversation_id=conversation_id),
+    )
+
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert context["selected_appointment_id"] == offered[0]["appointment_id"]
+    assert context.get("lookup_status") is None
+    assert "Please confirm: should I cancel your" in result.reply
+
+
+def test_lookup_listed_reschedule_the_first_one_starts_reschedule_with_selection() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _listed, conversation_id = _reach_lookup_listed(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+            _friday_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="reschedule the first one",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
+    assert (
+        context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
+    )
+    assert "Wednesday" in context["selected_appointment_summary"]
+    assert context.get("lookup_status") is None
+    assert "what day or time" in result.reply.lower()
+
+
+def test_lookup_empty_yes_book_one_starts_booking() -> None:
+    service, _repository, patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(
+        ChatMessageInput(message="what are my upcoming appointments?"),
+    )
+    service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="yes, book one", conversation_id=started.conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.APPOINTMENT_REQUEST
+    assert "appointment" in result.reply.lower()
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context.get("resolved_patient_id") == str(patient.id)
+    assert context.get("appointment_management_awaiting") is None
+
+
+def test_lookup_empty_no_thanks_closes_politely() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(
+        ChatMessageInput(message="what are my upcoming appointments?"),
+    )
+    service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="no thanks", conversation_id=started.conversation.id),
+    )
+
+    assert "have a great day" in result.reply.lower()
+    assert "anything else" not in result.reply.lower()
+
+
+def test_lookup_empty_cancel_explains_no_active_appointments() -> None:
+    service, _repository, _patient, _emily, _reed = _create_chat_service_with_patient()
+
+    started = service.handle_message(
+        ChatMessageInput(message="what are my upcoming appointments?"),
+    )
+    service.handle_message(
+        ChatMessageInput(
+            message="Felipe Godoy, 1996-09-19",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="I want to cancel", conversation_id=started.conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert "don't see any upcoming appointments" in reply
+    assert "cancel" in reply
