@@ -163,3 +163,69 @@ def test_partial_identity_with_active_hold(chat_service: ChatReceptionistService
 
     assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
     assert "seen" in result.reply.lower() or "before" in result.reply.lower()
+
+
+def test_parse_slash_dob_with_name(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity("Felipe Marques, 19/09/1996")
+
+    assert identity.full_name == "Felipe Marques"
+    assert identity.date_of_birth == "1996-09-19"
+
+
+def test_parse_slash_dob_only_in_booking_context(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity(
+        "19/09/1996",
+        booking_context=True,
+    )
+
+    assert identity.full_name is None
+    assert identity.date_of_birth == "1996-09-19"
+
+
+def test_parse_slash_dob_without_cue_is_ignored(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity("19/09/1996")
+
+    assert identity.date_of_birth is None
+
+
+def test_parse_ambiguous_slash_dob_preserves_name(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity("Felipe Marques, 09/08/1980")
+
+    assert identity.full_name == "Felipe Marques"
+    assert identity.date_of_birth is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Felipe Marques, 1996-09-19",
+        "Felipe Marques, September 19, 1996",
+    ],
+)
+def test_existing_dob_formats_still_parse(
+    chat_service: ChatReceptionistService,
+    message: str,
+) -> None:
+    identity = chat_service.parse_patient_identity(message)
+
+    assert identity.full_name == "Felipe Marques"
+    assert identity.date_of_birth == "1996-09-19"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "32/09/1996",
+        "19/19/1996",
+    ],
+)
+def test_invalid_slash_dob_does_not_parse(
+    chat_service: ChatReceptionistService,
+    message: str,
+) -> None:
+    identity = chat_service.parse_patient_identity(
+        message,
+        booking_context=True,
+    )
+
+    assert identity.date_of_birth is None

@@ -153,6 +153,7 @@ from app.services.date_parsing import (
     DateParseStatus,
     NaturalLanguageDateParser,
 )
+from app.services.dob_ambiguity import parse_unambiguous_numeric_dob
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import (
@@ -2394,6 +2395,19 @@ class ChatReceptionistService:
                 return None
 
             return match.group(1)
+
+        numeric = parse_unambiguous_numeric_dob(message)
+        if numeric is not None:
+            has_dob_cue = bool(
+                re.search(r"\b(dob|date of birth|born)\b", message, re.IGNORECASE)
+                or "," in message
+                or _MY_NAME_IS_PATTERN.search(message)
+                or booking_context
+            )
+            if not has_dob_cue:
+                return None
+
+            return numeric
 
         natural = _parse_natural_date_of_birth(message)
         if natural is None:
