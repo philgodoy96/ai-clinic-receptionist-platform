@@ -237,6 +237,12 @@ End-to-end real Resend delivery has been validated with a verified sending subdo
 
 Do not use real API keys in documentation or committed env files.
 
+### Deliverability note
+
+The worker and `EmailJob` state confirm **technical delivery** (provider acceptance, `sent` status, `provider_message_id`). They do not guarantee inbox placement. Real smoke testing with a verified subdomain and passing SPF/DKIM/DMARC can still deliver to spam or junk at some providers (for example Outlook/Hotmail) while others accept mail to the inbox.
+
+See [Configuration — Deliverability note](../configuration.md#deliverability-note) for production guidance on domain warm-up, sending volume, and reputation monitoring.
+
 ## Runtime Requirements
 
 | Component | Polling path | RabbitMQ dispatch path |
@@ -262,6 +268,6 @@ This implementation does not yet include:
 
 Operational notes:
 
-- New sending domains and subdomains can still land in **spam/junk** despite SPF, DKIM, and DMARC passing, due to sender reputation.
+- Inbox placement is a deliverability concern, not an application pipeline failure. See [Deliverability note](../configuration.md#deliverability-note).
 - Production deployments should use verified sending domains and monitor Resend plus `EmailJob` terminal failures.
 - Public demos should keep **`EMAIL_PROVIDER=fake`** by default unless auth, rate limits, and cost controls (`PUBLIC_DEMO_GUARDRAILS_ENABLED`) are enabled before turning on real email.

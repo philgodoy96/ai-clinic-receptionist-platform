@@ -204,7 +204,7 @@ Before enabling real mail on a public demo:
 4. Set `EMAIL_FROM_ADDRESS` to an address on the verified subdomain.
 5. Enable `PUBLIC_DEMO_GUARDRAILS_ENABLED` before `EMAIL_PROVIDER=resend` on an internet-facing deployment.
 
-New subdomains may still land in spam/junk until sender reputation improves, even when DNS checks pass. See [Configuration](../configuration.md#resend-sending-domain-and-dns).
+New subdomains may still land in spam/junk until sender reputation improves, even when DNS checks pass and the provider reports success. See [Deliverability note](../configuration.md#deliverability-note).
 
 Safe smoke-test defaults (no external provider keys):
 
