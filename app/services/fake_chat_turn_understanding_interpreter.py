@@ -19,6 +19,8 @@ from app.domain.chat_turn_understanding import (
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
+from app.services.chat_appointment_lookup import is_appointment_lookup_message
+from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
 
 _MONTH_TOKEN_TO_NUMBER: dict[str, int] = {
     "jan": 1,
@@ -68,6 +70,8 @@ class FakeChatTurnUnderstandingInterpreter:
             self._try_change_request,
             self._try_confirmation,
             self._try_patient_status_and_identity,
+            self._try_list_appointments,
+            self._try_exact_time_availability_inquiry,
             self._try_slot_selection,
             self._try_appointment_request,
             self._try_specialty_request,
@@ -266,6 +270,22 @@ class FakeChatTurnUnderstandingInterpreter:
             patient_status_answer=patient_status_answer,
         )
 
+    def _try_list_appointments(
+        self,
+        request: ChatTurnUnderstandingRequest,
+        message: str,
+        normalized: str,
+    ) -> ChatTurnUnderstandingResult | None:
+        del request, message
+        if not is_appointment_lookup_message(normalized):
+            return None
+
+        return self._build_result(
+            ChatTurnIntent.LIST_APPOINTMENTS,
+            confidence=0.9,
+            reason="User asked to view or list their scheduled appointments.",
+        )
+
     def _try_slot_selection(
         self,
         request: ChatTurnUnderstandingRequest,
@@ -342,6 +362,53 @@ class FakeChatTurnUnderstandingInterpreter:
             ChatTurnIntent.SLOT_SELECTION,
             confidence=0.82,
             reason="Extracted appointment time; backend must validate against offered slots.",
+            extracted_fields=extracted,
+        )
+
+    def _try_exact_time_availability_inquiry(
+        self,
+        request: ChatTurnUnderstandingRequest,
+        message: str,
+        normalized: str,
+    ) -> ChatTurnUnderstandingResult | None:
+        if request.offered_slots:
+            return None
+
+        normalized_time = normalize_appointment_time_expression(
+            message,
+            allow_bare_hour=False,
+        )
+        if normalized_time is None:
+            return None
+
+        inquiry_markers = (
+            "could it be",
+            "could be",
+            "is there",
+            "any chance",
+            "would ",
+            "available",
+        )
+        if not any(marker in normalized for marker in inquiry_markers) and "?" not in message:
+            return None
+
+        extracted = ExtractedTurnFields(
+            appointment_time_raw=normalized_time.raw,
+            appointment_time=normalized_time.value,
+        )
+
+        weekday_match = re.search(
+            r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+            normalized,
+        )
+        if weekday_match is not None:
+            extracted.appointment_date_raw = weekday_match.group(1).capitalize()
+
+        intent = self._preferred_appointment_intent(request)
+        return self._build_result(
+            intent,
+            confidence=0.84,
+            reason="User asked about availability for a specific date and time.",
             extracted_fields=extracted,
         )
 
@@ -608,18 +675,13 @@ class FakeChatTurnUnderstandingInterpreter:
         numeric = self._parse_numeric_date(dob_raw)
         if numeric is not None:
             extracted.date_of_birth_raw = numeric.raw
-            if numeric.is_ambiguous:
-                ambiguous_fields.append(
-                    FieldIssue(
-                        field="date_of_birth",
-                        source_text=numeric.raw,
-                        reason="ambiguous_numeric_date_format",
-                        candidates=numeric.candidates,
-                        clarification_question=(
-                            "Did you mean September 10, 1996 or October 9, 1996?"
-                        ),
-                    ),
-                )
+            ambiguous_issue = (
+                detect_ambiguous_numeric_dob(numeric.raw)
+                if numeric.is_ambiguous
+                else None
+            )
+            if ambiguous_issue is not None:
+                ambiguous_fields.append(ambiguous_issue)
             else:
                 extracted.date_of_birth = numeric.normalized
             return _IdentityParseResult(

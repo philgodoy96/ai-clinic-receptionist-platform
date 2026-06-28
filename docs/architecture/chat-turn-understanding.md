@@ -330,17 +330,16 @@ Exact routing depends on current `chat_context` (whether doctors or slots were a
 
 | Item | Status |
 | --- | --- |
-| Cancel contextual task frame | Implemented — see [Chat Appointment Management](chat-appointment-management.md) |
-| Reschedule contextual task frame | Future slice — reschedule still uses top-level deterministic routes |
+| Written-chat appointment management (lookup, cancel, reschedule) | Implemented — see [Chat Appointment Management](chat-appointment-management.md) |
 | Timezone/seed audit for demo availability | Future slice — displayed slots may appear offset when UTC storage and clinic-local presentation are misaligned; not fixed in this branch |
 | Second LLM response composer | Not added — replies remain deterministic via `RECEPTIONIST_RESPONSE_MODE=deterministic` by default |
 | Retell voice flow | Not modified |
 | Public demos with real LLM providers | Require auth, rate limits, and cost controls before exposure |
-| Post-booking lifecycle | Handled as a small state-aware conversation closure after `appointment_id` is set; broader multi-intent post-booking flows can expand in future appointment-management work |
+| Post-booking lifecycle | Post-completion routing supports new booking, lookup, cancel, and reschedule in the same conversation |
 
-See [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md) for reproducible fake and Groq test scenarios.
+See [Chat Appointment Intake Manual Testing](../testing/chat-appointment-intake.md) and [Chat Appointment Management Manual Testing](../testing/chat-appointment-management.md) for reproducible test scenarios.
 
-Cancellation uses a separate appointment-management task frame (`appointment_management_mode`, `appointment_management_awaiting`). CTU may assist identity extraction during cancellation intake, but listing, selection, confirmation, and execution are backend-owned. See [Chat Appointment Management](chat-appointment-management.md) and [Chat Cancellation Flow Manual Testing](../testing/chat-cancellation-flow.md).
+Appointment management uses a separate task frame (`appointment_management_mode`, `appointment_management_awaiting`). CTU may assist identity extraction during `patient_identity` steps, but listing, selection, confirmation, and execution are backend-owned. See [Chat Appointment Management](chat-appointment-management.md).
 
 ## Reliability Behavior
 

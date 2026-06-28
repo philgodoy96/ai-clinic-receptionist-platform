@@ -12,7 +12,6 @@ APPOINTMENT_CANCELLATION_SOURCE = "appointment_cancellation"
 _CANCELABLE_STATUSES = frozenset(
     {
         AppointmentStatus.SCHEDULED,
-        AppointmentStatus.RESCHEDULED,
     },
 )
 

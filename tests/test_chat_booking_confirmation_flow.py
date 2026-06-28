@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import cast
 from unittest.mock import patch
@@ -15,7 +16,10 @@ from app.services.appointment_booking import (
     AppointmentBookingService,
     AppointmentSlotAlreadyBookedError,
 )
-from app.services.appointment_holds import AppointmentHoldNotFoundError
+from app.services.appointment_holds import (
+    AppointmentHoldNotFoundError,
+    AppointmentSlotAlreadyHeldError,
+)
 from app.services.chat_receptionist import (
     ChatMessageInput,
     ChatReceptionistIntent,
@@ -30,9 +34,11 @@ from app.services.scheduling import SchedulingService
 from tests.chat_booking_flow_support import (
     FINAL_BOOKING_CONFIRM,
     NEW_PATIENT_IDENTITY_STEPS,
+    advance_new_patient_to_booking_summary,
     complete_new_patient_booking,
     conversation_with_active_hold,
 )
+from tests.test_appointment_holds import FakeAppointmentHoldRepository
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     TrackingAppointmentBookingService,
@@ -50,6 +56,16 @@ from tests.test_scheduling_services import (
 
 FULL_IDENTITY_MESSAGE = "Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"
 FULL_IDENTITY_WITH_CONFIRM = f"{FULL_IDENTITY_MESSAGE}. Please confirm."
+
+_UUID_PATTERN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+)
+
+
+def _expire_active_hold(hold_service: FakeAppointmentHoldService) -> None:
+    """Simulate the temporary hold expiring out of the store (TTL elapsed)."""
+    repository = cast(FakeAppointmentHoldRepository, hold_service.repository)
+    repository.holds.clear()
 
 
 def create_jane_doe_patient() -> Patient:
@@ -195,6 +211,9 @@ def test_complete_identity_with_confirmation_books_appointment_without_llm(
     assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
     assert result.booking_confirmed is True
     assert len(tracking_booking.book_calls) == 1
+    assert "Is there anything else I can help with?" in result.reply
+    assert "hold is still active" not in result.reply.lower()
+    assert "hold" not in result.reply.lower()
     assert result.conversation.conversation_metadata["chat_context"]["appointment_id"]
     assert appointments.appointments[0].availability_slot_id == EMILY_JULY_SLOT_1_ID
 
@@ -221,7 +240,7 @@ def test_booking_conflict_when_fake_booking_service_raises_conflict(
     assert "no longer available" in reply or "conflict" in reply
 
 
-def test_hold_expired_when_booking_service_raises_hold_not_found(
+def test_hold_not_found_and_slot_cannot_be_rehold_clears_stale_state(
     booking_flow_context: tuple[
         ChatReceptionistService,
         TrackingAppointmentBookingService,
@@ -230,6 +249,8 @@ def test_hold_expired_when_booking_service_raises_hold_not_found(
     ],
 ) -> None:
     service, tracking_booking, _hold_service, _scheduling = booking_flow_context
+    # The booking service always reports the hold as gone, and the slot is still
+    # occupied by the existing hold, so the slot cannot be re-held: unrecoverable.
     tracking_booking.book_error = AppointmentHoldNotFoundError(
         "appointment hold was not found or expired",
     )
@@ -238,8 +259,19 @@ def test_hold_expired_when_booking_service_raises_hold_not_found(
     result = complete_new_patient_booking(service, conversation)
 
     assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_EXPIRED
+    assert result.booking_confirmed is False
+    # No booking is ever completed without a valid hold.
     assert len(tracking_booking.book_calls) == 1
-    assert "expired" in result.reply.lower() or "not found" in result.reply.lower()
+    reply = result.reply.lower()
+    assert "no longer available" in reply
+    assert "choose another" in reply
+    assert "has been booked" not in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["hold_id"] is None
+    assert chat_context["selected_availability_slot_id"] is None
+    assert chat_context["selected_start_time"] is None
+    assert chat_context.get("booking_identity_step") is None
+    assert chat_context["appointment_intake_awaiting"] == "date_or_time_preference"
 
 
 def test_complete_identity_with_confirmation_creates_one_idempotent_email_job(
@@ -483,3 +515,206 @@ def test_demo_email_quota_exceeded_keeps_booking_without_confirmation_job() -> N
     assert body["confirmation_email_queued"] is False
     assert email_jobs is not None
     assert email_jobs.jobs == []
+
+
+def test_expired_hold_at_confirmation_refreshes_hold_and_books(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, tracking_booking, hold_service, scheduling = booking_flow_context
+    appointments = scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+    conversation = _conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    _expire_active_hold(hold_service)
+    hold_service.create_hold_calls.clear()
+
+    result = service.handle_message(
+        ChatMessageInput(message=FINAL_BOOKING_CONFIRM, conversation_id=conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.BOOKING_CONFIRMED
+    assert result.booking_confirmed is True
+    # Initial attempt fails (hold gone) and the refreshed hold is used to retry.
+    assert len(tracking_booking.book_calls) == 2
+    # A fresh hold is created during recovery, owned by the conversation.
+    assert len(hold_service.create_hold_calls) == 1
+    assert hold_service.create_hold_calls[0]["owner_id"] == str(conversation.id)
+    assert hold_service.create_hold_calls[0]["availability_slot_id"] == EMILY_JULY_SLOT_1_ID
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("appointment_id")
+    assert appointments.appointments[0].availability_slot_id == EMILY_JULY_SLOT_1_ID
+    assert not _UUID_PATTERN.search(result.reply)
+
+
+def test_expired_hold_refresh_uses_conversation_owner_id(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, tracking_booking, hold_service, _scheduling = booking_flow_context
+    conversation = _conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    _expire_active_hold(hold_service)
+    hold_service.create_hold_calls.clear()
+
+    result = service.handle_message(
+        ChatMessageInput(message=FINAL_BOOKING_CONFIRM, conversation_id=conversation.id),
+    )
+
+    assert result.booking_confirmed is True
+    retry_request = tracking_booking.book_calls[-1]
+    assert retry_request.owner_id == str(conversation.id)
+    assert hold_service.create_hold_calls[0]["owner_id"] == str(conversation.id)
+
+
+def test_expired_hold_with_unavailable_slot_clears_state_and_does_not_book(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, tracking_booking, hold_service, scheduling = booking_flow_context
+    appointments = scheduling.appointments
+    assert isinstance(appointments, FakeAppointmentRepository)
+    conversation = _conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    _expire_active_hold(hold_service)
+    # The selected slot can no longer be held (taken in the meantime), so the
+    # hold cannot be refreshed and the booking is unrecoverable.
+    hold_service.create_hold_error = AppointmentSlotAlreadyHeldError(
+        "slot already has an active hold",
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message=FINAL_BOOKING_CONFIRM, conversation_id=conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_EXPIRED
+    assert result.booking_confirmed is False
+    # The slot can never be re-held, so booking is never completed.
+    assert appointments.appointments == []
+    assert len(tracking_booking.book_calls) == 1
+    reply = result.reply.lower()
+    assert "no longer available" in reply
+    assert "choose another" in reply
+    assert "has been booked" not in reply
+    assert not _UUID_PATTERN.search(result.reply)
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["hold_id"] is None
+    assert chat_context["hold_expires_at"] is None
+    assert chat_context["hold_owner_id"] is None
+    assert chat_context["selected_availability_slot_id"] is None
+    assert chat_context["selected_start_time"] is None
+    assert chat_context.get("booking_identity_step") is None
+    assert chat_context["appointment_intake_awaiting"] == "date_or_time_preference"
+
+
+def test_new_scheduling_request_after_unrecoverable_hold_restarts_routing(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, _tracking_booking, hold_service, _scheduling = booking_flow_context
+    conversation = _conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    _expire_active_hold(hold_service)
+    hold_service.create_hold_error = AppointmentSlotAlreadyHeldError(
+        "slot already has an active hold",
+    )
+
+    # Final confirmation lands on the unrecoverable cleanup path.
+    service.handle_message(
+        ChatMessageInput(message=FINAL_BOOKING_CONFIRM, conversation_id=conversation.id),
+    )
+
+    # A brand new scheduling request must restart routing, not loop on confirmation.
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I want to book a dermatologist appointment",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent != ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "please confirm if you would like me to book" not in result.reply.lower()
+
+
+def test_repeated_confirmation_after_unrecoverable_hold_is_not_stuck(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, _tracking_booking, hold_service, _scheduling = booking_flow_context
+    conversation = _conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    _expire_active_hold(hold_service)
+    hold_service.create_hold_error = AppointmentSlotAlreadyHeldError(
+        "slot already has an active hold",
+    )
+
+    service.handle_message(
+        ChatMessageInput(message=FINAL_BOOKING_CONFIRM, conversation_id=conversation.id),
+    )
+
+    # Repeating the confirmation must not loop on the final confirmation prompt.
+    result = service.handle_message(
+        ChatMessageInput(message=FINAL_BOOKING_CONFIRM, conversation_id=conversation.id),
+    )
+
+    assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_MISSING
+    assert "please confirm if you would like me to book" not in result.reply.lower()
+
+
+def test_new_request_overrides_stale_final_confirmation_with_missing_hold(
+    booking_flow_context: tuple[
+        ChatReceptionistService,
+        TrackingAppointmentBookingService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, tracking_booking, hold_service, _scheduling = booking_flow_context
+    conversation = _conversation_with_active_hold(service)
+    advance_new_patient_to_booking_summary(service, conversation)
+
+    # The hold quietly expires while the context still sits at final confirmation.
+    _expire_active_hold(hold_service)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I want to book a dermatologist appointment",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent != ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED
+    assert "please confirm if you would like me to book" not in result.reply.lower()
+    assert tracking_booking.book_calls == []
+    assert not _UUID_PATTERN.search(result.reply)
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["hold_id"] is None
+    assert chat_context["selected_availability_slot_id"] is None
+    assert chat_context.get("booking_identity_step") is None

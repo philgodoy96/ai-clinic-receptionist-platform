@@ -97,12 +97,12 @@ Planned stack:
 
 The receptionist will support:
 
-- New appointment booking
+- New appointment booking (written chat and Retell voice)
 - Existing patient lookup
 - Lightweight patient registration
-- Appointment lookup
-- Appointment rescheduling foundation
-- Appointment cancellation
+- Scheduled appointment lookup (written chat)
+- Appointment rescheduling (written chat and Retell voice)
+- Appointment cancellation (written chat and Retell voice)
 - Doctor information
 - Specialty information
 - Availability lookup
@@ -150,7 +150,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, scheduling tools, clinic time configuration, Redis holds, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, Retell web call service and public demo voice endpoint, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
+Implemented foundations include deterministic chat booking, **written-chat contextual appointment management** (booking, scheduled lookup, rescheduling, cancellation, patient identity reuse, and hold recovery), scheduling tools, clinic time configuration, Redis holds with channel-specific TTL, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, Retell web call service and public demo voice endpoint, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
 
 Configuration and deployment:
 
@@ -162,7 +162,8 @@ Configuration and deployment:
 Architecture docs:
 
 - `docs/architecture/chat-turn-understanding.md` — CTU contract, appointment intake orchestration, and state-aware fallback
-- `docs/architecture/chat-appointment-management.md` — contextual cancellation task frame and post-cancellation follow-up
+- `docs/architecture/chat-appointment-management.md` — written-chat booking, lookup, reschedule, cancel, identity, holds, and post-completion routing
+- `docs/testing/chat-appointment-management.md` — end-to-end manual QA script for appointment management flows
 - `docs/testing/chat-appointment-intake.md` — manual fake/Groq appointment intake checklist
 - `docs/testing/chat-cancellation-flow.md` — manual cancellation flow checklist
 - `docs/architecture/groq-llm-provider.md`

@@ -343,6 +343,25 @@ def get_appointment_cancellation_service(
     )
 
 
+def get_appointment_rescheduling_service(
+    db: Annotated[Session, Depends(get_db)],
+    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
+    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
+    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
+) -> AppointmentReschedulingService:
+    conversation_repository = SQLAlchemyConversationRepository(db)
+    return AppointmentReschedulingService(
+        appointments=SQLAlchemyAppointmentRepository(db),
+        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
+        doctors=SQLAlchemyDoctorRepository(db),
+        hold_service=hold_service,
+        reschedule_attempts=SQLAlchemyAppointmentRescheduleAttemptRepository(db),
+        audit_logs=audit_logs,
+        conversations=ConversationService(repository=conversation_repository),
+        email_jobs=email_jobs,
+    )
+
+
 def get_chat_receptionist_service(
     conversation_service: Annotated[
         ConversationService,
@@ -402,6 +421,10 @@ def get_chat_receptionist_service(
         AppointmentCancellationService,
         Depends(get_appointment_cancellation_service),
     ],
+    appointment_rescheduling: Annotated[
+        AppointmentReschedulingService,
+        Depends(get_appointment_rescheduling_service),
+    ],
     chat_turn_understanding_records: Annotated[
         ChatTurnUnderstandingRecordService,
         Depends(get_chat_turn_understanding_record_service),
@@ -428,8 +451,10 @@ def get_chat_receptionist_service(
         response_generation_mode=settings.receptionist_response_mode,
         patient_identity_resolution=patient_identity_resolution,
         appointment_cancellation=appointment_cancellation,
+        appointment_rescheduling=appointment_rescheduling,
         chat_turn_understanding_records=chat_turn_understanding_records,
         chat_turn_understanding_interpreter=chat_turn_understanding_interpreter,
+        chat_appointment_hold_ttl_seconds=settings.chat_appointment_hold_ttl_seconds,
     )
 
 
@@ -470,25 +495,6 @@ def get_voice_booking_confirmation_service(
         demo_guardrails=demo_guardrails,
         patient_intake=patient_intake,
         patient_identity_resolution=patient_identity_resolution,
-    )
-
-
-def get_appointment_rescheduling_service(
-    db: Annotated[Session, Depends(get_db)],
-    hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
-    audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
-    email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
-) -> AppointmentReschedulingService:
-    conversation_repository = SQLAlchemyConversationRepository(db)
-    return AppointmentReschedulingService(
-        appointments=SQLAlchemyAppointmentRepository(db),
-        availability_slots=SQLAlchemyAvailabilitySlotRepository(db),
-        doctors=SQLAlchemyDoctorRepository(db),
-        hold_service=hold_service,
-        reschedule_attempts=SQLAlchemyAppointmentRescheduleAttemptRepository(db),
-        audit_logs=audit_logs,
-        conversations=ConversationService(repository=conversation_repository),
-        email_jobs=email_jobs,
     )
 
 

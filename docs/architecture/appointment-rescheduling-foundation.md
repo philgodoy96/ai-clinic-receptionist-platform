@@ -113,10 +113,11 @@ Voice and chat may update `voice_context` or `chat_context` only through the exi
 
 The Retell voice channel is wired through `reschedule_appointment` and delegates to `AppointmentReschedulingService`. Manual validation confirmed the full voice rescheduling flow. See [Retell Voice Appointment Rescheduling](retell-voice-rescheduling.md) and [Retell Master Prompt v5](../operations/retell-master-prompt-v5.md).
 
+Written chat rescheduling is wired through `ChatAppointmentReschedulingOrchestrator` and the same `AppointmentReschedulingService`. See [Chat Appointment Management](chat-appointment-management.md).
+
 ## Future Work
 
 Intentional product evolution:
 
-- written chat reschedule flow
 - patient-aware hold recovery for authenticated patient sessions
 - reschedule notification email templates where not yet deployed

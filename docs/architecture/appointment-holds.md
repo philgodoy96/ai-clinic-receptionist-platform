@@ -54,23 +54,24 @@ Examples:
 
 ## TTL
 
-The default TTL is:
+Channel-specific defaults:
 
-    300 seconds
+| Setting | Default | Channel |
+| --- | --- | --- |
+| `APPOINTMENT_HOLD_TTL_SECONDS` | `300` (5 minutes) | Retell voice and general/default holds |
+| `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` | `600` (10 minutes) | Written chat holds |
 
-That is equivalent to 5 minutes.
-
-The value is configured through:
-
-    APPOINTMENT_HOLD_TTL_SECONDS
+The value is configured through environment variables (see [configuration.md](../configuration.md)).
 
 ### Backend-owned TTL policy
 
 Appointment holds are intentionally short-lived and backend-owned. Redis holds protect against concurrent booking attempts during an active scheduling flow, but they are not durable reservations. If a call drops or a user abandons the flow, the hold expires automatically and the slot returns to availability. The backend owns the hold TTL policy so the voice agent cannot accidentally extend scheduling capacity locks.
 
-- Retell voice tools do **not** control hold TTL. `expires_in_seconds` in hold responses reflects the configured backend value.
+- Retell voice tools do **not** control hold TTL. `expires_in_seconds` in hold responses reflects the configured backend value (`APPOINTMENT_HOLD_TTL_SECONDS`).
+- Written chat holds use `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` so users can pause while typing identity and confirmation.
 - Legacy `ttl_seconds` in Retell tool arguments, if present, is ignored.
-- No hold recovery or hold renewal is implemented in the current voice scheduling flow.
+- **Written chat hold refresh at booking confirmation** — if a hold expired at final confirmation but the slot is still available, the backend creates a fresh hold and retries booking. If the slot cannot be re-held, the user is asked to choose another time. See [Chat Appointment Management](chat-appointment-management.md).
+- Retell voice has no hold recovery or renewal in the current flow.
 
 For deployments with authenticated patient sessions, the system could introduce patient-aware hold recovery in a future phase. That would require additional identity and ownership rules and is intentionally kept separate from the current temporary coordination model.
 
@@ -135,11 +136,13 @@ See also: [Scheduling Application Services — Redis Degradation Policy](schedul
 
 ## Current Limitations
 
-Intentionally not implemented in the current voice scheduling flow:
+Intentionally not implemented:
 
-- Patient-aware hold recovery after call drop or page refresh
+- Patient-aware hold recovery after Retell call drop or page refresh
 - Hold renewal with a maximum absolute timeout
 - Redis dependency health check surfaced on `/health/dependencies` beyond basic connectivity
+
+Written chat refreshes expired holds only at final booking confirmation when the previously selected slot is still available.
 
 Future work (separate from current coordination model and demo CLI generation):
 
