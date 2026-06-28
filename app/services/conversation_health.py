@@ -6,21 +6,59 @@ from typing import Any
 
 from app.ai.reliability import MIN_ACCEPTED_CONFIDENCE
 
-_HUMAN_REQUEST_PHRASES = (
-    "human",
-    "person",
+_STANDALONE_HUMAN_ESCALATION_PHRASES = (
+    "human please",
+    "a human please",
+    "real person please",
+    "a real person please",
+    "representative please",
+    "receptionist please",
+    "need a human",
+    "need human help",
+    "want a human",
+    "get me a human",
+)
+_HUMAN_TARGET_PHRASES = (
     "real person",
+    "a human",
+    "a person",
+    "human",
     "receptionist",
     "representative",
+    "front desk",
+    "staff member",
     "someone",
+    "live agent",
+    "actual person",
 )
-_HUMAN_REQUEST_INTENT_WORDS = (
-    "talk",
-    "speak",
-    "transfer",
-    "connect",
-    "call",
+_HUMAN_REQUEST_INTENT_PHRASES = (
+    "talk to",
+    "talk with",
+    "speak to",
+    "speak with",
+    "transfer me",
+    "connect me",
+    "call me",
+    "help me",
+    "i need",
+    "i want",
+    "can i speak",
+    "can i talk",
+    "could i speak",
+    "could i talk",
+    "may i speak",
+    "get me",
+    "need to speak",
+    "need to talk",
+    "want to speak",
+    "want to talk",
     "not helping",
+)
+_ACADEMIC_HUMAN_MENTION_PATTERNS = (
+    "doctor is a real person",
+    "doctor is a human",
+    "doctors are real people",
+    "my doctor is",
 )
 _EMERGENCY_KEYWORDS = (
     "emergency",
@@ -95,11 +133,22 @@ class ConversationHealthResult:
         }
 
 
+def detect_explicit_human_request(message: str) -> bool:
+    normalized = " ".join(message.lower().split())
+
+    if any(phrase in normalized for phrase in _STANDALONE_HUMAN_ESCALATION_PHRASES):
+        return True
+
+    if any(pattern in normalized for pattern in _ACADEMIC_HUMAN_MENTION_PATTERNS):
+        return False
+
+    has_human_target = any(phrase in normalized for phrase in _HUMAN_TARGET_PHRASES)
+    has_request_intent = any(phrase in normalized for phrase in _HUMAN_REQUEST_INTENT_PHRASES)
+    return has_human_target and has_request_intent
+
+
 def _detect_explicit_human_request(message: str) -> bool:
-    normalized = message.lower()
-    has_human_phrase = any(phrase in normalized for phrase in _HUMAN_REQUEST_PHRASES)
-    has_intent_word = any(word in normalized for word in _HUMAN_REQUEST_INTENT_WORDS)
-    return has_human_phrase and has_intent_word
+    return detect_explicit_human_request(message)
 
 
 def _message_metadata(message: Any) -> dict[str, Any]:

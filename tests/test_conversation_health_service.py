@@ -9,6 +9,7 @@ import pytest
 from app.services.conversation_health import (
     ConversationHealthService,
     EscalationReason,
+    detect_explicit_human_request,
 )
 
 
@@ -70,6 +71,51 @@ def test_explicit_human_request_escalates_immediately(
     assert result.should_escalate_immediately is True
     assert result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN
     assert result.signals.explicit_human_request is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Human please",
+        "I need a real person.",
+        "Can I speak with someone?",
+        "Transfer me to a receptionist.",
+        "Representative please.",
+        "Can a real person help me?",
+    ],
+)
+def test_broadened_explicit_human_request_phrases_escalate(
+    health_service: ConversationHealthService,
+    message: str,
+) -> None:
+    result = health_service.evaluate(
+        user_message=message,
+        chat_context={},
+        recent_messages=[],
+    )
+
+    assert result.should_escalate_immediately is True
+    assert result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN
+    assert result.signals.explicit_human_request is True
+
+
+def test_academic_human_mention_does_not_escalate(
+    health_service: ConversationHealthService,
+) -> None:
+    result = health_service.evaluate(
+        user_message="My doctor is a real person and very kind.",
+        chat_context={},
+        recent_messages=[],
+    )
+
+    assert result.should_escalate_immediately is False
+    assert result.signals.explicit_human_request is False
+
+
+def test_detect_explicit_human_request_unit_cases() -> None:
+    assert detect_explicit_human_request("Human please") is True
+    assert detect_explicit_human_request("I need a real person.") is True
+    assert detect_explicit_human_request("My doctor is a real person") is False
 
 
 def test_emergency_escalates_immediately(
