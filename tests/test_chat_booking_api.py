@@ -24,6 +24,7 @@ from app.services.email_jobs import (
     AppointmentConfirmationEmailJobCreate,
     AppointmentConfirmationEmailJobResult,
     EmailJobService,
+    build_appointment_confirmation_idempotency_key,
 )
 from tests.chat_booking_flow_support import post_new_patient_booking_via_api
 from tests.test_chat_receptionist_service import (
@@ -193,6 +194,12 @@ def test_chat_booking_enqueues_email_and_publishes_dispatch_after_commit(
 
     email_job = chat_booking_client.email_jobs.jobs[0]
     assert email_job.payload["source"] == "chat_booking"
+    assert email_job.recipient_email == "jane.doe@example.com"
+    assert email_job.payload["patient_name"] == "Jane Doe"
+    assert email_job.payload["doctor_name"] == "Dr. Emily Carter"
+    assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        email_job.appointment_id,
+    )
     assert len(chat_booking_client.dispatch_publisher.published_messages) == 1
     assert chat_booking_client.dispatch_publisher.published_messages[0].email_job_id is not None
 

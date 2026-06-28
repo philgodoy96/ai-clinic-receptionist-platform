@@ -150,6 +150,12 @@ This reduces duplicate-send risk across worker retries. It does not by itself gu
 
 After `EMAIL_JOB_MAX_ATTEMPTS` is exhausted, jobs become **`failed`**.
 
+| Condition | Worker behavior | Appointment |
+|-----------|-----------------|-------------|
+| Missing `recipient_email` | `last_error=recipient_email_missing`, retries until max attempts | Unaffected |
+| Provider send failure | `pending` with backoff, or `failed` when exhausted | Unaffected |
+| Successful send | `sent`, `provider_message_id` stored | Unaffected |
+
 Failed terminal jobs remain visible in:
 
 - Postgres `email_jobs` records
@@ -212,5 +218,6 @@ See [Public Demo Guardrails](public-demo-guardrails.md).
 - dedicated RabbitMQ DLQ for malformed broker messages (invalid payloads are acked today)
 - delivery metrics dashboard
 - alerting for terminal `failed` jobs in production
-- HTML email templates
+- HTML email templates for appointment confirmations
+- cancellation confirmation emails
 - provider-specific rate limit classification

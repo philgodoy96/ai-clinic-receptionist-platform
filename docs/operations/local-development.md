@@ -91,21 +91,63 @@ Queue name:
 
 Email settings are documented in `docs/configuration.md`.
 
+### Provider modes
+
+| Mode | Setting | When to use |
+|------|---------|-------------|
+| Fake (default) | `EMAIL_PROVIDER=fake` | Local development, CI, and manual smoke tests. No Resend API key required. |
+| Resend (opt-in) | `EMAIL_PROVIDER=resend` | Real outbound mail. Set `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` locally or in a secret manager — never commit real keys. |
+
 Local development and CI should keep:
 
     EMAIL_PROVIDER=fake
 
-The fake provider records outbound messages in memory. No Resend API key is required.
+The fake provider records outbound messages in memory and returns a synthetic `provider_message_id`. No external mail is sent.
 
-Optional Resend configuration for a hosted public demo:
+Optional Resend configuration for controlled real-mail smoke (secrets in `.env` only — never commit):
 
-    EMAIL_PROVIDER=resend
-    RESEND_API_KEY=re_...
-    EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<set locally, never commit>
+EMAIL_FROM_ADDRESS="AI Clinic Demo <appointments@email.example.com>"
+EMAIL_REPLY_TO=
+EMAIL_JOB_DISPATCH_ENABLED=false
+```
 
-Enable public demo guardrails before using a real email provider.
+The domain or subdomain in `EMAIL_FROM_ADDRESS` must be verified in Resend (DKIM, SPF, Return-Path; DMARC recommended). See [Configuration](../configuration.md#resend-sending-domain-and-dns).
+
+Enable `PUBLIC_DEMO_GUARDRAILS_ENABLED` before using a real email provider on an internet-facing deployment.
+
+### Runtime note
+
+Creating a booking or reschedule only inserts a pending `EmailJob`. **Email is not sent until a worker processes the job.** You must run a worker for delivery:
+
+- **Polling (local default):** `python -m scripts.run_email_job_worker --once` or `python -m scripts.run_email_job_worker`
+- **RabbitMQ dispatch:** `EMAIL_JOB_DISPATCH_ENABLED=true` on the API plus `python -m scripts.run_email_job_consumer` or `python -m scripts.run_email_worker`
 
 See `docs/architecture/email-dispatch-reliability.md` for the full reliability model.
+
+### Appointment confirmation smoke tests
+
+#### Fake provider
+
+1. Set `EMAIL_PROVIDER=fake` and `EMAIL_JOB_DISPATCH_ENABLED=false`.
+2. Confirm a booking or reschedule through chat or the scheduling API (patient must have an email).
+3. Confirm an `EmailJob` exists with status `pending`.
+4. Run `python -m scripts.run_email_job_worker --once`.
+5. Confirm the job moves to `sent` with `recipient_email`, rendered subject/body, and clinic-local appointment date/time in the body.
+6. Confirm `provider_message_id` is populated (for example `fake-0`).
+
+#### Resend provider
+
+1. Verify a sending subdomain in Resend (for example `email.example.com`).
+2. Set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, and `EMAIL_FROM_ADDRESS` in your local `.env` (do not commit).
+3. Start the API.
+4. Confirm a booking or reschedule to an inbox you control.
+5. Run `python -m scripts.run_email_job_worker --once` (or the RabbitMQ consumer when dispatch is enabled).
+6. Confirm `EmailJob` status is `sent`, `provider_message_id` is populated, the Resend dashboard shows the send, and the message arrives (check spam/junk if needed).
+
+Fake provider remains recommended for day-to-day local development.
 
 ## LLM Provider Configuration
 

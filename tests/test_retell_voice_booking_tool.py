@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_retell_tool_calling_adapter
 from app.domain.conversations.enums import ConversationChannel, ConversationStatus
 from app.domain.scheduling.enums import AppointmentStatus
+from app.domain.voice_booking import VOICE_BOOKING_SOURCE
 from app.domain.voice_calls.enums import VoiceCallStatus
 from app.main import create_app
 from app.models.conversations import Conversation
@@ -19,7 +20,7 @@ from app.schemas.retell_tools import RetellToolCallRequest
 from app.services.appointment_booking import AppointmentBookingService
 from app.services.audit_logs import AuditLogService
 from app.services.conversations import ConversationService
-from app.services.email_jobs import EmailJobService
+from app.services.email_jobs import EmailJobService, build_appointment_confirmation_idempotency_key
 from app.services.retell_tool_adapter import RetellToolCallingAdapter
 from app.services.scheduling import SchedulingService
 from app.services.voice_booking_confirmation import VoiceBookingConfirmationService
@@ -137,7 +138,7 @@ def create_retell_booking_tool_context() -> dict[str, Any]:
 
     inner_booking = booking_context.booking_service
     scheduling_service = SchedulingService(
-        specialties=FakeSpecialtyRepository([]),
+        specialties=FakeSpecialtyRepository([booking_context.specialty]),
         doctors=inner_booking.doctors,
         patients=inner_booking.patients,
         availability_slots=inner_booking.availability_slots,
@@ -206,6 +207,29 @@ def test_valid_booking_tool_creates_appointment_through_booking_service() -> Non
     assert response.result["email_confirmation_queued"] is True
     assert response.result["appointment"]["status"] == AppointmentStatus.SCHEDULED.value
     assert response.duplicate is False
+
+
+def test_voice_booking_tool_enriches_appointment_confirmation_email_job() -> None:
+    context = create_retell_booking_tool_context()
+    booking_context = context["booking_context"]
+    hold_id = _hold_id(booking_context)
+
+    response = context["adapter"].execute(
+        _tool_request(hold_id=hold_id, slot_id=str(booking_context.slot.id)),
+    )
+
+    assert response.status == "succeeded"
+    assert len(context["email_repository"].email_jobs) == 1
+
+    email_job = context["email_repository"].email_jobs[0]
+    assert email_job.recipient_email == booking_context.patient.email
+    assert email_job.payload["patient_name"] == booking_context.patient.full_name
+    assert email_job.payload["doctor_name"] == booking_context.doctor.full_name
+    assert email_job.payload["source"] == VOICE_BOOKING_SOURCE
+    assert email_job.payload["specialty_name"] == booking_context.specialty.name
+    assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        response.result["appointment_id"],
+    )
 
 
 def test_no_active_hold_rejects() -> None:

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.domain.scheduling.appointment_holds import AppointmentHold
 from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatus
-from app.models.scheduling import Appointment
+from app.models.scheduling import Appointment, Doctor, Patient
 from app.repositories.scheduling import (
     AppointmentRepository,
     AvailabilitySlotRepository,
@@ -56,6 +56,8 @@ class AppointmentBookingRequest:
 class AppointmentBookingResult:
     appointment: Appointment
     hold: AppointmentHold
+    patient: Patient
+    doctor: Doctor
 
 
 class AppointmentBookingService:
@@ -138,6 +140,8 @@ class AppointmentBookingService:
         return AppointmentBookingResult(
             appointment=appointment,
             hold=hold,
+            patient=patient,
+            doctor=doctor,
         )
 
     def _normalize_reason(self, reason: str | None) -> str | None:

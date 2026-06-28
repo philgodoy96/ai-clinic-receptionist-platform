@@ -46,6 +46,10 @@ from app.services.appointment_booking import (
     BookingDoctorNotFoundError,
     BookingPatientNotFoundError,
 )
+from app.services.appointment_confirmation_email import (
+    build_appointment_confirmation_email_job_create,
+    resolve_specialty_name,
+)
 from app.services.appointment_holds import (
     AppointmentHoldMismatchError,
     AppointmentHoldNotFoundError,
@@ -57,10 +61,7 @@ from app.services.appointment_holds import (
     InvalidAppointmentHoldWindowError,
 )
 from app.services.audit_logs import AuditLogCreate, AuditLogService
-from app.services.email_jobs import (
-    AppointmentConfirmationEmailJobCreate,
-    EmailJobService,
-)
+from app.services.email_jobs import EmailJobService
 from app.services.scheduling import (
     AvailabilitySlotNotFoundError,
     AvailabilitySlotUnavailableError,
@@ -352,6 +353,7 @@ def book_appointment(
         AppointmentBookingService,
         Depends(get_appointment_booking_service),
     ],
+    scheduling_service: Annotated[SchedulingService, Depends(get_scheduling_service)],
     hold_service: Annotated[AppointmentHoldService, Depends(get_appointment_hold_service)],
     audit_logs: Annotated[AuditLogService, Depends(get_audit_log_service)],
     email_jobs: Annotated[EmailJobService, Depends(get_email_job_service)],
@@ -388,15 +390,17 @@ def book_appointment(
         )
 
         email_job_result = email_jobs.get_or_create_appointment_confirmation_email_job(
-            AppointmentConfirmationEmailJobCreate(
-                appointment_id=appointment.id,
-                patient_id=payload.patient_id,
-                appointment_start_time=appointment.start_time.isoformat(),
-                payload={
-                    "source": "scheduling_api",
-                    "hold_id": str(payload.hold_id),
-                },
-            )
+            build_appointment_confirmation_email_job_create(
+                appointment=appointment,
+                patient=result.patient,
+                doctor=result.doctor,
+                specialty_name=resolve_specialty_name(
+                    specialty_id=appointment.specialty_id,
+                    specialties=scheduling_service.specialties,
+                ),
+                source=SCHEDULING_API_SOURCE,
+                extra_payload={"hold_id": str(payload.hold_id)},
+            ),
         )
         email_job = email_job_result.email_job
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from typing import cast
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.domain.audit.enums import AuditEventOutcome, AuditEventType
 from app.domain.conversations.enums import ConversationChannel, ConversationStatus
 from app.domain.voice_booking import (
+    VOICE_BOOKING_SOURCE,
     VoiceBookingConfirmationRequest,
     VoiceBookingExpiredHoldError,
     VoiceBookingMissingConfirmationError,
@@ -33,7 +35,10 @@ from app.services.appointment_booking import (
 )
 from app.services.audit_logs import AuditLogService
 from app.services.conversations import ConversationService
-from app.services.email_jobs import EmailJobService
+from app.services.email_jobs import (
+    EmailJobService,
+    build_appointment_confirmation_idempotency_key,
+)
 from app.services.patient_identity_resolution import PatientIdentityResolutionService
 from app.services.patient_intake import PatientIntakeService
 from app.services.scheduling import SchedulingService
@@ -172,7 +177,7 @@ def create_voice_booking_confirmation_context(
     conversation_repository.conversations.append(conversation)
 
     scheduling_service = SchedulingService(
-        specialties=FakeSpecialtyRepository([]),
+        specialties=FakeSpecialtyRepository([booking_context.specialty]),
         doctors=inner_booking.doctors,
         patients=inner_booking.patients,
         availability_slots=inner_booking.availability_slots,
@@ -381,6 +386,34 @@ def test_no_duplicate_email_job_on_duplicate_callback() -> None:
     context.service.confirm_and_book(request)
 
     assert len(context.email_repository.email_jobs) == first_email_count
+
+
+def test_voice_booking_enriches_appointment_confirmation_email_job() -> None:
+    context = create_voice_booking_confirmation_context()
+    hold_id = _active_hold_id(context)
+
+    result = context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    assert len(context.email_repository.email_jobs) == 1
+    email_job = context.email_repository.email_jobs[0]
+    assert email_job.recipient_email == context.booking_context.patient.email
+    assert email_job.payload["patient_name"] == context.booking_context.patient.full_name
+    assert email_job.payload["doctor_name"] == context.booking_context.doctor.full_name
+    assert email_job.payload["source"] == VOICE_BOOKING_SOURCE
+    assert email_job.payload["specialty_name"] == context.booking_context.specialty.name
+    assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        result.appointment_id,
+    )
+
+
+def test_voice_booking_does_not_call_resend_directly() -> None:
+    context = create_voice_booking_confirmation_context()
+    hold_id = _active_hold_id(context)
+
+    with patch("app.email.resend_provider.ResendEmailProvider.send") as resend_send:
+        context.service.confirm_and_book(_build_request(context, hold_id=hold_id))
+
+    resend_send.assert_not_called()
 
 
 def test_failed_recoverable_booking_preserves_useful_context() -> None:
