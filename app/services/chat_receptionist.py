@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
@@ -62,6 +62,7 @@ from app.services.appointment_time_normalization import (
 )
 from app.services.chat_appointment_cancellation import (
     _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
+    _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
     _CANCELLATION_CONFIRMATION_REPROMPT,
     _CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
     _CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
@@ -102,6 +103,7 @@ from app.services.chat_appointment_rescheduling import (
     APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION,
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
     RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+    RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
     RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
     RESCHEDULE_IDENTITY_DOB_ONLY_MESSAGE,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
@@ -273,6 +275,15 @@ _APPOINTMENT_KEYWORDS = [
     "schedule",
     "book",
 ]
+_GREETING_KEYWORDS = [
+    "hello",
+    "hi",
+    "hey",
+    "good morning",
+    "good afternoon",
+]
+# Tokens that look like part of a person's name (letters plus name punctuation).
+_NAME_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'\u2019.\-]*")
 _AVAILABILITY_KEYWORDS = [
     "available",
     "availability",
@@ -392,6 +403,13 @@ _POST_CANCELLATION_UNKNOWN_MESSAGE = (
 _POST_RESCHEDULE_UNKNOWN_MESSAGE = (
     "Your appointment has been rescheduled. Would you like to schedule, cancel, "
     "or reschedule anything else?"
+)
+_POST_LOOKUP_CLOSING_MESSAGE = "No problem. You're all set. Have a great day."
+_POST_LOOKUP_FOLLOW_UP_PLURAL_MESSAGE = (
+    "Would you like to cancel or reschedule one of these, or book another appointment?"
+)
+_POST_LOOKUP_FOLLOW_UP_SINGULAR_MESSAGE = (
+    "Would you like to cancel or reschedule this appointment, or book another appointment?"
 )
 
 
@@ -717,6 +735,47 @@ def _is_in_post_reschedule_frame(chat_context: dict[str, Any]) -> bool:
     ):
         return False
     return True
+
+
+def _is_in_post_lookup_frame(chat_context: dict[str, Any]) -> bool:
+    """Return True when lookup has finished listing upcoming appointments."""
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_LOOKUP:
+        return False
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return False
+    if chat_context.get("lookup_status") != "listed":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    if _appointment_management_empty_followup(chat_context) is not None:
+        return False
+    offered = chat_context.get("offered_appointments")
+    return isinstance(offered, list) and bool(offered)
+
+
+def _appointment_selection_message_from_action_request(
+    message: str,
+    *,
+    action_keywords: Sequence[str],
+) -> str:
+    """Strip cancel/reschedule keywords so selection can run on the same turn."""
+    normalized = message.lower()
+    for keyword in sorted(action_keywords, key=len, reverse=True):
+        normalized = normalized.replace(keyword, " ")
+    normalized = re.sub(r"\s+", " ", normalized).strip(" .,!?")
+    return normalized or message
+
+
+def _post_lookup_follow_up_message(chat_context: dict[str, Any]) -> str:
+    offered = chat_context.get("offered_appointments")
+    if isinstance(offered, list) and len(offered) == 1:
+        return _POST_LOOKUP_FOLLOW_UP_SINGULAR_MESSAGE
+    return _POST_LOOKUP_FOLLOW_UP_PLURAL_MESSAGE
 
 
 def _appointment_management_empty_followup(chat_context: dict[str, Any]) -> str | None:
@@ -1106,10 +1165,7 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(
-            normalized_message,
-            ["hello", "hi", "hey", "good morning", "good afternoon"],
-        ):
+        if self._contains_any(normalized_message, _GREETING_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.GREETING,
                 content=(
@@ -1766,6 +1822,75 @@ class ChatReceptionistService:
                 if post_booking_reply is not None:
                     return self._finish_reply_with_context(
                         post_booking_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+
+        if _is_in_post_lookup_frame(existing_context):
+            lookup_decision = classify_post_completion_turn(message=message).decision
+            if lookup_decision is PostCompletionTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    ChatReceptionistReply(
+                        intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+                        content=_POST_LOOKUP_CLOSING_MESSAGE,
+                        chat_context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(lookup_decision):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                cleared_context = {**existing_context, **completed_flow_cleanup}
+                if lookup_decision is PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST:
+                    return self._finish_reply_with_context(
+                        ChatReceptionistReply(
+                            intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                            content=self._format_missing_scheduling_target_prompt(),
+                            chat_context_updates=completed_flow_cleanup,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                if lookup_decision is PostCompletionTurnDecision.CANCEL_REQUEST:
+                    return self._finish_reply_with_context(
+                        self._enter_cancellation_from_post_lookup(
+                            message=message,
+                            chat_context=existing_context,
+                            flow_cleanup=completed_flow_cleanup,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                if lookup_decision is PostCompletionTurnDecision.RESCHEDULE_REQUEST:
+                    return self._finish_reply_with_context(
+                        self._enter_reschedule_from_post_lookup(
+                            message=message,
+                            chat_context=existing_context,
+                            flow_cleanup=completed_flow_cleanup,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                if lookup_decision is PostCompletionTurnDecision.APPOINTMENT_LOOKUP_REQUEST:
+                    return self._finish_reply_with_context(
+                        self._enter_lookup_task_frame(
+                            context_updates=completed_flow_cleanup,
+                            message=message,
+                            chat_context=cleared_context,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                existing_context = cleared_context
+            else:
+                post_lookup_reply = self._post_lookup_reply_for_unclear_turn(
+                    decision=lookup_decision,
+                    chat_context=existing_context,
+                )
+                if post_lookup_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_lookup_reply,
                         stale_confirmation_cleanup=stale_confirmation_cleanup,
                         completed_flow_cleanup=completed_flow_cleanup,
                     )
@@ -2973,6 +3098,133 @@ class ChatReceptionistService:
             context_updates={},
         )
 
+    def _post_lookup_reply_for_unclear_turn(
+        self,
+        *,
+        decision: PostCompletionTurnDecision,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostCompletionTurnDecision.CANCEL_REQUEST,
+            PostCompletionTurnDecision.RESCHEDULE_REQUEST,
+            PostCompletionTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
+        }:
+            return None
+
+        if decision is PostCompletionTurnDecision.END_CONVERSATION:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+                content=_POST_LOOKUP_CLOSING_MESSAGE,
+                chat_context_updates=_cleared_post_conversation_terminal_updates(),
+            )
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+            content=_post_lookup_follow_up_message(chat_context),
+            chat_context_updates={},
+        )
+
+    def _enter_cancellation_from_post_lookup(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+        flow_cleanup: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return self._enter_appointment_management_from_post_lookup(
+            message=message,
+            chat_context=chat_context,
+            flow_cleanup=flow_cleanup,
+            list_for_patient=self._appointment_cancellation.list_appointments_for_resolved_patient,
+            handle_selection=self._appointment_cancellation.handle_appointment_selection,
+            flow_result_to_reply=self._cancellation_flow_result_to_reply,
+            enter_task_frame=self._enter_cancellation_task_frame,
+            awaiting_selection=APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+            action_keywords=_CANCEL_KEYWORDS,
+            selection_reprompt=_CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+        )
+
+    def _enter_reschedule_from_post_lookup(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+        flow_cleanup: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return self._enter_appointment_management_from_post_lookup(
+            message=message,
+            chat_context=chat_context,
+            flow_cleanup=flow_cleanup,
+            list_for_patient=self._appointment_rescheduling.list_appointments_for_resolved_patient,
+            handle_selection=self._appointment_rescheduling.handle_appointment_selection,
+            flow_result_to_reply=self._reschedule_flow_result_to_reply,
+            enter_task_frame=self._enter_reschedule_task_frame,
+            awaiting_selection=APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+            action_keywords=_RESCHEDULE_KEYWORDS,
+            selection_reprompt=RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
+        )
+
+    def _enter_appointment_management_from_post_lookup(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+        flow_cleanup: dict[str, Any],
+        list_for_patient: Callable[..., Any],
+        handle_selection: Callable[..., Any],
+        flow_result_to_reply: Callable[[Any], ChatReceptionistReply],
+        enter_task_frame: Callable[..., ChatReceptionistReply],
+        awaiting_selection: str,
+        action_keywords: Sequence[str],
+        selection_reprompt: str,
+    ) -> ChatReceptionistReply:
+        merged = {**chat_context, **flow_cleanup}
+        list_result = list_for_patient(chat_context=merged)
+        if list_result is None:
+            return enter_task_frame(
+                context_updates=flow_cleanup,
+                message=message,
+                chat_context=merged,
+            )
+
+        combined_updates = {**flow_cleanup, **list_result.chat_context_updates}
+        merged_after_list = {**merged, **list_result.chat_context_updates}
+
+        if merged_after_list.get("appointment_management_awaiting") == awaiting_selection:
+            selection_message = _appointment_selection_message_from_action_request(
+                message,
+                action_keywords=action_keywords,
+            )
+            selection_result = handle_selection(
+                message=selection_message,
+                chat_context=merged_after_list,
+            )
+            selection_updates = {
+                **combined_updates,
+                **selection_result.chat_context_updates,
+            }
+            selection_awaiting = selection_result.chat_context_updates.get(
+                "appointment_management_awaiting",
+            )
+            if (
+                selection_awaiting != awaiting_selection
+                or selection_result.content != selection_reprompt
+            ):
+                return flow_result_to_reply(
+                    replace(
+                        selection_result,
+                        chat_context_updates=selection_updates,
+                    ),
+                )
+
+        return flow_result_to_reply(
+            replace(
+                list_result,
+                chat_context_updates=combined_updates,
+            ),
+        )
+
     def _handle_appointment_management_empty_followup(
         self,
         *,
@@ -2987,10 +3239,22 @@ class ChatReceptionistService:
         for an affirmative, a farewell, or an unclear turn.
         """
         decision = classify_post_completion_turn(message=message).decision
+        offers_booking = followup == APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
         if _post_completion_decision_is_actionable(decision):
+            # An affirmative-with-booking turn (e.g. "yes, book one") classifies as
+            # a new scheduling request. Start booking here so the leading "yes" is
+            # not later misread as a final-booking confirmation by normal routing.
+            if (
+                offers_booking
+                and decision is PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST
+            ):
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                    content=self._format_missing_scheduling_target_prompt(),
+                    chat_context_updates=_cleared_completed_flow_for_new_intent_updates(),
+                )
             return None
 
-        offers_booking = followup == APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
         intent = (
             ChatReceptionistIntent.APPOINTMENT_REQUEST
             if offers_booking
@@ -3332,8 +3596,6 @@ class ChatReceptionistService:
         merged_context: dict[str, Any],
         has_identity_fields: bool,
     ) -> bool:
-        if not has_identity_fields:
-            return False
         if self._has_active_scheduling_context_for_booking_identity(merged_context):
             return False
         normalized_message = message.lower()
@@ -3343,7 +3605,35 @@ class ChatReceptionistService:
             merged_context=merged_context,
         ):
             return False
-        return True
+        if has_identity_fields:
+            return True
+        # A bare full-name opener (e.g. "John Smith") is not captured without
+        # booking context, so the menu prompt would otherwise be missed. Detect it
+        # here, while keeping greetings and non-name text on their own replies.
+        return self._is_bare_name_only_opener(
+            message=message,
+            normalized_message=normalized_message,
+        )
+
+    def _is_bare_name_only_opener(
+        self,
+        *,
+        message: str,
+        normalized_message: str,
+    ) -> bool:
+        if self.responder._contains_any(normalized_message, _GREETING_KEYWORDS):
+            return False
+        opener_identity = self.parse_patient_identity(message, booking_context=True)
+        if opener_identity.full_name is None:
+            return False
+        if opener_identity.date_of_birth or opener_identity.email or opener_identity.phone:
+            return True
+        # With only a name parsed, require every token to look like a name part so
+        # generic multi-word messages are not misread as a patient identity.
+        tokens = message.strip().rstrip(".").split()
+        return bool(tokens) and all(
+            _NAME_TOKEN_PATTERN.fullmatch(token) for token in tokens
+        )
 
     def _attempt_booking(
         self,
