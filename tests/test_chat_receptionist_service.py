@@ -30,6 +30,7 @@ from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     APPOINTMENT_MANAGEMENT_MODE_CANCEL,
 )
+from app.services.chat_appointment_lookup import APPOINTMENT_MANAGEMENT_MODE_LOOKUP
 from app.services.chat_appointment_rescheduling import APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE
 from app.services.chat_booking_identity import ChatBookingIdentityStep
 from app.services.chat_receptionist import (
@@ -2591,6 +2592,24 @@ def test_reschedule_request_enters_reschedule_task_frame(
         chat_context["appointment_management_awaiting"]
         == APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY
     )
+
+
+def test_scheduled_appointment_lookup_avoids_generic_book_cancel_reschedule_fallback(
+    scheduling_chat_service: tuple[ChatReceptionistService, FakeConversationRepository],
+) -> None:
+    service, _repository = scheduling_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Sure, I'd like to see what my scheduled appointments are",
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.LIST_APPOINTMENTS
+    assert "book, cancel, or reschedule" not in result.reply.lower()
+    assert "full name" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert chat_context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_LOOKUP
 
 
 @pytest.mark.parametrize(

@@ -76,5 +76,10 @@ def build_chat_turn_understanding_system_prompt() -> str:
         "references and a clarification_question. Option numbers such as 1 still "
         "mean the first listed option, not a clock time.\n"
         "Extract candidate values only from the user message and supplied context; "
-        "do not invent facts."
+        "do not invent facts.\n"
+        "Appointment lookup: when the user asks to view, list, or check their "
+        "scheduled or upcoming appointments (for example show my scheduled "
+        "appointments, what appointments do I have, or can I see my appointments), "
+        "set intent to list_appointments. Do not use list_appointments when the "
+        "user wants to book, cancel, or reschedule."
     )
