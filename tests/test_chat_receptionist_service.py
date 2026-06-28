@@ -2715,6 +2715,86 @@ def test_exact_time_availability_question_offers_hold_prompt() -> None:
         assert "uuid" not in result.reply.lower()
 
 
+@pytest.mark.parametrize("confirmation_message", ["yes", "sure", "that works"])
+def test_single_offered_slot_yes_creates_hold(confirmation_message: str) -> None:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    monday_two_pm_slot = create_availability_slot(
+        doctor_id=emily.id,
+        start_time=datetime(2026, 7, 6, 18, 0, tzinfo=UTC),
+        status=AvailabilitySlotStatus.AVAILABLE,
+    )
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=[monday_two_pm_slot],
+    )
+    service, _repository, hold_service = _create_availability_guidance_service(
+        scheduling,
+        chat_turn_understanding_interpreter=FakeChatTurnUnderstandingInterpreter(),
+    )
+
+    first = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter"),
+    )
+    availability = service.handle_message(
+        ChatMessageInput(
+            message="Could it be on 2026-07-06 at 2pm?",
+            conversation_id=first.conversation.id,
+        ),
+    )
+    offered_slots = availability.conversation.conversation_metadata["chat_context"][
+        "offered_slots"
+    ]
+    assert len(offered_slots) == 1
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=confirmation_message,
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == offered_slots[0]["start_time"]
+    assert offered_slots[0]["availability_slot_id"] not in result.reply
+    assert "uuid" not in result.reply.lower()
+
+
+def test_multiple_offered_slots_yes_does_not_silently_hold() -> None:
+    service, _repository, hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    offered_slots = availability.conversation.conversation_metadata["chat_context"][
+        "offered_slots"
+    ]
+    assert len(offered_slots) >= 2
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="yes",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    assert result.intent != ChatReceptionistIntent.HOLD_CREATED
+    assert hold_service.create_hold_calls == []
+    assert "choose" in result.reply.lower()
+
+
 def test_exact_time_unavailable_offers_same_day_alternatives() -> None:
     dermatology = create_specialty(name="Dermatology")
     emily = Doctor(

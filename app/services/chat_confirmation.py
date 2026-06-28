@@ -20,9 +20,26 @@ _CONFIRMED_PHRASES = (
     "go ahead",
     "looks good",
     "sounds good",
+    "that works",
+    "works for me",
     "book it",
     "please book it",
     "yes please book it",
+)
+
+_SIMPLE_AFFIRMATIVE_PHRASES = (
+    "yes",
+    "yeah",
+    "yep",
+    "yes please",
+    "sure",
+    "correct",
+    "that's correct",
+    "that is correct",
+    "that's right",
+    "that is right",
+    "that works",
+    "works for me",
 )
 
 _REJECTED_PHRASES = (
@@ -169,6 +186,14 @@ def is_confirmation_rejected(
         understand_confirmation(confirmation_type=confirmation_type, message=message).decision
         is ConfirmationDecision.REJECTED
     )
+
+
+def is_simple_affirmative(message: str) -> bool:
+    """Narrow yes/no confirmation for single-choice prompts (e.g. one offered slot)."""
+    normalized = _normalize_message(message)
+    if not normalized:
+        return False
+    return _match_phrase_list(normalized, _SIMPLE_AFFIRMATIVE_PHRASES) is not None
 
 
 def normalize_patient_display_name(value: str) -> str:

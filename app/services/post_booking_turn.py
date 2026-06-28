@@ -16,6 +16,7 @@ class PostBookingTurnDecision(StrEnum):
     NEW_SCHEDULING_REQUEST = "new_scheduling_request"
     CANCEL_REQUEST = "cancel_request"
     RESCHEDULE_REQUEST = "reschedule_request"
+    APPOINTMENT_LOOKUP_REQUEST = "appointment_lookup_request"
     UNKNOWN = "unknown"
 
 

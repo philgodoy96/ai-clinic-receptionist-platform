@@ -23,6 +23,8 @@ from app.services.chat_confirmation import (
         ("sure", ConfirmationType.FINAL_BOOKING_CONFIRMATION),
         ("Looks good", ConfirmationType.FINAL_BOOKING_CONFIRMATION),
         ("That's right", ConfirmationType.POSSIBLE_PATIENT_MATCH_CONFIRMATION),
+        ("that works", ConfirmationType.FINAL_BOOKING_CONFIRMATION),
+        ("works for me", ConfirmationType.FINAL_BOOKING_CONFIRMATION),
     ],
 )
 def test_confirmation_phrases_are_confirmed(
@@ -177,6 +179,22 @@ def test_yes_does_not_globally_book_outside_final_state() -> None:
         confirmation_type=ConfirmationType.FINAL_BOOKING_CONFIRMATION,
         message="I would like to book an appointment",
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "yes",
+        "yes please",
+        "sure",
+        "that works",
+        "works for me",
+    ],
+)
+def test_simple_affirmative_phrases(message: str) -> None:
+    from app.services.chat_confirmation import is_simple_affirmative
+
+    assert is_simple_affirmative(message) is True
 
 
 @pytest.mark.parametrize(

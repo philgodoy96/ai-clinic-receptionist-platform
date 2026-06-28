@@ -19,6 +19,7 @@ from app.domain.chat_turn_understanding import (
 from app.services.appointment_time_normalization import (
     normalize_appointment_time_expression,
 )
+from app.services.chat_appointment_lookup import is_appointment_lookup_message
 from app.services.dob_ambiguity import detect_ambiguous_numeric_dob
 
 _MONTH_TOKEN_TO_NUMBER: dict[str, int] = {
@@ -276,23 +277,7 @@ class FakeChatTurnUnderstandingInterpreter:
         normalized: str,
     ) -> ChatTurnUnderstandingResult | None:
         del request, message
-        lookup_phrases = (
-            "show my scheduled appointments",
-            "see my scheduled appointments",
-            "what my scheduled appointments",
-            "see what my scheduled appointments",
-            "what appointments do i have",
-            "what are my upcoming appointments",
-            "can i see my appointments",
-            "do i have any appointments scheduled",
-            "list my appointments",
-            "my upcoming appointments",
-            "my scheduled appointments",
-        )
-        if not any(phrase in normalized for phrase in lookup_phrases):
-            return None
-
-        if any(keyword in normalized for keyword in ("cancel", "cancellation", "reschedule")):
+        if not is_appointment_lookup_message(normalized):
             return None
 
         return self._build_result(

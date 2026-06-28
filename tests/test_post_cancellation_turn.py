@@ -30,6 +30,14 @@ from app.services.post_cancellation_turn import (
             PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST,
         ),
         (
+            "I'd like to book a new appointment",
+            PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST,
+        ),
+        (
+            "Can I check my appointments?",
+            PostCancellationTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
+        ),
+        (
             "I want to cancel another appointment",
             PostCancellationTurnDecision.CANCEL_REQUEST,
         ),

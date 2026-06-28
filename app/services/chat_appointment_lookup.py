@@ -77,10 +77,76 @@ _LOOKUP_NO_APPOINTMENTS_MESSAGE = (
     "I don't see any upcoming scheduled appointments for you. "
     "Would you like to book one?"
 )
-_LOOKUP_RESULTS_HEADER = "Here are your upcoming scheduled appointments:"
-_LOOKUP_RESULTS_FOLLOW_UP = (
+_LOOKUP_RESULTS_HEADER_SINGULAR = "Here is your upcoming scheduled appointment:"
+_LOOKUP_RESULTS_HEADER_PLURAL = "Here are your upcoming scheduled appointments:"
+_LOOKUP_RESULTS_FOLLOW_UP_SINGULAR = (
+    "Would you like to cancel or reschedule this appointment?"
+)
+_LOOKUP_RESULTS_FOLLOW_UP_PLURAL = (
     "Would you like to cancel or reschedule any of these?"
 )
+
+_APPOINTMENT_LOOKUP_CANCEL_BLOCKLIST = ("cancel", "cancellation")
+_APPOINTMENT_LOOKUP_RESCHEDULE_BLOCKLIST = (
+    "reschedule",
+    "move appointment",
+    "move my appointment",
+)
+_APPOINTMENT_LOOKUP_VIEWING_VERBS = (
+    "see",
+    "show",
+    "list",
+    "view",
+    "check",
+    "look up",
+    "lookup",
+)
+_APPOINTMENT_LOOKUP_PHRASES = (
+    "show my scheduled appointments",
+    "see my scheduled appointments",
+    "what my scheduled appointments",
+    "see what my scheduled appointments",
+    "what appointments do i have",
+    "what are my upcoming appointments",
+    "can i see my appointments",
+    "can i check my appointments",
+    "do i have any appointments scheduled",
+    "list my appointments",
+    "view my appointments",
+    "check my appointments",
+    "show my appointments",
+    "see my appointments",
+    "look up my appointments",
+    "i'd like to check my appointments",
+    "i would like to check my appointments",
+    "i'd like to see my appointments",
+    "i would like to see my appointments",
+    "my upcoming appointments",
+    "my scheduled appointments",
+)
+
+
+def is_appointment_lookup_message(normalized_message: str) -> bool:
+    """Return True when the user is asking to view their scheduled appointments."""
+    if any(keyword in normalized_message for keyword in _APPOINTMENT_LOOKUP_CANCEL_BLOCKLIST):
+        return False
+    if any(keyword in normalized_message for keyword in _APPOINTMENT_LOOKUP_RESCHEDULE_BLOCKLIST):
+        return False
+    if any(phrase in normalized_message for phrase in _APPOINTMENT_LOOKUP_PHRASES):
+        return True
+    if "book" in normalized_message and "appointment" in normalized_message:
+        return False
+    if "upcoming" in normalized_message and "appointment" in normalized_message:
+        return True
+    if "scheduled" in normalized_message and "appointment" in normalized_message:
+        if any(verb in normalized_message for verb in _APPOINTMENT_LOOKUP_VIEWING_VERBS):
+            return True
+    if "my appointment" in normalized_message or "my appointments" in normalized_message:
+        if "availability" in normalized_message or "available" in normalized_message:
+            return False
+        if any(verb in normalized_message for verb in _APPOINTMENT_LOOKUP_VIEWING_VERBS):
+            return True
+    return False
 
 
 class SchedulingMetadataForLookup(Protocol):
@@ -325,10 +391,16 @@ class ChatAppointmentLookupOrchestrator:
             f"{index}. {presentation.list_summary}."
             for index, presentation in enumerate(presentations, start=1)
         )
+        if len(presentations) == 1:
+            header = _LOOKUP_RESULTS_HEADER_SINGULAR
+            follow_up = _LOOKUP_RESULTS_FOLLOW_UP_SINGULAR
+        else:
+            header = _LOOKUP_RESULTS_HEADER_PLURAL
+            follow_up = _LOOKUP_RESULTS_FOLLOW_UP_PLURAL
         content = (
-            f"{_LOOKUP_RESULTS_HEADER}\n\n"
+            f"{header}\n\n"
             f"{options}\n\n"
-            f"{_LOOKUP_RESULTS_FOLLOW_UP}"
+            f"{follow_up}"
         )
 
         return LookupFlowResult(

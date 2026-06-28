@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.services.chat_appointment_lookup import is_appointment_lookup_message
+
 _TRAILING_PUNCTUATION = re.compile(r"^[.,!?;:]+|[.,!?;:]+$")
 
 _CANCEL_SIGNALS = (
@@ -34,6 +36,14 @@ _NEW_SCHEDULING_SIGNALS = (
     "i want to schedule an appointment",
     "i need to schedule an appointment",
     "i want to book an appointment",
+    "i'd like to book a new appointment",
+    "i would like to book a new appointment",
+    "i want to book a new appointment",
+    "book a new appointment",
+    "i'd like to schedule an appointment",
+    "i would like to schedule an appointment",
+    "i want to schedule a new appointment",
+    "schedule a new appointment",
 )
 
 _END_CONVERSATION_PHRASES = (
@@ -87,7 +97,18 @@ class PostCompletionTurnDecision(StrEnum):
     NEW_SCHEDULING_REQUEST = "new_scheduling_request"
     CANCEL_REQUEST = "cancel_request"
     RESCHEDULE_REQUEST = "reschedule_request"
+    APPOINTMENT_LOOKUP_REQUEST = "appointment_lookup_request"
     UNKNOWN = "unknown"
+
+
+POST_COMPLETION_ACTIONABLE_DECISIONS = frozenset(
+    {
+        PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST,
+        PostCompletionTurnDecision.CANCEL_REQUEST,
+        PostCompletionTurnDecision.RESCHEDULE_REQUEST,
+        PostCompletionTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
+    },
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +143,13 @@ def classify_post_completion_turn(*, message: str) -> PostCompletionTurnUndersta
             decision=PostCompletionTurnDecision.RESCHEDULE_REQUEST,
             normalized_message=normalized,
             reason=f"matched_reschedule_signal:{reschedule_signal}",
+        )
+
+    if is_appointment_lookup_message(normalized):
+        return PostCompletionTurnUnderstanding(
+            decision=PostCompletionTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
+            normalized_message=normalized,
+            reason="matched_appointment_lookup_intent",
         )
 
     new_scheduling_signal = _match_new_scheduling_intent(normalized)
@@ -193,6 +221,12 @@ def _match_new_scheduling_intent(normalized: str) -> str | None:
 
     if not _match_signal(normalized, _SCHEDULING_KEYWORDS):
         return None
+
+    if "cancel" in normalized:
+        return None
+
+    if any(keyword in normalized for keyword in ("book", "schedule")):
+        return "book_or_schedule_appointment"
 
     if "another" in normalized or "one more" in normalized or "extra" in normalized:
         return "scheduling_keyword_with_follow_up"
