@@ -41,6 +41,7 @@ from app.services.fake_chat_turn_understanding_interpreter import (
 )
 from tests.test_chat_appointment_cancellation import (
     _add_appointments,
+    _clinic_local_appointment,
     _create_chat_service_with_patient,
     _friday_appointment,
     _wednesday_appointment,
@@ -747,3 +748,84 @@ def test_lookup_empty_cancel_explains_no_active_appointments() -> None:
     reply = result.reply.lower()
     assert "don't see any upcoming appointments" in reply
     assert "cancel" in reply
+
+
+def test_lookup_listed_cancel_by_attributes_selects_unique_match() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _listed, conversation_id = _reach_lookup_listed(
+        service,
+        appointments=[
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=10,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=11,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=11,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=14,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=15,
+            ),
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=7,
+                hour=14,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="cancel the Monday at 10 appointment with Dr. Emily",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    context = result.conversation.conversation_metadata["chat_context"]
+    assert context["appointment_management_mode"] == APPOINTMENT_MANAGEMENT_MODE_CANCEL
+    assert (
+        context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert "10:00" in context["selected_appointment_summary"]
+    assert "Dr. Emily Carter" in context["selected_appointment_summary"]
+    assert context.get("lookup_status") is None
+    assert "Please confirm: should I cancel your" in result.reply

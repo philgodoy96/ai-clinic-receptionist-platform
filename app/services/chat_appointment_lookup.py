@@ -37,6 +37,7 @@ from app.services.chat_booking_identity import (
     read_resolved_patient_context,
 )
 from app.services.chat_confirmation import normalize_patient_display_name
+from app.services.chat_offered_appointment_selection import build_offered_appointment_entry
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import (
     ClinicTimeService,
@@ -420,11 +421,20 @@ class ChatAppointmentLookupOrchestrator:
             chat_context_updates={
                 **shared_context,
                 "offered_appointments": [
-                    {
-                        "appointment_id": str(presentation.appointment_id),
-                        "summary": presentation.list_summary,
-                    }
-                    for presentation in presentations
+                    build_offered_appointment_entry(
+                        appointment_id=str(appointment.id),
+                        summary=presentation.list_summary,
+                        specialty_name=self._resolve_specialty_name(appointment.specialty_id),
+                        doctor_name=self._resolve_doctor_name(appointment.doctor_id),
+                        start_time=appointment.start_time,
+                        doctor_id=str(appointment.doctor_id),
+                        specialty_id=str(appointment.specialty_id),
+                    )
+                    for appointment, presentation in zip(
+                        upcoming,
+                        presentations,
+                        strict=True,
+                    )
                 ],
             },
         )

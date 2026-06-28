@@ -129,7 +129,9 @@ from app.services.chat_booking_identity import (
 )
 from app.services.chat_confirmation import (
     ConfirmationType,
+    is_booking_denial,
     is_confirmation_confirmed,
+    is_explicit_booking_abort,
     is_simple_affirmative,
     normalize_email_address,
     normalize_patient_display_name,
@@ -143,6 +145,14 @@ from app.services.chat_intent_switching import (
     classify_pending_intent_switch_reply,
     current_flow_name,
     detect_intent_override,
+)
+from app.services.chat_offered_appointment_selection import (
+    prepare_appointment_selection_message,
+)
+from app.services.chat_selection_revision import (
+    has_offered_slot_selection_signals,
+    has_selection_revision_phrase,
+    is_slot_selection_revision_message,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
@@ -397,6 +407,10 @@ _SLOT_SELECTION_REPROMPT_MESSAGE = (
 )
 _FINAL_BOOKING_CONFIRMATION_REPROMPT_MESSAGE = (
     "Please confirm whether you want me to book that appointment."
+)
+_BOOKING_DECLINED_MESSAGE = (
+    "No problem — I won't book that appointment. "
+    "Would you like to choose another time or do something else?"
 )
 _ALREADY_CONFIRMED_MESSAGE = (
     "Your appointment is already confirmed. "
@@ -789,11 +803,10 @@ def _appointment_selection_message_from_action_request(
     action_keywords: Sequence[str],
 ) -> str:
     """Strip cancel/reschedule keywords so selection can run on the same turn."""
-    normalized = message.lower()
-    for keyword in sorted(action_keywords, key=len, reverse=True):
-        normalized = normalized.replace(keyword, " ")
-    normalized = re.sub(r"\s+", " ", normalized).strip(" .,!?")
-    return normalized or message
+    return prepare_appointment_selection_message(
+        message,
+        action_keywords=action_keywords,
+    )
 
 
 def _post_lookup_follow_up_message(chat_context: dict[str, Any]) -> str:
@@ -975,6 +988,7 @@ class ChatReceptionistIntent(StrEnum):
     BOOKING_IDENTITY_MISSING = "booking_identity_missing"
     BOOKING_CONFIRMATION_REQUIRED = "booking_confirmation_required"
     BOOKING_CONFIRMED = "booking_confirmed"
+    BOOKING_DECLINED = "booking_declined"
     BOOKING_HOLD_MISSING = "booking_hold_missing"
     BOOKING_HOLD_EXPIRED = "booking_hold_expired"
     BOOKING_CONFLICT = "booking_conflict"
@@ -1017,6 +1031,7 @@ _BOOKING_CONTEXT_INTENTS = frozenset(
         ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
         ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
         ChatReceptionistIntent.BOOKING_CONFIRMED,
+        ChatReceptionistIntent.BOOKING_DECLINED,
         ChatReceptionistIntent.BOOKING_HOLD_MISSING,
         ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
         ChatReceptionistIntent.BOOKING_CONFLICT,
@@ -1027,6 +1042,7 @@ _SUCCESSFUL_FLOW_INTENTS = frozenset(
         ChatReceptionistIntent.AVAILABILITY_RESULTS,
         ChatReceptionistIntent.HOLD_CREATED,
         ChatReceptionistIntent.BOOKING_CONFIRMED,
+        ChatReceptionistIntent.BOOKING_DECLINED,
         ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
         ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
         ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
@@ -3640,6 +3656,16 @@ class ChatReceptionistService:
         )
         offered_slots = merged_context.get("offered_slots") or []
 
+        if hold_id:
+            slot_revision_reply = self._try_revise_held_slot_selection(
+                message=message,
+                conversation=conversation,
+                merged_context=merged_context,
+                context_updates=context_updates,
+            )
+            if slot_revision_reply is not None:
+                return slot_revision_reply
+
         if merged_context.get("appointment_id"):
             return self._handle_post_booking_message(
                 message=message,
@@ -3669,6 +3695,14 @@ class ChatReceptionistService:
                         booking_attempted=has_confirmation,
                     )
                 return None
+
+            abort_reply = self._try_abort_active_booking(
+                message=message,
+                merged_context=merged_context,
+                context_updates=context_updates,
+            )
+            if abort_reply is not None:
+                return abort_reply
 
             flow_result = self._booking_identity.handle(
                 message=message,
@@ -4249,6 +4283,130 @@ class ChatReceptionistService:
             "pending_confirmation_email": None,
             "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME,
         }
+
+    def _cleared_active_hold_context_updates(self) -> dict[str, Any]:
+        """Clear an active hold while preserving offered slot options."""
+        return {
+            "hold_id": None,
+            "hold_expires_at": None,
+            "hold_owner_id": None,
+            "selected_availability_slot_id": None,
+            "selected_start_time": None,
+            "booking_identity_step": None,
+            "pending_confirmation_email": None,
+        }
+
+    def _release_context_hold_best_effort(self, merged_context: dict[str, Any]) -> None:
+        hold_id_raw = merged_context.get("hold_id")
+        if not isinstance(hold_id_raw, str) or not hold_id_raw:
+            return
+        owner_id = merged_context.get("hold_owner_id")
+        try:
+            self.appointment_holds.release_hold_by_id(
+                hold_id=UUID(hold_id_raw),
+                owner_id=str(owner_id) if owner_id else "",
+            )
+        except (AppointmentHoldServiceError, RedisError, ValueError):
+            logger.debug("failed to release held slot during selection revision")
+
+    def _try_abort_active_booking(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        """Abort an in-progress booking when the user clearly denies it.
+
+        Backend decision layer: the orchestrator reports the current booking
+        step, this method validates the denial, and the domain hold service
+        executes the release. Plain "no"/"no thanks" only abort at the final
+        booking confirmation; earlier identity steps require an unambiguous
+        abort phrase ("don't book it", "never mind", ...) so a bare "no" can
+        still answer "have you been seen here before?".
+        """
+        if merged_context.get("appointment_id"):
+            return None
+
+        step_raw = merged_context.get("booking_identity_step")
+        try:
+            step = ChatBookingIdentityStep(step_raw) if isinstance(step_raw, str) else None
+        except ValueError:
+            step = None
+        if step is None or step is ChatBookingIdentityStep.BOOKING_COMPLETED:
+            return None
+
+        normalized_message = message.lower().strip()
+        # A revision phrase ("on second thought", "instead", ...) means the user
+        # wants a different slot, not to abort; leave that to the slot-revision
+        # path so the selection is changed rather than cancelled.
+        if has_selection_revision_phrase(normalized_message):
+            return None
+
+        if step is ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION:
+            denied = is_booking_denial(message)
+        else:
+            denied = is_explicit_booking_abort(message)
+        if not denied:
+            return None
+
+        # Do not abort when the message names a different offered time (a new
+        # target without an explicit revision phrase); let the confirmation
+        # reprompt stand rather than discarding a possible slot change.
+        offered_slots = merged_context.get("offered_slots") or []
+        if (
+            isinstance(offered_slots, list)
+            and offered_slots
+            and has_offered_slot_selection_signals(
+                message,
+                normalized_message,
+                offered_slots,
+            )
+        ):
+            return None
+
+        # Best-effort release: if the hold cannot be released we still clear chat
+        # state and never create the appointment, relying on the hold TTL as the
+        # safety net (release is treated as best-effort everywhere in this flow).
+        self._release_context_hold_best_effort(merged_context)
+        aborted_updates = {
+            **context_updates,
+            **self._cleared_hold_context_updates(),
+        }
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.BOOKING_DECLINED,
+            content=_BOOKING_DECLINED_MESSAGE,
+            chat_context_updates=aborted_updates,
+        )
+
+    def _try_revise_held_slot_selection(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if not is_slot_selection_revision_message(
+            message,
+            chat_context=merged_context,
+            has_active_hold=bool(merged_context.get("hold_id")),
+        ):
+            return None
+
+        self._release_context_hold_best_effort(merged_context)
+        cleared_hold_updates = {
+            **context_updates,
+            **self._cleared_active_hold_context_updates(),
+        }
+        merged_without_hold = {**merged_context, **cleared_hold_updates}
+        return self._handle_hold_flow(
+            message=message,
+            normalized_message=message.lower().strip(),
+            conversation=conversation,
+            merged_context=merged_without_hold,
+            context_updates=cleared_hold_updates,
+        )
 
     @staticmethod
     def _finish_reply_with_context(
