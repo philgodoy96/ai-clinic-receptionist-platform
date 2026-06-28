@@ -1700,6 +1700,35 @@ def test_reschedule_ambiguous_time_match_does_not_create_hold() -> None:
     assert hold_service.create_hold_calls == []
 
 
+@pytest.mark.parametrize("selection_message", ["It could be at 2pm", "at 2pm"])
+def test_reschedule_contextual_time_phrase_selects_matching_slot(
+    selection_message: str,
+) -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    hold_service = service.appointment_holds
+    assert isinstance(hold_service, FakeAppointmentHoldService)
+    _availability_result, conversation_id = _reach_reschedule_new_slot_selection(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message=selection_message, conversation_id=conversation_id),
+    )
+
+    assert "hold" in result.reply.lower() or "confirm" in result.reply.lower()
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("reschedule_hold_id")
+    assert "uuid" not in result.reply.lower()
+
+
 def test_reschedule_zero_slot_match_reprompts_without_hold() -> None:
     service, _repository, emily, patient = _reschedule_wednesday_pm_service()
     hold_service = service.appointment_holds

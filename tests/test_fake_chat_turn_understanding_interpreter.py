@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.domain.chat_turn_understanding import (
     ChatTurnIntent,
     ChatTurnUnderstandingRequest,
@@ -287,6 +289,68 @@ def test_normalizes_2_pm_with_space_to_offered_slot() -> None:
 
     assert result.extracted_fields.appointment_time == "14:00"
     assert result.selected_slot_reference == "slot-2pm"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "It could be at 10",
+        "Could be 10",
+        "I can do 10",
+        "at 2pm",
+    ],
+)
+def test_contextual_time_phrases_select_matching_offered_slot(message: str) -> None:
+    slots = [
+        OfferedSlot(reference="slot-10am", start_time="2026-07-02T10:00:00"),
+        OfferedSlot(reference="slot-2pm", start_time="2026-07-02T14:00:00"),
+        OfferedSlot(reference="slot-3pm", start_time="2026-07-02T15:00:00"),
+    ]
+    result = _interpret(
+        message,
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        conversation_state=ConversationState.OFFERING_SLOTS,
+        offered_slots=slots,
+    )
+
+    assert result.intent is ChatTurnIntent.SLOT_SELECTION
+    if "2pm" in message.lower():
+        assert result.extracted_fields.appointment_time == "14:00"
+        assert result.selected_slot_reference == "slot-2pm"
+    else:
+        assert result.extracted_fields.appointment_time == "10:00"
+        assert result.selected_slot_reference == "slot-10am"
+
+
+def test_contextual_bare_10_does_not_mean_option_ten() -> None:
+    slots = [
+        OfferedSlot(reference=f"slot-{index}", start_time=f"2026-07-02T{hour:02d}:00:00")
+        for index, hour in enumerate((9, 10, 11), start=1)
+    ]
+    result = _interpret(
+        "It could be at 10",
+        expected_response_type=ExpectedResponseType.SLOT_SELECTION,
+        offered_slots=slots,
+    )
+
+    assert result.extracted_fields.appointment_time == "10:00"
+    assert result.selected_slot_reference == "slot-2"
+
+
+def test_extracts_exact_time_availability_inquiry() -> None:
+    result = _interpret(
+        "Could it be on Monday 2pm?",
+        conversation_state=ConversationState.COLLECTING_APPOINTMENT_REQUEST,
+        expected_response_type=ExpectedResponseType.DATE_OR_TIME,
+    )
+
+    assert result.intent in {
+        ChatTurnIntent.APPOINTMENT_REQUEST,
+        ChatTurnIntent.AVAILABILITY_REQUEST,
+    }
+    assert result.extracted_fields.appointment_time == "14:00"
+    assert result.extracted_fields.appointment_date_raw == "Monday"
+    assert result.selected_slot_reference is None
 
 
 def test_bare_hour_15_normalizes_without_offered_slots_when_selecting() -> None:

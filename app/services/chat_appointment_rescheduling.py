@@ -741,6 +741,8 @@ class ChatAppointmentReschedulingOrchestrator:
 
         filtered_doctor_slots: list[AvailabilitySlot] = []
         filtered_attributed_slots: list[DoctorAttributedAvailabilitySlot] = []
+        doctor_slots: Sequence[AvailabilitySlot] = []
+        attributed_slots: Sequence[DoctorAttributedAvailabilitySlot] = []
 
         if use_doctor_target:
             assert isinstance(doctor_id_raw, str)
@@ -780,14 +782,115 @@ class ChatAppointmentReschedulingOrchestrator:
                 no_slot_updates["reschedule_requested_date"] = preference.requested_date
             if preference.time_window is not None:
                 no_slot_updates["reschedule_requested_time_window"] = preference.time_window
+
+            if preference.exact_time is not None:
+                day_preference = _ReschedulePreferenceExtraction(
+                    requested_date=preference.requested_date,
+                    search_start_date=preference.search_start_date,
+                    search_end_date=preference.search_end_date,
+                    time_window=preference.time_window,
+                )
+                day_slots: Sequence[AvailabilitySlot] | Sequence[DoctorAttributedAvailabilitySlot]
+                if use_doctor_target and doctor_slots:
+                    day_slots = self._filter_doctor_slots_by_preference(
+                        doctor_slots,
+                        preference=day_preference,
+                    )
+                elif attributed_slots:
+                    day_slots = self._filter_attributed_slots_by_preference(
+                        attributed_slots,
+                        preference=day_preference,
+                    )
+                else:
+                    day_slots = []
+
+                if day_slots:
+                    shown_day_slots = day_slots[:_MAX_RESCHEDULE_OFFERED_SLOTS]
+                    offered_slots = self._serialize_reschedule_offered_slots(
+                        shown_day_slots,
+                        specialty_id=(
+                            specialty_id_raw if isinstance(specialty_id_raw, str) else None
+                        ),
+                        specialty_name=specialty_name,
+                        default_doctor_name=doctor_name,
+                    )
+                    clinic_tz = self.clinic_time_service.timezone
+                    alternative_times = [
+                        format_clinic_local_time_label(
+                            self._reschedule_slot_start_time(slot),
+                            clinic_tz,
+                        )
+                        for slot in shown_day_slots
+                    ]
+                    return RescheduleFlowResult(
+                        intent="reschedule_request",
+                        content=self._format_reschedule_exact_time_unavailable(
+                            provider_label=provider_label,
+                            requested_date=preference.requested_date,
+                            exact_time=preference.exact_time,
+                            alternative_times=alternative_times,
+                        ),
+                        chat_context_updates={
+                            **base_updates,
+                            "appointment_management_awaiting": (
+                                APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+                            ),
+                            "reschedule_offered_slots": offered_slots,
+                            **(
+                                {"reschedule_requested_date": preference.requested_date}
+                                if preference.requested_date is not None
+                                else {}
+                            ),
+                        },
+                    )
+
+                unavailable_content = self._format_reschedule_exact_time_unavailable(
+                    provider_label=provider_label,
+                    requested_date=preference.requested_date,
+                    exact_time=preference.exact_time,
+                )
+            else:
+                unavailable_content = RESCHEDULE_NO_AVAILABILITY_MESSAGE
             return RescheduleFlowResult(
                 intent="reschedule_request",
-                content=RESCHEDULE_NO_AVAILABILITY_MESSAGE,
+                content=unavailable_content,
                 chat_context_updates=no_slot_updates,
             )
 
         if use_doctor_target:
             shown_doctor_slots = filtered_doctor_slots[:_MAX_RESCHEDULE_OFFERED_SLOTS]
+            if preference.exact_time is not None and len(shown_doctor_slots) == 1:
+                slot = shown_doctor_slots[0]
+                offered_slots = self._serialize_reschedule_offered_slots(
+                    [slot],
+                    specialty_id=specialty_id_raw if isinstance(specialty_id_raw, str) else None,
+                    specialty_name=specialty_name,
+                    default_doctor_name=doctor_name,
+                )
+                display_time = format_clinic_local_time_label(
+                    slot.start_time,
+                    self.clinic_time_service.timezone,
+                )
+                return RescheduleFlowResult(
+                    intent="reschedule_request",
+                    content=self._format_reschedule_exact_time_available_hold_prompt(
+                        provider_label=provider_label,
+                        requested_date=preference.requested_date,
+                        display_time=display_time,
+                    ),
+                    chat_context_updates={
+                        **base_updates,
+                        "appointment_management_awaiting": (
+                            APPOINTMENT_MANAGEMENT_AWAITING_NEW_SLOT_SELECTION
+                        ),
+                        "reschedule_offered_slots": offered_slots,
+                        **(
+                            {"reschedule_requested_date": preference.requested_date}
+                            if preference.requested_date is not None
+                            else {}
+                        ),
+                    },
+                )
             offered_slots = self._serialize_reschedule_offered_slots(
                 shown_doctor_slots,
                 specialty_id=specialty_id_raw if isinstance(specialty_id_raw, str) else None,
@@ -1600,6 +1703,14 @@ class ChatAppointmentReschedulingOrchestrator:
             )
         ]
 
+    def _reschedule_slot_start_time(
+        self,
+        slot: AvailabilitySlot | DoctorAttributedAvailabilitySlot,
+    ) -> datetime:
+        if isinstance(slot, DoctorAttributedAvailabilitySlot):
+            return slot.slot.start_time
+        return slot.start_time
+
     def _serialize_reschedule_offered_slots(
         self,
         slots: Sequence[AvailabilitySlot] | Sequence[DoctorAttributedAvailabilitySlot],
@@ -1659,6 +1770,48 @@ class ChatAppointmentReschedulingOrchestrator:
             f"I found these openings with {provider_label}:\n\n"
             f"{options}\n"
             "Which time would you like?"
+        )
+
+    def _format_reschedule_weekday_label(self, requested_date: str | None) -> str:
+        if requested_date is None:
+            return "that day"
+        try:
+            return date.fromisoformat(requested_date).strftime("%A")
+        except ValueError:
+            return requested_date
+
+    def _format_reschedule_exact_time_available_hold_prompt(
+        self,
+        *,
+        provider_label: str,
+        requested_date: str | None,
+        display_time: str,
+    ) -> str:
+        weekday = self._format_reschedule_weekday_label(requested_date)
+        return (
+            f"Yes, {provider_label} is available on {weekday} at {display_time}. "
+            "Would you like me to hold that time?"
+        )
+
+    def _format_reschedule_exact_time_unavailable(
+        self,
+        *,
+        provider_label: str,
+        requested_date: str | None,
+        exact_time: str,
+        alternative_times: Sequence[str] | None = None,
+    ) -> str:
+        weekday = self._format_reschedule_weekday_label(requested_date)
+        if alternative_times:
+            alternatives_text = ", ".join(alternative_times)
+            return (
+                f"{exact_time} is not available with {provider_label} on {weekday}, "
+                f"but I found these openings that day: {alternatives_text}. "
+                "Which time would you like?"
+            )
+        return (
+            f"I don't have {exact_time} available with {provider_label} on {weekday}. "
+            "Would you like me to check another day or time window?"
         )
 
     def _reschedule_flow_context(self, chat_context: dict[str, Any]) -> dict[str, Any]:
@@ -1928,7 +2081,7 @@ class ChatAppointmentReschedulingOrchestrator:
 
         normalized_time = normalize_appointment_time_expression(
             message,
-            allow_bare_hour=False,
+            allow_bare_hour=bool(offered),
         )
         if normalized_time is not None:
             signals_detected = True
