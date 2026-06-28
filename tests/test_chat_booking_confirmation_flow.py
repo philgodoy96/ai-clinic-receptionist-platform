@@ -392,8 +392,6 @@ def test_successful_booking_api_creates_confirmation_email_job() -> None:
     assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
         email_job.appointment_id,
     )
-    assert "Jane Doe" in email_job.body
-    assert "Dr. Emily Carter" in email_job.body
 
 
 def test_chat_booking_confirmation_email_enqueue_is_idempotent() -> None:

@@ -523,7 +523,6 @@ def test_reschedule_confirmation_email_job_includes_patient_name() -> None:
 
     email_job = _confirmation_jobs(context)[0]
     assert email_job.payload["patient_name"] == context.patient.full_name
-    assert context.patient.full_name in email_job.body
 
 
 def test_reschedule_confirmation_email_job_includes_doctor_name() -> None:
@@ -533,7 +532,6 @@ def test_reschedule_confirmation_email_job_includes_doctor_name() -> None:
 
     email_job = _confirmation_jobs(context)[0]
     assert email_job.payload["doctor_name"] == context.doctor.full_name
-    assert context.doctor.full_name in email_job.body
 
 
 def test_reschedule_confirmation_email_job_includes_specialty_name() -> None:

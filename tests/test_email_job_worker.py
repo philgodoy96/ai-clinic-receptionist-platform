@@ -283,6 +283,7 @@ def create_email_job(
     locked_by: str | None = None,
     locked_until: datetime | None = None,
     next_attempt_at: datetime | None = None,
+    payload: dict[str, object] | None = None,
 ) -> EmailJob:
     now = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
     return EmailJob(
@@ -292,13 +293,13 @@ def create_email_job(
         appointment_id=uuid4(),
         patient_id=uuid4(),
         recipient_email="patient@example.test",
-        subject="Appointment confirmation",
-        body="Your appointment is confirmed.",
+        subject="Your appointment is confirmed",
+        body="Pending delivery render.",
         attempt_count=attempt_count,
         max_attempts=max_attempts,
         locked_by=locked_by,
         locked_until=locked_until,
-        payload={},
+        payload=payload or {},
         next_attempt_at=next_attempt_at,
         created_at=now,
         updated_at=now,

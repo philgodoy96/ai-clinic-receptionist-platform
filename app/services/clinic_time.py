@@ -267,3 +267,9 @@ def format_clinic_local_time_label(value: datetime, timezone: ZoneInfo) -> str:
 def format_clinic_local_slot_summary(value: datetime, timezone: ZoneInfo) -> str:
     localized = to_clinic_local_datetime(value, timezone)
     return f"{localized.strftime('%A')} at {localized.strftime('%H:%M')}"
+
+
+def format_clinic_local_appointment_datetime(value: datetime, timezone: ZoneInfo) -> str:
+    localized = to_clinic_local_datetime(value, timezone)
+    date_part = f"{localized.strftime('%A')}, {localized.strftime('%B')} {localized.day}"
+    return f"{date_part} at {localized.strftime('%H:%M')}"
