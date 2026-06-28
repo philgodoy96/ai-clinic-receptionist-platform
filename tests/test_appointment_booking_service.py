@@ -188,6 +188,7 @@ class BookingContext:
         *,
         patient: Patient,
         doctor: Doctor,
+        specialty: Specialty,
         slot: AvailabilitySlot,
         hold_repository: FakeAppointmentHoldRepository,
         appointment_repository: FakeAppointmentRepository,
@@ -196,6 +197,7 @@ class BookingContext:
     ) -> None:
         self.patient = patient
         self.doctor = doctor
+        self.specialty = specialty
         self.slot = slot
         self.hold_repository = hold_repository
         self.appointment_repository = appointment_repository
@@ -517,6 +519,7 @@ def create_booking_context(
     return BookingContext(
         patient=patient,
         doctor=doctor,
+        specialty=specialty,
         slot=slot,
         hold_repository=hold_repository,
         appointment_repository=appointment_repository,
