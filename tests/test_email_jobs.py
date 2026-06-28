@@ -48,8 +48,11 @@ def test_enqueue_appointment_confirmation_creates_pending_email_job() -> None:
     assert email_job.max_attempts == 3
     assert email_job.idempotency_key == f"appointment_confirmation:{appointment_id}"
     assert email_job.payload["source"] == "retell_tool"
-    assert "John Miller" in email_job.body
-    assert "Dr. Emily Carter" in email_job.body
+    assert email_job.payload["patient_name"] == "John Miller"
+    assert email_job.payload["doctor_name"] == "Dr. Emily Carter"
+    assert email_job.payload["appointment_start_time"] == "2026-07-01T10:00:00+00:00"
+    assert email_job.subject == "Your appointment is confirmed"
+    assert email_job.body == "Pending delivery render."
 
 
 def test_enqueue_appointment_confirmation_does_not_require_recipient_email_yet() -> None:
@@ -517,8 +520,8 @@ def create_email_job(
         appointment_id=uuid4(),
         patient_id=uuid4(),
         recipient_email="patient@example.test",
-        subject="Appointment confirmation",
-        body="Your appointment is confirmed.",
+        subject="Your appointment is confirmed",
+        body="Pending delivery render.",
         attempt_count=attempt_count,
         max_attempts=3,
         locked_by=locked_by,

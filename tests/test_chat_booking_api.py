@@ -200,8 +200,6 @@ def test_chat_booking_enqueues_email_and_publishes_dispatch_after_commit(
     assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
         email_job.appointment_id,
     )
-    assert "Jane Doe" in email_job.body
-    assert "Dr. Emily Carter" in email_job.body
     assert len(chat_booking_client.dispatch_publisher.published_messages) == 1
     assert chat_booking_client.dispatch_publisher.published_messages[0].email_job_id is not None
 
