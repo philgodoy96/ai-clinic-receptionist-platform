@@ -52,7 +52,9 @@ Created after:
 - Retell voice booking confirmation
 - reschedule confirmation (for the **new** active appointment)
 
-Jobs include `recipient_email`, `patient_name`, `doctor_name`, and `appointment_start_time` when the domain layer has them. Content is rendered at send time with clinic-local datetime formatting (`CLINIC_TIMEZONE`). Reschedule jobs may include `confirmation_reason=reschedule` for a distinct subject line.
+Jobs include `recipient_email`, `patient_name`, `doctor_name`, `specialty_name`, and `appointment_start_time` when the domain layer has them. Content is rendered at send time with clinic-local date and time formatting (`CLINIC_TIMEZONE`). Templates avoid raw UTC timestamps. Reschedule jobs may include `confirmation_reason=reschedule` for a distinct subject line.
+
+Appointment email content is transactional and structured. When payload fields are present, confirmation and reschedule mail includes specialty, clinician, clinic-local date, and clinic-local time. Branded HTML templates are future work.
 
 Sending is **best-effort**. A confirmed appointment is not rolled back when email delivery fails.
 
@@ -179,7 +181,19 @@ Postgres enforces uniqueness on `idempotency_key` for appointment confirmation j
 
 When using Resend, the worker passes `EmailJob.idempotency_key` (or `email_job:{id}` fallback) as the Resend `Idempotency-Key` header.
 
-Duplicate RabbitMQ wake-up messages for already `sent` jobs are ignored without calling the provider. Worker crash after a successful provider send but before finalize may reclaim the job; provider idempotency reduces duplicate-send risk on that path.
+Duplicate RabbitMQ wake-up messages for already `sent` jobs are ignored without calling the provider. Worker crash after a successful provider send but before finalize may reclaim the job; provider idempotency reduces duplicate-send risk on that path. Worker retry and crash recovery reuse the same `EmailJob` row — they do not create duplicate jobs for the same appointment confirmation.
+
+## Resend provider client
+
+When `EMAIL_PROVIDER=resend`, `HttpResendEmailClient` sends explicit HTTP headers on each request:
+
+- `Authorization` — Bearer token from `RESEND_API_KEY`
+- `Content-Type` — `application/json`
+- `Accept` — `application/json`
+- `User-Agent` — `ai-clinic-receptionist-platform/1.0`
+- `Idempotency-Key` — when the job has an idempotency key
+
+Provider errors preserve useful sanitized status and response body details in job `last_error` for operator debugging. API keys, Bearer tokens, and `re_*` key patterns are redacted from logged error detail. Secrets are never logged.
 
 ## Failure Behavior
 
@@ -193,21 +207,33 @@ Terminal `failed` jobs are visible in Postgres and the Email Job Debug API. Oper
 
 ## Manual Smoke Checklists
 
+Confirming a booking or reschedule creates a `pending` `EmailJob`. Mail is not delivered until a worker processes that job.
+
 ### Fake provider
 
-1. Set `EMAIL_PROVIDER=fake`.
-2. Confirm an appointment through chat or the scheduling API.
-3. Run the email worker (`python -m scripts.run_email_job_worker --once` locally, or the hosted worker command).
-4. Confirm the `EmailJob` moves to `sent` with `recipient_email`, rendered subject/body, and a `provider_message_id` (for example `fake-0`).
+1. Set `EMAIL_PROVIDER=fake` and `EMAIL_JOB_DISPATCH_ENABLED=false`.
+2. Confirm a booking or reschedule through chat, the scheduling API, or Retell (patient must have an email).
+3. Confirm an `EmailJob` row exists with status `pending` and idempotency key `appointment_confirmation:{appointment_id}`.
+4. Run `python -m scripts.run_email_job_worker --once`.
+5. Confirm the job moves to `sent`.
+6. Confirm `provider_message_id` is populated (for example `fake-0`).
 
 ### Resend provider
 
-1. Set `EMAIL_PROVIDER=resend`.
-2. Set `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` in the deployment secret manager (not in Git).
-3. Start API and worker/consumer processes.
-4. Confirm a booking with a patient email that can receive mail.
-5. Verify the message arrives in the inbox.
-6. Confirm the `EmailJob` status is `sent` and `provider_message_id` is populated.
+End-to-end real Resend delivery has been validated with a verified sending subdomain. Use this checklist for local or hosted smoke:
+
+1. Configure and verify a sending subdomain in Resend (for example `email.example.com`) with DKIM, SPF, and Return-Path DNS records; add DMARC when ready.
+2. Set `EMAIL_PROVIDER=resend`.
+3. Set `RESEND_API_KEY` locally or in the deployment secret manager — never commit real keys.
+4. Set `EMAIL_FROM_ADDRESS` to a verified sender, for example `"AI Clinic Demo <appointments@email.example.com>"`.
+5. Start the API (`python -m uvicorn app.main:app --reload` locally).
+6. Confirm a booking or reschedule with a real recipient email you control.
+7. Run the worker (`python -m scripts.run_email_job_worker --once` with dispatch disabled, or start `python -m scripts.run_email_worker` / `python -m scripts.run_email_job_consumer` when `EMAIL_JOB_DISPATCH_ENABLED=true`).
+8. Confirm:
+   - `EmailJob` status moves from `pending` to `sent`
+   - `provider_message_id` is populated
+   - the Resend dashboard shows the send
+   - the message arrives in inbox or spam/junk (new subdomains may land in junk despite passing DNS checks)
 
 Do not use real API keys in documentation or committed env files.
 
@@ -234,4 +260,8 @@ This implementation does not yet include:
 - production alerting for terminal `failed` jobs
 - Prometheus/Grafana integration for metrics export
 
-Production deployments should use a **verified sending domain** with Resend. Public demos should enable auth, rate limits, and cost controls (`PUBLIC_DEMO_GUARDRAILS_ENABLED`) before turning on real email. **Fake provider remains recommended for local development.**
+Operational notes:
+
+- New sending domains and subdomains can still land in **spam/junk** despite SPF, DKIM, and DMARC passing, due to sender reputation.
+- Production deployments should use verified sending domains and monitor Resend plus `EmailJob` terminal failures.
+- Public demos should keep **`EMAIL_PROVIDER=fake`** by default unless auth, rate limits, and cost controls (`PUBLIC_DEMO_GUARDRAILS_ENABLED`) are enabled before turning on real email.
