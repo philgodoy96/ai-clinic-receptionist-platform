@@ -95,7 +95,7 @@ Always follow backend `next_step` over generic recovery wording. Valid real emai
 
 Summarize specialty, doctor (if known), date, time, patient name, and confirmed email. Ask a natural confirmation question such as:
 
-> Before I book it, please confirm: Dermatology with Dr. Emily Carter tomorrow at 2:00 PM Eastern for Felipe Marques, using the email you confirmed. Should I book that?
+> Before I book it, please confirm: Dermatology with Dr. Emily Carter tomorrow at 2:00 PM Eastern for John Smith, using the email you confirmed. Should I book that?
 
 **Critical:** After asking, stop and wait. Never call `book_appointment` in the same assistant turn as the final confirmation question. Only call `book_appointment` on the next turn after the caller clearly confirms. Set `confirmation_text` from the caller's actual latest confirmation message.
 
@@ -558,7 +558,7 @@ Step 9 — Final booking confirmation.
 Before calling book_appointment, summarize clearly. Include specialty, doctor name if available from tool results, date, time, patient name, and confirmed email.
 
 Example:
-"Before I book it, please confirm: Dermatology with Dr. Emily Carter tomorrow at 2:00 PM Eastern for Felipe Marques, using the email you confirmed. Should I book that?"
+"Before I book it, please confirm: Dermatology with Dr. Emily Carter tomorrow at 2:00 PM Eastern for John Smith, using the email you confirmed. Should I book that?"
 
 Critical rule:
 After asking the final booking confirmation question, stop and wait.

@@ -37,6 +37,7 @@ from app.services.chat_booking_identity import (
     read_resolved_patient_context,
 )
 from app.services.chat_confirmation import normalize_patient_display_name
+from app.services.chat_offered_appointment_selection import build_offered_appointment_entry
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import (
     ClinicTimeService,
@@ -82,10 +83,12 @@ _LOOKUP_NO_APPOINTMENTS_MESSAGE = (
 _LOOKUP_RESULTS_HEADER_SINGULAR = "Here is your upcoming scheduled appointment:"
 _LOOKUP_RESULTS_HEADER_PLURAL = "Here are your upcoming scheduled appointments:"
 _LOOKUP_RESULTS_FOLLOW_UP_SINGULAR = (
-    "Would you like to cancel or reschedule this appointment?"
+    "Would you like to cancel or reschedule this appointment, or book another "
+    "appointment?"
 )
 _LOOKUP_RESULTS_FOLLOW_UP_PLURAL = (
-    "Would you like to cancel or reschedule any of these?"
+    "Would you like to cancel or reschedule one of these, or book another "
+    "appointment?"
 )
 
 _APPOINTMENT_LOOKUP_CANCEL_BLOCKLIST = ("cancel", "cancellation")
@@ -418,11 +421,20 @@ class ChatAppointmentLookupOrchestrator:
             chat_context_updates={
                 **shared_context,
                 "offered_appointments": [
-                    {
-                        "appointment_id": str(presentation.appointment_id),
-                        "summary": presentation.list_summary,
-                    }
-                    for presentation in presentations
+                    build_offered_appointment_entry(
+                        appointment_id=str(appointment.id),
+                        summary=presentation.list_summary,
+                        specialty_name=self._resolve_specialty_name(appointment.specialty_id),
+                        doctor_name=self._resolve_doctor_name(appointment.doctor_id),
+                        start_time=appointment.start_time,
+                        doctor_id=str(appointment.doctor_id),
+                        specialty_id=str(appointment.specialty_id),
+                    )
+                    for appointment, presentation in zip(
+                        upcoming,
+                        presentations,
+                        strict=True,
+                    )
                 ],
             },
         )

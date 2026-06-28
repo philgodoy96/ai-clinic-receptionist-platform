@@ -220,6 +220,46 @@ def try_resolve_pending_dob_ambiguity(
     return None, None
 
 
+def parse_unambiguous_numeric_dob(text: str) -> str | None:
+    """Return a normalized ISO date when ``text`` contains an unambiguous slash DOB.
+
+    Slash forms such as ``DD/MM/YYYY`` and ``D/M/YYYY`` are supported. When both
+    numeric components are ``<= 12`` and the US vs international readings differ,
+    this returns ``None`` so ``detect_ambiguous_numeric_dob`` can own clarification.
+    Invalid calendar dates also return ``None``.
+    """
+    match = _NUMERIC_DOB_PATTERN.search(text)
+    if match is None:
+        return None
+
+    first = int(match.group(1))
+    second = int(match.group(2))
+    year = int(match.group(3))
+
+    month: int
+    day: int
+
+    if first > 12 and second <= 12:
+        day, month = first, second
+    elif second > 12 and first <= 12:
+        month, day = first, second
+    elif first <= 12 and second <= 12:
+        us_iso = f"{year}-{first:02d}-{second:02d}"
+        international_iso = f"{year}-{second:02d}-{first:02d}"
+        if us_iso != international_iso:
+            return None
+        month, day = first, second
+    else:
+        return None
+
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+
+    return f"{year}-{month:02d}-{day:02d}"
+
+
 def detect_ambiguous_numeric_dob(text: str | None) -> FieldIssue | None:
     """Return a ``FieldIssue`` when ``text`` contains an ambiguous numeric DOB.
 

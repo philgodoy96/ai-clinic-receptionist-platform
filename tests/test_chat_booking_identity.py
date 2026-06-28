@@ -128,19 +128,128 @@ def test_format_missing_identity_single_field(chat_service: ChatReceptionistServ
     assert chat_service._format_missing_identity_fields(["phone"]) == "phone"
 
 
-def test_partial_identity_stored_in_chat_context(chat_service: ChatReceptionistService) -> None:
+def test_fresh_identity_only_message_returns_menu_without_storing_identity(
+    chat_service: ChatReceptionistService,
+) -> None:
     result = chat_service.handle_message(
         ChatMessageInput(message="Jane Doe, 1990-05-15, jane.doe@example.com"),
     )
 
-    patient_identity = result.conversation.conversation_metadata["chat_context"]["patient_identity"]
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "patient_identity" not in chat_context
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    reply = result.reply.lower()
+    assert "phone" not in reply
+    assert "email" not in reply
+    assert "book" in reply
+    assert "reschedule" in reply
+    assert "cancel" in reply
 
-    assert patient_identity["full_name"] == "Jane Doe"
-    assert patient_identity["date_of_birth"] == "1990-05-15"
-    assert patient_identity["email"] == "jane.doe@example.com"
-    assert "phone" not in patient_identity
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "John Smith, 19/09/1996",
+        "John Smith, 1996-09-19",
+        "John Smith",
+    ],
+)
+def test_fresh_identity_only_opener_returns_menu_prompt(
+    chat_service: ChatReceptionistService,
+    message: str,
+) -> None:
+    result = chat_service.handle_message(ChatMessageInput(message=message))
+
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "patient_identity" not in chat_context
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    reply = result.reply.lower()
+    assert "phone" not in reply
+    assert "email" not in reply
+    assert "book" in reply
+    assert "what would you like" in reply
+
+
+def test_scheduling_message_with_identity_routes_to_scheduling_not_menu(
+    chat_service: ChatReceptionistService,
+) -> None:
+    result = chat_service.handle_message(
+        ChatMessageInput(
+            message="I want to book dermatology for John Smith, 1996-09-19",
+        ),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent != ChatReceptionistIntent.FALLBACK
+    assert "what would you like" not in reply
+    assert "phone" not in reply or "dermatology" in reply
+
+
+def test_fresh_email_only_identity_returns_menu_without_storing_identity(
+    chat_service: ChatReceptionistService,
+) -> None:
+    result = chat_service.handle_message(
+        ChatMessageInput(message="jane.doe@example.com"),
+    )
+
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "patient_identity" not in chat_context
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "phone" not in result.reply.lower()
+    assert "email" not in result.reply.lower()
+
+
+def test_active_hold_identity_intake_continues_for_partial_identity(
+    chat_service: ChatReceptionistService,
+) -> None:
+    availability = chat_service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    hold = chat_service.handle_message(
+        ChatMessageInput(
+            message="I'll take 09:00",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    result = chat_service.handle_message(
+        ChatMessageInput(
+            message="My name is Jane Doe, 1990-05-15, jane.doe@example.com",
+            conversation_id=hold.conversation.id,
+        ),
+    )
+
     assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
-    assert "phone" in result.reply.lower()
+    assert "seen" in result.reply.lower() or "before" in result.reply.lower()
+    assert "what would you like" not in result.reply.lower()
+
+
+def test_active_hold_full_identity_proceeds_to_booking_identity_flow(
+    chat_service: ChatReceptionistService,
+) -> None:
+    availability = chat_service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    hold = chat_service.handle_message(
+        ChatMessageInput(
+            message="I'll take 09:00",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    result = chat_service.handle_message(
+        ChatMessageInput(
+            message=(
+                "My name is Jane Doe, 1990-05-15, +1 555-123-4567, jane.doe@example.com"
+            ),
+            conversation_id=hold.conversation.id,
+        ),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    assert "what would you like" not in reply
+    assert "seen" in reply or "before" in reply
 
 
 def test_partial_identity_with_active_hold(chat_service: ChatReceptionistService) -> None:
@@ -163,3 +272,104 @@ def test_partial_identity_with_active_hold(chat_service: ChatReceptionistService
 
     assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
     assert "seen" in result.reply.lower() or "before" in result.reply.lower()
+
+
+def test_parse_slash_dob_with_name(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity("John Smith, 19/09/1996")
+
+    assert identity.full_name == "John Smith"
+    assert identity.date_of_birth == "1996-09-19"
+
+
+def test_parse_slash_dob_only_in_booking_context(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity(
+        "19/09/1996",
+        booking_context=True,
+    )
+
+    assert identity.full_name is None
+    assert identity.date_of_birth == "1996-09-19"
+
+
+def test_parse_slash_dob_without_cue_is_ignored(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity("19/09/1996")
+
+    assert identity.date_of_birth is None
+
+
+def test_parse_ambiguous_slash_dob_preserves_name(chat_service: ChatReceptionistService) -> None:
+    identity = chat_service.parse_patient_identity("John Smith, 09/08/1980")
+
+    assert identity.full_name == "John Smith"
+    assert identity.date_of_birth is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "John Smith, 1996-09-19",
+        "John Smith, September 19, 1996",
+    ],
+)
+def test_existing_dob_formats_still_parse(
+    chat_service: ChatReceptionistService,
+    message: str,
+) -> None:
+    identity = chat_service.parse_patient_identity(message)
+
+    assert identity.full_name == "John Smith"
+    assert identity.date_of_birth == "1996-09-19"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "32/09/1996",
+        "19/19/1996",
+    ],
+)
+def test_invalid_slash_dob_does_not_parse(
+    chat_service: ChatReceptionistService,
+    message: str,
+) -> None:
+    identity = chat_service.parse_patient_identity(
+        message,
+        booking_context=True,
+    )
+
+    assert identity.date_of_birth is None
+
+
+def test_should_enter_booking_flow_requires_scheduling_context_for_identity_only(
+    chat_service: ChatReceptionistService,
+) -> None:
+    assert chat_service._should_enter_booking_flow(
+        hold_id=None,
+        has_identity_fields=True,
+        has_confirmation=False,
+        offered_slots=[],
+        merged_context={},
+    ) is False
+    # Merely-offered slots are not enough to start identity intake; the user must
+    # have committed to a specific slot (selected or held) first.
+    assert chat_service._should_enter_booking_flow(
+        hold_id=None,
+        has_identity_fields=True,
+        has_confirmation=False,
+        offered_slots=[{"display_time": "09:00"}],
+        merged_context={"offered_slots": [{"display_time": "09:00"}]},
+    ) is False
+    assert chat_service._should_enter_booking_flow(
+        hold_id=None,
+        has_identity_fields=True,
+        has_confirmation=False,
+        offered_slots=[{"display_time": "09:00"}],
+        merged_context={"selected_availability_slot_id": "slot-1"},
+    ) is True
+    assert chat_service._should_enter_booking_flow(
+        hold_id="hold-1",
+        has_identity_fields=True,
+        has_confirmation=False,
+        offered_slots=[],
+        merged_context={"hold_id": "hold-1"},
+    ) is True

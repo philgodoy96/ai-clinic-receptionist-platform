@@ -51,9 +51,6 @@ from app.services.chat_appointment_cancellation import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY,
     _appointment_count_label,
     _confirmation_summary_from_list_summary,
-    _extract_option_number_index,
-    _extract_ordinal_index,
-    _parse_offered_appointment_summary,
 )
 from app.services.chat_appointment_intake import EARLIEST_AVAILABILITY_SEARCH_HORIZON_DAYS
 from app.services.chat_booking_identity import (
@@ -75,6 +72,31 @@ from app.services.chat_confirmation import (
     ConfirmationType,
     normalize_patient_display_name,
     understand_confirmation,
+)
+from app.services.chat_offered_appointment_selection import (
+    OfferedAppointmentSelectionResolution,
+    OfferedAppointmentSelectionStatus,
+    OfferedAppointmentView,
+    build_offered_appointment_entry,
+    doctor_name_in_message,
+    format_ambiguous_appointment_selection_message,
+    format_near_match_appointment_selection_message,
+    format_no_useful_match_appointment_selection_message,
+    prepare_appointment_selection_message,
+    resolve_offered_appointment_selection_from_context,
+)
+from app.services.chat_offered_appointment_selection import (
+    extract_option_number_index as _extract_option_number_index,
+)
+from app.services.chat_offered_appointment_selection import (
+    extract_ordinal_index as _extract_ordinal_index,
+)
+from app.services.chat_selection_revision import (
+    clear_pending_selection_context_updates,
+    filter_offered_by_pending_ids,
+    format_pending_subset_no_match_message,
+    is_appointment_selection_revision_message,
+    pending_selection_context_updates,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import (
@@ -165,6 +187,53 @@ _RESCHEDULE_SINGLE_REJECTED_PHRASES = (
     "that is not it",
 )
 _ORDINAL_WORDS = frozenset({"first", "second", "third"})
+# Plain denials during reschedule new-slot selection that `understand_confirmation`
+# does not already classify as a rejection. Matched as substrings on the
+# lowercased message so trailing punctuation/extra words do not break detection.
+_RESCHEDULE_NEW_SLOT_DENIAL_PHRASES = (
+    "none of those",
+    "none of these",
+    "none of them",
+    "none of that",
+    "none work",
+    "none of these work",
+    "don't want those",
+    "do not want those",
+    "dont want those",
+    "don't want these",
+    "do not want these",
+    "dont want these",
+    "don't want any of those",
+    "do not want any of those",
+    "don't want to reschedule",
+    "do not want to reschedule",
+    "dont want to reschedule",
+    "not reschedule anymore",
+    "reschedule anymore",
+)
+# Signals that a denial of the offered times is paired with a request to look at
+# different availability rather than abandoning the reschedule entirely.
+_RESCHEDULE_ALTERNATIVE_AVAILABILITY_MARKERS = (
+    "another time",
+    "another day",
+    "different time",
+    "different day",
+    "other time",
+    "other times",
+    "other day",
+    "what about",
+    "how about",
+    "show me",
+    "any other",
+    "anything else",
+    "something else",
+    "earlier",
+    "later",
+    "this week",
+    "next week",
+    "soonest",
+    "earliest",
+)
 _SPECIALTY_SELECTION_PATTERN = re.compile(
     r"\bthe\s+([a-z][a-z\s-]*?)\s+one\b",
     re.IGNORECASE,
@@ -202,6 +271,13 @@ RESCHEDULE_APPOINTMENT_SELECTION_AMBIGUOUS = (
 )
 RESCHEDULE_APPOINTMENT_REJECTED_MESSAGE = (
     "Okay. I won't reschedule that appointment. Is there anything else I can help with?"
+)
+RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE = (
+    "No problem \u2014 I won't reschedule your appointment. Your current appointment "
+    "remains unchanged. Would you like to look for another time or do something else?"
+)
+RESCHEDULE_NEW_SLOT_PREFERENCE_CLARIFICATION = (
+    "Sure \u2014 what day or time would you prefer?"
 )
 RESCHEDULE_NEW_TIME_PREFERENCE_REPROMPT = (
     "What day or time would you prefer instead?"
@@ -279,25 +355,13 @@ class RescheduleAppointmentSelectionStatus(StrEnum):
     UNIQUE = "unique"
     ZERO = "zero"
     AMBIGUOUS = "ambiguous"
+    NEAR_MATCH = "near_match"
 
 
 class RescheduleSlotSelectionStatus(StrEnum):
     UNIQUE = "unique"
     ZERO = "zero"
     AMBIGUOUS = "ambiguous"
-
-
-@dataclass(frozen=True, slots=True)
-class _OfferedAppointmentView:
-    appointment_id: str
-    summary: str
-    specialty_name: str
-    doctor_name: str
-    weekday: str
-    time_label: str
-    doctor_id: str | None = None
-    specialty_id: str | None = None
-    start_time: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +381,9 @@ class _OfferedRescheduleSlotView:
 class RescheduleAppointmentSelectionResult:
     status: RescheduleAppointmentSelectionStatus
     selected_appointment: dict[str, str] | None = None
+    matching_appointments: tuple[OfferedAppointmentView, ...] = ()
+    signals_detected: bool = False
+    constraints_description: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,9 +631,14 @@ class ChatAppointmentReschedulingOrchestrator:
                 APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
             ),
             "offered_appointments": [
-                self._offered_appointment_entry(
-                    appointment=appointment,
-                    presentation=presentation,
+                build_offered_appointment_entry(
+                    appointment_id=str(presentation.appointment_id),
+                    summary=presentation.list_summary,
+                    specialty_name=presentation.specialty_name,
+                    doctor_name=presentation.doctor_name,
+                    start_time=appointment.start_time,
+                    doctor_id=str(appointment.doctor_id),
+                    specialty_id=str(appointment.specialty_id),
                 )
                 for appointment, presentation in zip(
                     reschedulable,
@@ -650,33 +722,75 @@ class ChatAppointmentReschedulingOrchestrator:
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
         base_updates = self._appointment_selection_context_updates(chat_context)
+        selection_message = prepare_appointment_selection_message(
+            message,
+            action_keywords=_RESCHEDULE_KEYWORDS,
+        )
 
-        if _message_contains_reschedule_keyword(message):
-            return RescheduleFlowResult(
-                intent="reschedule_request",
-                content=RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
-                chat_context_updates=base_updates,
-            )
+        resolution = resolve_offered_appointment_selection_from_context(
+            message=selection_message,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            offered_filter=filter_offered_by_pending_ids,
+        )
+        offered_all = resolution.offered_all
+        pending_active = resolution.pending_refinement_active
 
-        offered = self._load_offered_appointment_views(chat_context)
-        if len(offered) == 1:
+        if len(offered_all) == 1 and not pending_active:
             single_result = self._resolve_single_offered_appointment_response(
-                message=message,
-                offered=offered,
+                message=selection_message,
+                offered=offered_all,
                 chat_context=chat_context,
             )
             if single_result is not None:
                 return single_result
 
-        selection = self.resolve_appointment_selection(
+        return self._flow_result_for_appointment_selection(
+            selection=resolution,
+            chat_context=chat_context,
+            base_updates=base_updates,
+            original_message=message,
+        )
+
+    def revise_selected_appointment(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        result = self.handle_appointment_selection(
             message=message,
             chat_context=chat_context,
         )
+        if result.chat_context_updates.get("selected_appointment_id"):
+            result = RescheduleFlowResult(
+                intent=result.intent,
+                content=result.content,
+                chat_context_updates={
+                    **result.chat_context_updates,
+                    **self._clear_stale_reschedule_slot_hold_state(),
+                },
+            )
+        return result
 
-        if selection.status is RescheduleAppointmentSelectionStatus.UNIQUE:
-            selected = selection.selected_appointment
+    def _flow_result_for_appointment_selection(
+        self,
+        *,
+        selection: OfferedAppointmentSelectionResolution,
+        chat_context: dict[str, Any],
+        base_updates: dict[str, Any],
+        original_message: str,
+    ) -> RescheduleFlowResult:
+        result = selection.result
+        offered_all = selection.offered_all
+        offered_candidates = selection.offered_candidates
+        pending_active = selection.pending_refinement_active
+
+        if result.status is OfferedAppointmentSelectionStatus.UNIQUE:
+            selected = result.selected_appointment
             assert selected is not None
-            selected_view = self._offered_view_from_selection(selected, offered)
+            selected_view = self._offered_view_from_selection(selected, offered_all)
             if selected_view is None:
                 return RescheduleFlowResult(
                     intent="reschedule_request",
@@ -686,18 +800,69 @@ class ChatAppointmentReschedulingOrchestrator:
             return self._build_appointment_selected_result(
                 selected=selected_view,
                 chat_context=chat_context,
+                clear_pending_refinement=True,
             )
 
-        if selection.status is RescheduleAppointmentSelectionStatus.AMBIGUOUS:
+        if result.status is OfferedAppointmentSelectionStatus.AMBIGUOUS:
+            ambiguous_content = (
+                format_ambiguous_appointment_selection_message(
+                    matching=result.matching_appointments,
+                    action_verb="reschedule",
+                )
+                if result.matching_appointments
+                else RESCHEDULE_APPOINTMENT_SELECTION_AMBIGUOUS
+            )
             return RescheduleFlowResult(
                 intent="reschedule_request",
-                content=RESCHEDULE_APPOINTMENT_SELECTION_AMBIGUOUS,
+                content=ambiguous_content,
+                chat_context_updates={
+                    **base_updates,
+                    **pending_selection_context_updates(result.matching_appointments),
+                },
+            )
+
+        if result.status is OfferedAppointmentSelectionStatus.NEAR_MATCH:
+            near_content = format_near_match_appointment_selection_message(
+                constraints_description=(
+                    result.constraints_description or "that description"
+                ),
+                matching=result.matching_appointments,
+            )
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=near_content,
                 chat_context_updates=base_updates,
+            )
+
+        if (
+            not result.signals_detected
+            and _message_contains_reschedule_keyword(original_message)
+        ):
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
+                chat_context_updates=base_updates,
+            )
+
+        if pending_active and result.signals_detected:
+            return RescheduleFlowResult(
+                intent="reschedule_request",
+                content=format_pending_subset_no_match_message(
+                    scope_description=result.constraints_description,
+                    candidates=offered_candidates,
+                ),
+                chat_context_updates={
+                    **base_updates,
+                    **pending_selection_context_updates(offered_candidates),
+                },
             )
 
         return RescheduleFlowResult(
             intent="reschedule_request",
-            content=RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+            content=format_no_useful_match_appointment_selection_message(
+                constraints_description=result.constraints_description,
+                offered=offered_all,
+            ),
             chat_context_updates=base_updates,
         )
 
@@ -707,15 +872,20 @@ class ChatAppointmentReschedulingOrchestrator:
         message: str,
         chat_context: dict[str, Any],
     ) -> RescheduleAppointmentSelectionResult:
-        offered = self._load_offered_appointment_views(chat_context)
-        if not offered:
-            return RescheduleAppointmentSelectionResult(
-                status=RescheduleAppointmentSelectionStatus.ZERO,
-            )
-
-        return self._resolve_offered_appointment_selection(
+        resolution = resolve_offered_appointment_selection_from_context(
             message=message,
-            offered=offered,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            offered_filter=filter_offered_by_pending_ids,
+        )
+        result = resolution.result
+        return RescheduleAppointmentSelectionResult(
+            status=RescheduleAppointmentSelectionStatus(result.status.value),
+            selected_appointment=result.selected_appointment,
+            matching_appointments=result.matching_appointments,
+            signals_detected=result.signals_detected,
+            constraints_description=result.constraints_description,
         )
 
     def handle_new_time_preference(
@@ -724,6 +894,18 @@ class ChatAppointmentReschedulingOrchestrator:
         message: str,
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
+        if is_appointment_selection_revision_message(
+            message,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            action_keywords=_RESCHEDULE_KEYWORDS,
+        ):
+            return self.revise_selected_appointment(
+                message=message,
+                chat_context=chat_context,
+            )
+
         base_updates = {
             **self._reschedule_flow_context(chat_context),
             **self._clear_stale_reschedule_slot_hold_state(),
@@ -944,6 +1126,34 @@ class ChatAppointmentReschedulingOrchestrator:
         conversation: Conversation,
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
+        if self._is_new_slot_selection_denial(message):
+            # The user declined the offered times. If they also asked for different
+            # availability ("None of those, what about Wednesday?", "No, show me
+            # another time") route that to the new-time-preference search instead of
+            # repeating the slot-selection prompt. A plain "No"/"No thanks" aborts the
+            # reschedule and leaves the original appointment untouched.
+            if self._new_slot_denial_seeks_alternative(message):
+                return self.handle_new_time_preference(
+                    message=message,
+                    chat_context=chat_context,
+                )
+            return self._decline_reschedule_new_slot_selection(
+                conversation=conversation,
+                chat_context=chat_context,
+            )
+
+        if is_appointment_selection_revision_message(
+            message,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            action_keywords=_RESCHEDULE_KEYWORDS,
+        ):
+            return self.revise_selected_appointment(
+                message=message,
+                chat_context=chat_context,
+            )
+
         base_updates = self._new_slot_selection_context_updates(chat_context)
 
         selection = self.resolve_reschedule_slot_selection(
@@ -978,6 +1188,48 @@ class ChatAppointmentReschedulingOrchestrator:
             chat_context_updates=base_updates,
         )
 
+    def _is_new_slot_selection_denial(self, message: str) -> bool:
+        """Whether a new-slot-selection turn is a clear denial of the offered times."""
+        understanding = understand_confirmation(
+            confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
+            message=message,
+        )
+        if understanding.decision is ConfirmationDecision.REJECTED:
+            return True
+        normalized = message.lower().strip()
+        if not normalized:
+            return False
+        return any(phrase in normalized for phrase in _RESCHEDULE_NEW_SLOT_DENIAL_PHRASES)
+
+    def _new_slot_denial_seeks_alternative(self, message: str) -> bool:
+        """Whether a denial of offered times also asks for different availability."""
+        if not self._extract_reschedule_preference(message).requires_clarification:
+            return True
+        normalized = message.lower()
+        return any(
+            marker in normalized
+            for marker in _RESCHEDULE_ALTERNATIVE_AVAILABILITY_MARKERS
+        )
+
+    def _decline_reschedule_new_slot_selection(
+        self,
+        *,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> RescheduleFlowResult:
+        """Abort the reschedule without touching the original appointment."""
+        self._release_reschedule_hold_best_effort(
+            conversation=conversation,
+            chat_context=chat_context,
+        )
+        return RescheduleFlowResult(
+            intent="reschedule_request",
+            content=RESCHEDULE_NEW_SLOT_DECLINED_MESSAGE,
+            chat_context_updates=self._reschedule_confirmation_declined_context_updates(
+                chat_context,
+            ),
+        )
+
     def handle_reschedule_confirmation(
         self,
         *,
@@ -985,6 +1237,18 @@ class ChatAppointmentReschedulingOrchestrator:
         conversation: Conversation,
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult:
+        if is_appointment_selection_revision_message(
+            message,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            action_keywords=_RESCHEDULE_KEYWORDS,
+        ):
+            return self.revise_selected_appointment(
+                message=message,
+                chat_context=chat_context,
+            )
+
         understanding = understand_confirmation(
             confirmation_type=ConfirmationType.RESCHEDULE_CONFIRMATION,
             message=message,
@@ -2075,7 +2339,7 @@ class ChatAppointmentReschedulingOrchestrator:
             candidate_indices = [
                 index
                 for index in candidate_indices
-                if _doctor_name_in_message(
+                if doctor_name_in_message(
                     normalized_message,
                     offered[index].doctor_name,
                 )
@@ -2295,27 +2559,11 @@ class ChatAppointmentReschedulingOrchestrator:
                 return specialty.name
         return "appointment"
 
-    def _offered_appointment_entry(
-        self,
-        *,
-        appointment: Appointment,
-        presentation: _AppointmentPresentation,
-    ) -> dict[str, str]:
-        return {
-            "appointment_id": str(presentation.appointment_id),
-            "summary": presentation.list_summary,
-            "doctor_id": str(appointment.doctor_id),
-            "doctor_name": presentation.doctor_name,
-            "specialty_id": str(appointment.specialty_id),
-            "specialty_name": presentation.specialty_name,
-            "start_time": appointment.start_time.isoformat(),
-        }
-
     def _resolve_single_offered_appointment_response(
         self,
         *,
         message: str,
-        offered: Sequence[_OfferedAppointmentView],
+        offered: Sequence[OfferedAppointmentView],
         chat_context: dict[str, Any],
     ) -> RescheduleFlowResult | None:
         if _is_single_appointment_rejection(message):
@@ -2336,14 +2584,21 @@ class ChatAppointmentReschedulingOrchestrator:
     def _build_appointment_selected_result(
         self,
         *,
-        selected: _OfferedAppointmentView,
+        selected: OfferedAppointmentView,
         chat_context: dict[str, Any],
+        clear_pending_refinement: bool = False,
     ) -> RescheduleFlowResult:
+        pending_clear = (
+            clear_pending_selection_context_updates()
+            if clear_pending_refinement
+            else {}
+        )
         return RescheduleFlowResult(
             intent="reschedule_request",
             content=_new_time_preference_prompt(selected.summary),
             chat_context_updates={
                 **self._resolved_patient_context(chat_context),
+                **pending_clear,
                 "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
                 "appointment_management_awaiting": (
                     APPOINTMENT_MANAGEMENT_AWAITING_NEW_TIME_PREFERENCE
@@ -2353,139 +2608,11 @@ class ChatAppointmentReschedulingOrchestrator:
             },
         )
 
-    def _resolve_offered_appointment_selection(
-        self,
-        *,
-        message: str,
-        offered: Sequence[_OfferedAppointmentView],
-    ) -> RescheduleAppointmentSelectionResult:
-        normalized_message = message.lower().strip()
-        candidate_indices = list(range(len(offered)))
-        signals_detected = False
-
-        option_index = _extract_option_number_index(
-            normalized_message,
-            option_count=len(offered),
-        )
-        if option_index is not None:
-            signals_detected = True
-            candidate_indices = [
-                index for index in candidate_indices if index == option_index
-            ]
-
-        ordinal_index = _extract_ordinal_index(
-            normalized_message,
-            option_count=len(offered),
-        )
-        if ordinal_index is not None:
-            signals_detected = True
-            candidate_indices = [
-                index for index in candidate_indices if index == ordinal_index
-            ]
-
-        specialty_query = _extract_specialty_selection_query(
-            normalized_message,
-            offered=offered,
-        )
-        if specialty_query is not None:
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if specialty_query in offered[index].specialty_name.lower()
-            ]
-
-        if _any_doctor_mentioned(normalized_message, offered):
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if _doctor_name_in_message(
-                    normalized_message,
-                    offered[index].doctor_name,
-                )
-            ]
-
-        if _any_weekday_mentioned(normalized_message, offered):
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if offered[index].weekday.lower() in normalized_message
-            ]
-
-        normalized_time = normalize_appointment_time_expression(
-            message,
-            allow_bare_hour=False,
-        )
-        if normalized_time is not None:
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if offered[index].time_label == normalized_time.value
-            ]
-
-        if not signals_detected:
-            return RescheduleAppointmentSelectionResult(
-                status=RescheduleAppointmentSelectionStatus.ZERO,
-            )
-
-        if len(candidate_indices) == 1:
-            selected = offered[candidate_indices[0]]
-            return RescheduleAppointmentSelectionResult(
-                status=RescheduleAppointmentSelectionStatus.UNIQUE,
-                selected_appointment={
-                    "appointment_id": selected.appointment_id,
-                    "summary": selected.summary,
-                },
-            )
-
-        if not candidate_indices:
-            return RescheduleAppointmentSelectionResult(
-                status=RescheduleAppointmentSelectionStatus.ZERO,
-            )
-
-        return RescheduleAppointmentSelectionResult(
-            status=RescheduleAppointmentSelectionStatus.AMBIGUOUS,
-        )
-
-    def _load_offered_appointment_views(
-        self,
-        chat_context: dict[str, Any],
-    ) -> list[_OfferedAppointmentView]:
-        raw_offered = chat_context.get("offered_appointments")
-        if not isinstance(raw_offered, list):
-            return []
-
-        offered: list[_OfferedAppointmentView] = []
-        for item in raw_offered:
-            if not isinstance(item, dict):
-                continue
-            appointment_id = item.get("appointment_id")
-            summary = item.get("summary")
-            if not isinstance(appointment_id, str) or not isinstance(summary, str):
-                continue
-            parsed = _parse_offered_appointment_summary(summary)
-            if parsed is None:
-                continue
-            offered.append(
-                _OfferedAppointmentView(
-                    appointment_id=appointment_id,
-                    summary=summary,
-                    doctor_id=_optional_str(item.get("doctor_id")),
-                    specialty_id=_optional_str(item.get("specialty_id")),
-                    start_time=_optional_str(item.get("start_time")),
-                    **parsed,
-                ),
-            )
-        return offered
-
     def _offered_view_from_selection(
         self,
         selected: dict[str, str],
-        offered: Sequence[_OfferedAppointmentView],
-    ) -> _OfferedAppointmentView | None:
+        offered: Sequence[OfferedAppointmentView],
+    ) -> OfferedAppointmentView | None:
         for item in offered:
             if item.appointment_id == selected["appointment_id"]:
                 return item
@@ -2528,7 +2655,7 @@ class ChatAppointmentReschedulingOrchestrator:
 
     def _selected_appointment_context(
         self,
-        selected: _OfferedAppointmentView,
+        selected: OfferedAppointmentView,
     ) -> dict[str, Any]:
         updates: dict[str, Any] = {
             "selected_appointment_id": selected.appointment_id,
@@ -2634,58 +2761,6 @@ def _is_single_appointment_rejection(message: str) -> bool:
     return _matches_extra_phrase(normalized, _RESCHEDULE_SINGLE_REJECTED_PHRASES)
 
 
-def _extract_specialty_selection_query(
-    normalized_message: str,
-    *,
-    offered: Sequence[_OfferedAppointmentView],
-) -> str | None:
-    match = _SPECIALTY_SELECTION_PATTERN.search(normalized_message)
-    if match is not None:
-        specialty_query = match.group(1).strip().lower()
-        if specialty_query not in _ORDINAL_WORDS:
-            return specialty_query
-
-    for item in offered:
-        specialty = item.specialty_name.lower()
-        if re.search(rf"\b{re.escape(specialty)}\b", normalized_message):
-            return specialty
-
-    return None
-
-
-def _any_doctor_mentioned(
-    normalized_message: str,
-    offered: Sequence[_OfferedAppointmentView],
-) -> bool:
-    return any(
-        _doctor_name_in_message(normalized_message, item.doctor_name)
-        for item in offered
-    )
-
-
-def _any_weekday_mentioned(
-    normalized_message: str,
-    offered: Sequence[_OfferedAppointmentView],
-) -> bool:
-    return any(item.weekday.lower() in normalized_message for item in offered)
-
-
-def _doctor_name_in_message(normalized_message: str, doctor_name: str) -> bool:
-    normalized_name = doctor_name.replace(".", "").lower()
-    if normalized_name in normalized_message:
-        return True
-
-    name_terms = [
-        term
-        for term in normalized_name.split()
-        if term not in {"dr", "doctor"}
-    ]
-    if not name_terms:
-        return False
-
-    return any(term in normalized_message for term in name_terms if len(term) >= 3)
-
-
 def _new_time_preference_prompt(summary: str) -> str:
     confirmation_summary = _confirmation_summary_from_list_summary(summary)
     return (
@@ -2718,7 +2793,7 @@ def _any_reschedule_slot_doctor_mentioned(
     offered: Sequence[_OfferedRescheduleSlotView],
 ) -> bool:
     return any(
-        _doctor_name_in_message(normalized_message, item.doctor_name)
+        doctor_name_in_message(normalized_message, item.doctor_name)
         for item in offered
         if item.doctor_name
     )

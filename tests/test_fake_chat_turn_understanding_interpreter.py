@@ -64,13 +64,13 @@ def _interpret(message: str, **kwargs: object) -> ChatTurnUnderstandingResult:
 
 def test_extracts_patient_name_and_natural_dob() -> None:
     result = _interpret(
-        "Felipe Marques, Sep 19th 1996",
+        "John Smith, Sep 19th 1996",
         expected_response_type=ExpectedResponseType.PATIENT_IDENTITY,
         conversation_state=ConversationState.COLLECTING_PATIENT_IDENTITY,
     )
 
     assert result.intent is ChatTurnIntent.PATIENT_IDENTITY_PROVIDED
-    assert result.extracted_fields.patient_name == "Felipe Marques"
+    assert result.extracted_fields.patient_name == "John Smith"
     assert result.extracted_fields.date_of_birth_raw == "Sep 19th 1996"
     assert result.extracted_fields.date_of_birth == "1996-09-19"
     assert result.confidence >= 0.85
@@ -78,16 +78,16 @@ def test_extracts_patient_name_and_natural_dob() -> None:
 
 
 def test_extracts_patient_name_and_iso_dob() -> None:
-    result = _interpret("My name is Felipe Marques and my DOB is 1996-09-19")
+    result = _interpret("My name is John Smith and my DOB is 1996-09-19")
 
     assert result.intent is ChatTurnIntent.PATIENT_IDENTITY_PROVIDED
-    assert result.extracted_fields.patient_name == "Felipe Marques"
+    assert result.extracted_fields.patient_name == "John Smith"
     assert result.extracted_fields.date_of_birth == "1996-09-19"
 
 
 def test_accepts_day_first_impossible_numeric_dob() -> None:
     result = _interpret(
-        "Felipe Marques, 19/09/1996",
+        "John Smith, 19/09/1996",
         expected_response_type=ExpectedResponseType.PATIENT_IDENTITY,
     )
 
@@ -98,7 +98,7 @@ def test_accepts_day_first_impossible_numeric_dob() -> None:
 
 def test_flags_ambiguous_numeric_dob() -> None:
     result = _interpret(
-        "Felipe Marques, 09/10/1996",
+        "John Smith, 09/10/1996",
         expected_response_type=ExpectedResponseType.PATIENT_IDENTITY,
     )
 
@@ -114,7 +114,7 @@ def test_flags_ambiguous_numeric_dob() -> None:
 
 def test_extracts_new_patient_answer_identity_and_email() -> None:
     result = _interpret(
-        "No, I'm new. Felipe Marques, born Sep 19th 1996, email felipe@example.com",
+        "No, I'm new. John Smith, born Sep 19th 1996, email john.smith@example.com",
         expected_response_type=ExpectedResponseType.PATIENT_STATUS,
         conversation_state=ConversationState.COLLECTING_PATIENT_STATUS,
     )
@@ -122,9 +122,9 @@ def test_extracts_new_patient_answer_identity_and_email() -> None:
     # Identity details are present, so patient_identity_provided is the primary intent.
     assert result.intent is ChatTurnIntent.PATIENT_IDENTITY_PROVIDED
     assert result.patient_status_answer is PatientStatusAnswer.NEW_PATIENT
-    assert result.extracted_fields.patient_name == "Felipe Marques"
+    assert result.extracted_fields.patient_name == "John Smith"
     assert result.extracted_fields.date_of_birth == "1996-09-19"
-    assert result.extracted_fields.email == "felipe@example.com"
+    assert result.extracted_fields.email == "john.smith@example.com"
 
 
 def test_maps_yes_to_existing_patient_for_patient_status() -> None:
@@ -456,7 +456,7 @@ def test_respects_allowed_intents() -> None:
 
 def test_does_not_expose_side_effect_action_fields() -> None:
     result = _interpret(
-        "Felipe Marques, Sep 19th 1996",
+        "John Smith, Sep 19th 1996",
         expected_response_type=ExpectedResponseType.PATIENT_IDENTITY,
     )
 

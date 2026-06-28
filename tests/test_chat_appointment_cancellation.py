@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from typing import cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -133,6 +134,107 @@ def _friday_appointment(
         start_time=datetime(2026, 7, 10, 18, 0, tzinfo=UTC),
         status=status,
     )
+
+
+_CLINIC_TZ = ZoneInfo("America/New_York")
+
+
+def _clinic_local_appointment(
+    *,
+    patient_id: UUID,
+    doctor_id: UUID,
+    specialty_id: UUID,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int = 0,
+    status: AppointmentStatus = AppointmentStatus.SCHEDULED,
+) -> Appointment:
+    local_start = datetime(year, month, day, hour, minute, tzinfo=_CLINIC_TZ)
+    return create_appointment(
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        specialty_id=specialty_id,
+        start_time=local_start.astimezone(UTC),
+        status=status,
+    )
+
+
+def _six_appointment_selection_conversation(
+    service: ChatReceptionistService,
+    *,
+    patient: Patient,
+    emily: Doctor,
+    reed: Doctor,
+) -> UUID:
+    appointments = [
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=10,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=reed.id,
+            specialty_id=reed.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=11,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=11,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=14,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=15,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient.id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=7,
+            hour=14,
+        ),
+    ]
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=appointments,
+    )
+    assert (
+        _selection_result.conversation.conversation_metadata["chat_context"][
+            "appointment_management_awaiting"
+        ]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    return conversation_id
 
 
 def test_cancellation_identity_resolves_patient_and_lists_one_appointment() -> None:
@@ -471,7 +573,7 @@ def test_cancellation_selection_zero_match_reprompts_without_selecting() -> None
         == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
     )
     assert chat_context.get("selected_appointment_id") is None
-    assert "Please choose one of the appointments I listed." in result.reply
+    assert "Please choose one of the listed appointments" in result.reply
 
 
 def test_cancellation_selection_ambiguous_match_asks_clarification() -> None:
@@ -1811,4 +1913,399 @@ def test_cancellation_selection_h_suffix_no_match_does_not_select() -> None:
         == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
     )
     assert chat_context.get("selected_appointment_id") is None
-    assert "Please choose one of the appointments I listed." in result.reply
+    assert "Please choose one of the listed appointments" in result.reply
+
+
+def test_cancellation_selection_combined_cancel_phrase_selects_unique_match() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message=(
+                "I'd like to cancel the one on Monday at 10:00, with Dr. Emily"
+            ),
+            conversation_id=conversation_id,
+        ),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert "10:00" in chat_context["selected_appointment_summary"]
+    assert "Dr. Emily Carter" in chat_context["selected_appointment_summary"]
+    assert "Please confirm: should I cancel your" in result.reply
+
+
+def test_cancellation_selection_tomorrow_10_selects_unique_match() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=[
+            _clinic_local_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+                year=2026,
+                month=7,
+                day=2,
+                hour=10,
+            ),
+            _friday_appointment(
+                patient_id=patient.id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+            ),
+        ],
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="tomorrow 10", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert "10:00" in chat_context["selected_appointment_summary"]
+    assert "Dermatology" in chat_context["selected_appointment_summary"]
+
+
+def test_cancellation_selection_emily_only_is_ambiguous_with_multiple_emily_slots() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="the one with Emily", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "more than one matching appointment" in result.reply
+    assert "Dr. Emily Carter" in result.reply
+
+
+def test_cancellation_selection_monday_only_lists_matching_appointments() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Monday", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "more than one matching appointment" in result.reply
+    assert "Monday" in result.reply
+    assert "Tuesday" not in result.reply
+
+
+def test_cancellation_selection_monday_at_10_selects_unique_match() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Monday at 10", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert "Monday" in chat_context["selected_appointment_summary"]
+    assert "10:00" in chat_context["selected_appointment_summary"]
+    assert "Dr. Emily Carter" in chat_context["selected_appointment_summary"]
+
+
+def test_cancellation_selection_friday_no_match_reprompts() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="the Friday appointment", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "couldn't find an appointment matching" in result.reply
+    assert "Friday" in result.reply
+    assert "Please choose one of the listed appointments" in result.reply
+
+
+def test_cancellation_selection_multiple_dermatology_appointments_asks_clarification() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="the dermatology one", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "more than one matching appointment" in result.reply
+    assert "Dermatology" in result.reply
+
+
+def test_cancellation_selection_near_match_shows_similar_appointments() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    conversation_id = _six_appointment_selection_conversation(
+        service,
+        patient=patient,
+        emily=emily,
+        reed=reed,
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Monday at 10:00 with Dr. Michael Reed",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "couldn't find an appointment matching" in result.reply
+    assert "similar appointments" in result.reply
+    assert "Monday at 11:00 with Dr. Michael Reed" in result.reply
+    assert "Monday at 10:00 with Dr. Emily Carter" in result.reply
+    assert "Which one did you mean?" in result.reply
+
+
+def _progressive_refinement_appointments(
+    *,
+    patient_id: UUID,
+    emily: Doctor,
+    reed: Doctor,
+    include_duplicate_monday_14: bool = False,
+) -> list[Appointment]:
+    appointments = [
+        _clinic_local_appointment(
+            patient_id=patient_id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=10,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient_id,
+            doctor_id=reed.id,
+            specialty_id=reed.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=11,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient_id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=6,
+            hour=14,
+        ),
+        _clinic_local_appointment(
+            patient_id=patient_id,
+            doctor_id=emily.id,
+            specialty_id=emily.specialty_id,
+            year=2026,
+            month=7,
+            day=7,
+            hour=14,
+        ),
+    ]
+    if include_duplicate_monday_14:
+        appointments.insert(
+            3,
+            _clinic_local_appointment(
+                patient_id=patient_id,
+                doctor_id=reed.id,
+                specialty_id=reed.specialty_id,
+                year=2026,
+                month=7,
+                day=6,
+                hour=14,
+            ),
+        )
+    return appointments
+
+
+def test_cancellation_monday_ambiguity_stores_pending_candidate_subset() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=_progressive_refinement_appointments(
+            patient_id=patient.id,
+            emily=emily,
+            reed=reed,
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="The one on Monday", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    pending_ids = chat_context.get("pending_appointment_selection_ids")
+    assert isinstance(pending_ids, list)
+    assert len(pending_ids) == 3
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "more than one matching appointment" in result.reply
+    assert "Monday" in result.reply
+    assert "Tuesday" not in result.reply
+
+
+def test_cancellation_monday_then_at_14_selects_monday_not_tuesday() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=_progressive_refinement_appointments(
+            patient_id=patient.id,
+            emily=emily,
+            reed=reed,
+        ),
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="The one on Monday", conversation_id=conversation_id),
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="The one at 14", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    assert chat_context.get("pending_appointment_selection_ids") is None
+    summary = chat_context["selected_appointment_summary"]
+    assert "Monday" in summary
+    assert "14:00" in summary
+    assert "Tuesday" not in summary
+
+
+def test_cancellation_monday_then_at_14_ambiguous_within_subset_asks_clarification() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=_progressive_refinement_appointments(
+            patient_id=patient.id,
+            emily=emily,
+            reed=reed,
+            include_duplicate_monday_14=True,
+        ),
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="The one on Monday", conversation_id=conversation_id),
+    )
+    result = service.handle_message(
+        ChatMessageInput(message="The one at 14", conversation_id=conversation_id),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
+    )
+    assert chat_context.get("selected_appointment_id") is None
+    assert "more than one matching appointment" in result.reply
+    assert "14:00" in result.reply
+
+
+def test_cancellation_confirmation_revision_replaces_selected_appointment() -> None:
+    service, _repository, patient, emily, reed = _create_chat_service_with_patient()
+    _selection_result, conversation_id = _reach_appointment_selection(
+        service,
+        appointments=_progressive_refinement_appointments(
+            patient_id=patient.id,
+            emily=emily,
+            reed=reed,
+        ),
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="Monday at 10", conversation_id=conversation_id),
+    )
+    result = service.handle_message(
+        ChatMessageInput(
+            message=(
+                "On second thought, I'd like to cancel the Monday at 14:00 "
+                "appointment instead"
+            ),
+            conversation_id=conversation_id,
+        ),
+    )
+
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert (
+        chat_context["appointment_management_awaiting"]
+        == APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
+    )
+    summary = chat_context["selected_appointment_summary"]
+    assert "Monday" in summary
+    assert "14:00" in summary
+    assert "10:00" not in summary
+    assert "Please confirm" in result.reply
+    assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST

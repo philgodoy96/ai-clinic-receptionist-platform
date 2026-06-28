@@ -72,6 +72,8 @@ _END_CONVERSATION_PHRASES = (
     "im done",
     "that will be all",
     "thanks that's all",
+    "no, that's all",
+    "that was all",
 )
 
 _NEEDS_MORE_HELP_PHRASES = (

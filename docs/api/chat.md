@@ -148,10 +148,13 @@ It does not call an LLM for public reply selection.
 
 Written chat supports contextual appointment management in the same conversation:
 
-- **Book** — intake, hold, identity, confirmation (see [Appointment Holds](#appointment-holds) and [Booking Confirmation](#booking-confirmation))
-- **List scheduled appointments** — `show my appointments`, `check my appointments`
-- **Reschedule** — select appointment, pick new slot, explicit confirmation
+- **Book** — availability, hold, identity (only after valid booking context), confirmation; decline at final confirmation aborts without creating an appointment or email job
+- **List scheduled appointments** — `show my appointments`, `check my appointments`; post-listing follow-up for cancel/reschedule
+- **Reschedule** — identity, appointment selection (ordinal/date/time/clinician/specialty), new slot, explicit confirmation; decline during new-slot selection leaves the original appointment unchanged
 - **Cancel** — identity, selection, explicit confirmation
+- **Human handoff** — explicit request takes priority over active flows; creates internal escalation record (no live human in demo)
+
+Selection and revision (for example `Tuesday 15`, `The one at 14`, `Actually, Wednesday`) are supported before final confirmation. No destructive action runs until explicit confirmation where required.
 
 Architecture: [Chat Appointment Management](../architecture/chat-appointment-management.md).
 
@@ -252,9 +255,12 @@ This phase does not:
 
 After a temporary hold is created, the Chat API collects patient identity and requires explicit confirmation before booking.
 
+Identity collection starts only after valid booking context (a selected offered slot with an active or pending hold path). Offered slots alone, bare name openers, and revision/denial phrases do not trigger identity intake.
+
 Identity collection supports:
 
 - partial field memory (name or DOB alone → ask only for the missing field)
+- slash-form DOB (for example `1985/04/12`)
 - ambiguous numeric DOB clarification
 - resolved patient context reuse in later management flows
 - written-chat email acceptance without a redundant confirmation step when the user types a valid address
@@ -278,7 +284,9 @@ Booking confirmation:
 - creates a confirmation email job
 - publishes email dispatch after commit when enabled
 
-This implementation still does not use an LLM.
+Declining at final confirmation (`No` or equivalent) aborts booking, releases or clears the hold, and does **not** create an appointment or confirmation email job.
+
+This implementation still does not use an LLM for public reply selection.
 
 Example flow after a hold is created:
 
@@ -316,12 +324,18 @@ Examples:
 
 ## Current Limitations
 
-This implementation does not yet include:
+Written chat is a deterministic backend-orchestrated simulator focused on appointment workflow reliability. It is not a full production conversational AI.
+
+Intentionally outside the written-chat demo scope:
 
 - LLM-driven reply or intent selection in the public API response (optional LLM phrasing via `RECEPTIONIST_RESPONSE_MODE=llm` is separate)
 - Third-party or family-member patient management
+- Patient profile updates (email, address, insurance, medical records)
 - Rich patient portal features beyond scheduled appointment lookup
+- Clinical advice, diagnosis, emergency triage, or medical decision support
+- Advanced unsafe-message moderation, abusive-message policy, and repeated-failure conversational recovery
+- Live human agent connection (escalation creates internal records and notification jobs only)
 - Conversation state machine as a separate public API surface
 - Retell webhook ingestion from chat routes
 
-Public demo routes remain unauthenticated. Real provider integrations should be protected by auth, rate limits, and cost controls.
+Public demo routes remain unauthenticated. Real provider integrations on public surfaces should use auth, rate limits, and cost controls.

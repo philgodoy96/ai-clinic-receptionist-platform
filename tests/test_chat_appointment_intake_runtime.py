@@ -320,7 +320,7 @@ def test_booking_identity_flow_does_not_invoke_appointment_intake_ctu() -> None:
         result = send_chat_messages(
             intake_service,
             conversation.id,
-            ("Felipe Marques, Sep 19th 1996",),
+            ("John Smith, Sep 19th 1996",),
         )
 
     intake_handle_mock.assert_not_called()

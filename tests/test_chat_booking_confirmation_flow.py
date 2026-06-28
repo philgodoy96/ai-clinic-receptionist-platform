@@ -110,7 +110,7 @@ def _conversation_with_active_hold(service: ChatReceptionistService) -> Conversa
     return conversation_with_active_hold(service)
 
 
-def test_confirm_without_hold_returns_booking_hold_missing_and_does_not_book(
+def test_orphan_confirm_without_context_returns_menu_and_does_not_book(
     booking_flow_context: tuple[
         ChatReceptionistService,
         TrackingAppointmentBookingService,
@@ -122,7 +122,8 @@ def test_confirm_without_hold_returns_booking_hold_missing_and_does_not_book(
 
     result = service.handle_message(ChatMessageInput(message="confirm"))
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_MISSING
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "hold it first" not in result.reply.lower()
     assert tracking_booking.book_calls == []
 
 
@@ -161,11 +162,11 @@ def test_partial_identity_is_stored_in_chat_context(
         ChatMessageInput(message="jane.doe@example.com"),
     )
 
-    patient_identity = result.conversation.conversation_metadata["chat_context"]["patient_identity"]
-
-    assert patient_identity["email"] == "jane.doe@example.com"
-    assert "full_name" not in patient_identity
-    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "patient_identity" not in chat_context
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "phone" not in result.reply.lower()
+    assert "email" not in result.reply.lower()
     assert tracking_booking.book_calls == []
 
 

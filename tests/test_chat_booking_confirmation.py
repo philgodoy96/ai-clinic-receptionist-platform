@@ -61,7 +61,40 @@ def booking_chat_service() -> tuple[
     return service, hold_service, scheduling
 
 
-def test_confirmation_without_hold_returns_booking_hold_missing(
+@pytest.mark.parametrize(
+    "message",
+    ["Yes", "Correct", "Confirm", "Book it"],
+)
+def test_orphan_confirmation_without_context_returns_menu(
+    booking_chat_service: tuple[
+        ChatReceptionistService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+    message: str,
+) -> None:
+    service, _hold_service, _scheduling = booking_chat_service
+
+    result = service.handle_message(
+        ChatMessageInput(message=message),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.FALLBACK
+    assert "hold it first" not in reply
+    assert "book" in reply
+    assert "reschedule" in reply
+    assert "cancel" in reply
+    assert "what would you like" in reply
+    assert "booking_attempted" not in result.assistant_message.message_metadata
+
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "hold_id" not in chat_context
+    assert "appointment_id" not in chat_context
+    assert "patient_identity" not in chat_context
+
+
+def test_orphan_denial_without_context_does_not_error(
     booking_chat_service: tuple[
         ChatReceptionistService,
         FakeAppointmentHoldService,
@@ -71,11 +104,46 @@ def test_confirmation_without_hold_returns_booking_hold_missing(
     service, _hold_service, _scheduling = booking_chat_service
 
     result = service.handle_message(
-        ChatMessageInput(message="Yes"),
+        ChatMessageInput(message="No"),
     )
 
-    assert result.intent == ChatReceptionistIntent.BOOKING_HOLD_MISSING
-    assert result.assistant_message.message_metadata["booking_attempted"] is True
+    reply = result.reply.lower()
+    assert result.intent != ChatReceptionistIntent.BOOKING_HOLD_MISSING
+    assert "hold it first" not in reply
+    assert "booking_attempted" not in result.assistant_message.message_metadata
+
+    chat_context = result.conversation.conversation_metadata.get("chat_context", {})
+    assert "hold_id" not in chat_context
+    assert "appointment_id" not in chat_context
+
+
+def test_confirmation_with_offered_slots_is_not_orphan_menu(
+    booking_chat_service: tuple[
+        ChatReceptionistService,
+        FakeAppointmentHoldService,
+        SchedulingService,
+    ],
+) -> None:
+    service, _hold_service, _scheduling = booking_chat_service
+
+    availability = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+    offered_slots = availability.conversation.conversation_metadata["chat_context"].get(
+        "offered_slots",
+    )
+    assert offered_slots
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Yes",
+            conversation_id=availability.conversation.id,
+        ),
+    )
+
+    reply = result.reply.lower()
+    assert "what would you like to do" not in reply
+    assert "hold it first" not in reply
 
 
 def test_complete_identity_without_confirmation_requests_confirmation(

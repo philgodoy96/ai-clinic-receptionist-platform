@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -33,9 +32,6 @@ from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, Doctor, Specialty
 from app.repositories.scheduling import AppointmentRepository
 from app.services.appointment_cancellation import AppointmentCancellationService
-from app.services.appointment_time_normalization import (
-    normalize_appointment_time_expression,
-)
 from app.services.chat_booking_identity import (
     APPOINTMENT_MANAGEMENT_EMPTY_FOLLOWUP_KEY,
     APPOINTMENT_MANAGEMENT_EMPTY_OFFER_HELP,
@@ -55,6 +51,24 @@ from app.services.chat_confirmation import (
     ConfirmationType,
     normalize_patient_display_name,
     understand_confirmation,
+)
+from app.services.chat_offered_appointment_selection import (
+    OfferedAppointmentSelectionResolution,
+    OfferedAppointmentSelectionStatus,
+    OfferedAppointmentView,
+    build_offered_appointment_entry,
+    format_ambiguous_appointment_selection_message,
+    format_near_match_appointment_selection_message,
+    format_no_useful_match_appointment_selection_message,
+    prepare_appointment_selection_message,
+    resolve_offered_appointment_selection_from_context,
+)
+from app.services.chat_selection_revision import (
+    clear_pending_selection_context_updates,
+    filter_offered_by_pending_ids,
+    format_pending_subset_no_match_message,
+    is_appointment_selection_revision_message,
+    pending_selection_context_updates,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.clinic_time import (
@@ -131,25 +145,6 @@ _CANCELLATION_MISSING_SELECTION_MESSAGE = (
 )
 _CANCELLATION_SUCCESS_FOLLOW_UP_SUFFIX = " Is there anything else I can help with?"
 _CANCEL_KEYWORDS = ("cancel", "cancellation")
-_ORDINAL_APPOINTMENT_KEYWORDS: dict[str, int] = {
-    "the first one": 0,
-    "first one": 0,
-    "the first": 0,
-    "the second one": 1,
-    "second one": 1,
-    "the second": 1,
-    "the third one": 2,
-    "third one": 2,
-    "the third": 2,
-}
-_ORDINAL_WORDS = frozenset({"first", "second", "third"})
-_OPTION_NUMBER_PATTERN = re.compile(r"^(?:number\s+)?(\d+)$")
-_SPECIALTY_SELECTION_PATTERN = re.compile(
-    r"\bthe\s+([a-z][a-z\s-]*?)\s+one\b",
-    re.IGNORECASE,
-)
-
-
 class SchedulingMetadataForCancellation(Protocol):
     def list_specialties(self) -> Sequence[Specialty]:
         raise NotImplementedError
@@ -169,22 +164,16 @@ class CancellationAppointmentSelectionStatus(StrEnum):
     UNIQUE = "unique"
     ZERO = "zero"
     AMBIGUOUS = "ambiguous"
+    NEAR_MATCH = "near_match"
 
 
 @dataclass(frozen=True, slots=True)
 class CancellationAppointmentSelectionResult:
     status: CancellationAppointmentSelectionStatus
     selected_appointment: dict[str, str] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _OfferedAppointmentView:
-    appointment_id: str
-    summary: str
-    specialty_name: str
-    doctor_name: str
-    weekday: str
-    time_label: str
+    matching_appointments: tuple[OfferedAppointmentView, ...] = ()
+    signals_detected: bool = False
+    constraints_description: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,11 +427,20 @@ class ChatAppointmentCancellationOrchestrator:
                     APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION
                 ),
                 "offered_appointments": [
-                    {
-                        "appointment_id": str(presentation.appointment_id),
-                        "summary": presentation.list_summary,
-                    }
-                    for presentation in presentations
+                    build_offered_appointment_entry(
+                        appointment_id=str(appointment.id),
+                        summary=presentation.list_summary,
+                        specialty_name=presentation.specialty_name,
+                        doctor_name=presentation.doctor_name,
+                        start_time=appointment.start_time,
+                        doctor_id=str(appointment.doctor_id),
+                        specialty_id=str(appointment.specialty_id),
+                    )
+                    for appointment, presentation in zip(
+                        cancelable,
+                        presentations,
+                        strict=True,
+                    )
                 ],
             },
         )
@@ -495,21 +493,49 @@ class ChatAppointmentCancellationOrchestrator:
         chat_context: dict[str, Any],
     ) -> CancellationFlowResult:
         base_updates = self._appointment_selection_context_updates(chat_context)
+        selection_message = prepare_appointment_selection_message(
+            message,
+            action_keywords=_CANCEL_KEYWORDS,
+        )
+        resolution = resolve_offered_appointment_selection_from_context(
+            message=selection_message,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            offered_filter=filter_offered_by_pending_ids,
+        )
+        return self._flow_result_for_appointment_selection(
+            selection=resolution,
+            chat_context=chat_context,
+            base_updates=base_updates,
+            original_message=message,
+        )
 
-        if _message_contains_cancel_keyword(message):
-            return CancellationFlowResult(
-                intent="cancel_request",
-                content=_CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
-                chat_context_updates=base_updates,
-            )
-
-        selection = self.resolve_appointment_selection(
+    def revise_selected_appointment(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+    ) -> CancellationFlowResult:
+        return self.handle_appointment_selection(
             message=message,
             chat_context=chat_context,
         )
 
-        if selection.status is CancellationAppointmentSelectionStatus.UNIQUE:
-            selected = selection.selected_appointment
+    def _flow_result_for_appointment_selection(
+        self,
+        *,
+        selection: OfferedAppointmentSelectionResolution,
+        chat_context: dict[str, Any],
+        base_updates: dict[str, Any],
+        original_message: str,
+    ) -> CancellationFlowResult:
+        result = selection.result
+        offered_candidates = selection.offered_candidates
+        pending_active = selection.pending_refinement_active
+
+        if result.status is OfferedAppointmentSelectionStatus.UNIQUE:
+            selected = result.selected_appointment
             assert selected is not None
             summary = selected["summary"]
             confirmation_summary = _confirmation_summary_from_list_summary(summary)
@@ -520,6 +546,7 @@ class ChatAppointmentCancellationOrchestrator:
                 ),
                 chat_context_updates={
                     **self._resolved_patient_context(chat_context),
+                    **clear_pending_selection_context_updates(),
                     "appointment_management_mode": APPOINTMENT_MANAGEMENT_MODE_CANCEL,
                     "appointment_management_awaiting": (
                         APPOINTMENT_MANAGEMENT_AWAITING_CANCELLATION_CONFIRMATION
@@ -534,16 +561,66 @@ class ChatAppointmentCancellationOrchestrator:
                 },
             )
 
-        if selection.status is CancellationAppointmentSelectionStatus.AMBIGUOUS:
+        if result.status is OfferedAppointmentSelectionStatus.AMBIGUOUS:
+            ambiguous_content = (
+                format_ambiguous_appointment_selection_message(
+                    matching=result.matching_appointments,
+                    action_verb="cancel",
+                )
+                if result.matching_appointments
+                else _CANCELLATION_APPOINTMENT_SELECTION_AMBIGUOUS
+            )
             return CancellationFlowResult(
                 intent="cancel_request",
-                content=_CANCELLATION_APPOINTMENT_SELECTION_AMBIGUOUS,
+                content=ambiguous_content,
+                chat_context_updates={
+                    **base_updates,
+                    **pending_selection_context_updates(result.matching_appointments),
+                },
+            )
+
+        if result.status is OfferedAppointmentSelectionStatus.NEAR_MATCH:
+            near_content = format_near_match_appointment_selection_message(
+                constraints_description=(
+                    result.constraints_description or "that description"
+                ),
+                matching=result.matching_appointments,
+            )
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=near_content,
                 chat_context_updates=base_updates,
+            )
+
+        if (
+            not result.signals_detected
+            and _message_contains_cancel_keyword(original_message)
+        ):
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=_CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+                chat_context_updates=base_updates,
+            )
+
+        if pending_active and result.signals_detected:
+            return CancellationFlowResult(
+                intent="cancel_request",
+                content=format_pending_subset_no_match_message(
+                    scope_description=result.constraints_description,
+                    candidates=offered_candidates,
+                ),
+                chat_context_updates={
+                    **base_updates,
+                    **pending_selection_context_updates(offered_candidates),
+                },
             )
 
         return CancellationFlowResult(
             intent="cancel_request",
-            content=_CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
+            content=format_no_useful_match_appointment_selection_message(
+                constraints_description=result.constraints_description,
+                offered=selection.offered_all,
+            ),
             chat_context_updates=base_updates,
         )
 
@@ -553,15 +630,20 @@ class ChatAppointmentCancellationOrchestrator:
         message: str,
         chat_context: dict[str, Any],
     ) -> CancellationAppointmentSelectionResult:
-        offered = self._load_offered_appointment_views(chat_context)
-        if not offered:
-            return CancellationAppointmentSelectionResult(
-                status=CancellationAppointmentSelectionStatus.ZERO,
-            )
-
-        return self._resolve_offered_appointment_selection(
+        resolution = resolve_offered_appointment_selection_from_context(
             message=message,
-            offered=offered,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            offered_filter=filter_offered_by_pending_ids,
+        )
+        result = resolution.result
+        return CancellationAppointmentSelectionResult(
+            status=CancellationAppointmentSelectionStatus(result.status.value),
+            selected_appointment=result.selected_appointment,
+            matching_appointments=result.matching_appointments,
+            signals_detected=result.signals_detected,
+            constraints_description=result.constraints_description,
         )
 
     def reprompt_for_appointment_selection(self) -> CancellationFlowResult:
@@ -585,6 +667,18 @@ class ChatAppointmentCancellationOrchestrator:
         conversation_id: UUID,
         chat_context: dict[str, Any],
     ) -> CancellationFlowResult:
+        if is_appointment_selection_revision_message(
+            message,
+            chat_context=chat_context,
+            clinic_timezone=self.clinic_time_service.timezone,
+            clinic_today=self.clinic_time_service.clinic_today(),
+            action_keywords=_CANCEL_KEYWORDS,
+        ):
+            return self.revise_selected_appointment(
+                message=message,
+                chat_context=chat_context,
+            )
+
         understanding = understand_confirmation(
             confirmation_type=ConfirmationType.CANCELLATION_CONFIRMATION,
             message=message,
@@ -954,128 +1048,6 @@ class ChatAppointmentCancellationOrchestrator:
             list_summary=list_summary,
         )
 
-    def _resolve_offered_appointment_selection(
-        self,
-        *,
-        message: str,
-        offered: Sequence[_OfferedAppointmentView],
-    ) -> CancellationAppointmentSelectionResult:
-        normalized_message = message.lower().strip()
-        candidate_indices = list(range(len(offered)))
-        signals_detected = False
-
-        option_index = _extract_option_number_index(
-            normalized_message,
-            option_count=len(offered),
-        )
-        if option_index is not None:
-            signals_detected = True
-            candidate_indices = [
-                index for index in candidate_indices if index == option_index
-            ]
-
-        ordinal_index = _extract_ordinal_index(normalized_message, option_count=len(offered))
-        if ordinal_index is not None:
-            signals_detected = True
-            candidate_indices = [
-                index for index in candidate_indices if index == ordinal_index
-            ]
-
-        specialty_query = _extract_specialty_selection_query(
-            normalized_message,
-            offered=offered,
-        )
-        if specialty_query is not None:
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if specialty_query in offered[index].specialty_name.lower()
-            ]
-
-        if _any_doctor_mentioned(normalized_message, offered):
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if _doctor_name_in_message(
-                    normalized_message,
-                    offered[index].doctor_name,
-                )
-            ]
-
-        if _any_weekday_mentioned(normalized_message, offered):
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if offered[index].weekday.lower() in normalized_message
-            ]
-
-        normalized_time = normalize_appointment_time_expression(
-            message,
-            allow_bare_hour=False,
-        )
-        if normalized_time is not None:
-            signals_detected = True
-            candidate_indices = [
-                index
-                for index in candidate_indices
-                if offered[index].time_label == normalized_time.value
-            ]
-
-        if not signals_detected:
-            return CancellationAppointmentSelectionResult(
-                status=CancellationAppointmentSelectionStatus.ZERO,
-            )
-
-        if len(candidate_indices) == 1:
-            selected = offered[candidate_indices[0]]
-            return CancellationAppointmentSelectionResult(
-                status=CancellationAppointmentSelectionStatus.UNIQUE,
-                selected_appointment={
-                    "appointment_id": selected.appointment_id,
-                    "summary": selected.summary,
-                },
-            )
-
-        if not candidate_indices:
-            return CancellationAppointmentSelectionResult(
-                status=CancellationAppointmentSelectionStatus.ZERO,
-            )
-
-        return CancellationAppointmentSelectionResult(
-            status=CancellationAppointmentSelectionStatus.AMBIGUOUS,
-        )
-
-    def _load_offered_appointment_views(
-        self,
-        chat_context: dict[str, Any],
-    ) -> list[_OfferedAppointmentView]:
-        raw_offered = chat_context.get("offered_appointments")
-        if not isinstance(raw_offered, list):
-            return []
-
-        offered: list[_OfferedAppointmentView] = []
-        for item in raw_offered:
-            if not isinstance(item, dict):
-                continue
-            appointment_id = item.get("appointment_id")
-            summary = item.get("summary")
-            if not isinstance(appointment_id, str) or not isinstance(summary, str):
-                continue
-            parsed = _parse_offered_appointment_summary(summary)
-            if parsed is None:
-                continue
-            offered.append(
-                _OfferedAppointmentView(
-                    appointment_id=appointment_id,
-                    summary=summary,
-                    **parsed,
-                ),
-            )
-        return offered
-
     def _appointment_selection_context_updates(
         self,
         chat_context: dict[str, Any],
@@ -1136,96 +1108,9 @@ def _confirmation_summary_from_list_summary(list_summary: str) -> str:
     return list_summary
 
 
-def _parse_offered_appointment_summary(
-    summary: str,
-) -> dict[str, str] | None:
-    match = re.match(
-        r"^(?P<specialty>.+?) with (?P<doctor>.+?) on (?P<weekday>\w+) at (?P<time>\d{2}:\d{2})$",
-        summary,
-    )
-    if match is None:
-        return None
-    return {
-        "specialty_name": match.group("specialty"),
-        "doctor_name": match.group("doctor"),
-        "weekday": match.group("weekday"),
-        "time_label": match.group("time"),
-    }
-
-
 def _message_contains_cancel_keyword(message: str) -> bool:
     normalized = message.lower()
     return any(keyword in normalized for keyword in _CANCEL_KEYWORDS)
 
 
-def _extract_option_number_index(normalized_message: str, *, option_count: int) -> int | None:
-    match = _OPTION_NUMBER_PATTERN.match(normalized_message.strip())
-    if match is None:
-        return None
-    option_number = int(match.group(1))
-    if option_number < 1 or option_number > option_count:
-        return None
-    return option_number - 1
-
-
-def _extract_ordinal_index(normalized_message: str, *, option_count: int) -> int | None:
-    for keyword, index in sorted(
-        _ORDINAL_APPOINTMENT_KEYWORDS.items(),
-        key=lambda item: len(item[0]),
-        reverse=True,
-    ):
-        if keyword in normalized_message and index < option_count:
-            return index
-    return None
-
-
-def _extract_specialty_selection_query(
-    normalized_message: str,
-    *,
-    offered: Sequence[_OfferedAppointmentView],
-) -> str | None:
-    match = _SPECIALTY_SELECTION_PATTERN.search(normalized_message)
-    if match is not None:
-        specialty_query = match.group(1).strip().lower()
-        if specialty_query not in _ORDINAL_WORDS:
-            return specialty_query
-
-    for item in offered:
-        specialty = item.specialty_name.lower()
-        if re.search(rf"\b{re.escape(specialty)}\b", normalized_message):
-            return specialty
-
-    return None
-
-
-def _any_doctor_mentioned(
-    normalized_message: str,
-    offered: Sequence[_OfferedAppointmentView],
-) -> bool:
-    return any(
-        _doctor_name_in_message(normalized_message, item.doctor_name)
-        for item in offered
-    )
-
-
-def _doctor_name_in_message(normalized_message: str, doctor_name: str) -> bool:
-    normalized_name = doctor_name.replace(".", "").lower()
-    if normalized_name in normalized_message:
-        return True
-
-    name_terms = [
-        term
-        for term in normalized_name.split()
-        if term not in {"dr", "doctor"}
-    ]
-    if not name_terms:
-        return False
-
-    return any(term in normalized_message for term in name_terms if len(term) >= 3)
-
-
-def _any_weekday_mentioned(
-    normalized_message: str,
-    offered: Sequence[_OfferedAppointmentView],
-) -> bool:
-    return any(item.weekday.lower() in normalized_message for item in offered)
+# Backward-compatible re-exports for reschedule slot/appointment selection helpers.

@@ -670,6 +670,44 @@ def test_new_patient_iso_dob_is_accepted_without_clarification() -> None:
     assert chat_context["patient_identity"]["date_of_birth"] == "1980-09-08"
 
 
+def test_new_patient_slash_dob_is_accepted_without_clarification() -> None:
+    service, _tracking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    send_chat_messages(service, conversation.id, ("No.", "Jane Doe."))
+    result = service.handle_message(
+        ChatMessageInput(message="19/09/1996", conversation_id=conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    assert "just to confirm" not in reply
+    assert "email" in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["patient_identity"]["date_of_birth"] == "1996-09-19"
+
+
+def test_new_patient_name_then_slash_dob_is_accepted() -> None:
+    service, _tracking, _scheduling = _create_service(patients=[])
+    conversation = conversation_with_active_hold(service)
+
+    # The new-patient flow collects identity step-by-step: the name turn only
+    # captures the name and asks for the DOB next, so the slash DOB is supplied
+    # on the following turn.
+    send_chat_messages(service, conversation.id, ("No.", "John Smith"))
+    result = service.handle_message(
+        ChatMessageInput(message="19/09/1996", conversation_id=conversation.id),
+    )
+
+    reply = result.reply.lower()
+    assert result.intent == ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL
+    assert "just to confirm" not in reply
+    assert "email" in reply
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["patient_identity"]["full_name"] == "John Smith"
+    assert chat_context["patient_identity"]["date_of_birth"] == "1996-09-19"
+
+
 def test_new_patient_month_name_dob_is_accepted_without_clarification() -> None:
     service, _tracking, _scheduling = _create_service(patients=[])
     conversation = conversation_with_active_hold(service)
