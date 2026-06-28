@@ -112,3 +112,55 @@ def test_normalizes_contextual_time_selection_phrases(
 
     assert normalized is not None
     assert normalized.value == expected_value
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_value"),
+    [
+        ("at 14", "14:00"),
+        ("Tuesday at 14", "14:00"),
+        ("Tuesday 14", "14:00"),
+        ("on Tuesday at 14", "14:00"),
+        ("How about Tuesday at 14?", "14:00"),
+        ("Tuesday at 2pm", "14:00"),
+        ("Tuesday at 14:00", "14:00"),
+    ],
+)
+def test_normalizes_contextual_bare_hour_expressions(
+    text: str,
+    expected_value: str,
+) -> None:
+    normalized = normalize_appointment_time_expression(text)
+
+    assert normalized is not None
+    assert normalized.value == expected_value
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "option 2",
+        "the second option",
+        "2",
+        "I prefer the doctor on call",
+    ],
+)
+def test_contextual_bare_hour_does_not_hijack_option_selection(text: str) -> None:
+    # A bare/low number that is an option index must not become a time, and
+    # context words that are not followed by an hour must not match.
+    normalized = normalize_appointment_time_expression(text)
+    if normalized is not None:
+        assert normalized.value != "02:00"
+
+
+def test_contextual_bare_hour_works_when_bare_hour_disallowed() -> None:
+    # The weekday/``at`` context disambiguates the hour, so explicit contextual
+    # forms are honored even when bare-number parsing is disabled, mirroring the
+    # existing behavior of leading wrappers like ``at``.
+    normalized = normalize_appointment_time_expression(
+        "Tuesday at 14",
+        allow_bare_hour=False,
+    )
+
+    assert normalized is not None
+    assert normalized.value == "14:00"

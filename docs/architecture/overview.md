@@ -57,6 +57,8 @@ Written-chat appointment flows follow the principle:
 
     The LLM understands. The backend validates and decides. Domain services execute.
 
+Written chat uses deterministic routing and state guards around booking, cancellation, rescheduling, lookup, and human escalation. The backend validates conversation state before holds, domain mutations, or email jobs execute. Selection and revision are supported before final confirmation; destructive actions require explicit confirmation where applicable.
+
 See [Chat Appointment Management](chat-appointment-management.md).
 
 ### Retell Voice Channel

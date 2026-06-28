@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
@@ -62,6 +62,7 @@ from app.services.appointment_time_normalization import (
 )
 from app.services.chat_appointment_cancellation import (
     _CANCELLATION_APPOINTMENT_SELECTION_NO_MATCH,
+    _CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
     _CANCELLATION_CONFIRMATION_REPROMPT,
     _CANCELLATION_IDENTITY_DOB_ONLY_MESSAGE,
     _CANCELLATION_IDENTITY_NAME_ONLY_MESSAGE,
@@ -102,6 +103,7 @@ from app.services.chat_appointment_rescheduling import (
     APPOINTMENT_MANAGEMENT_AWAITING_RESCHEDULE_CONFIRMATION,
     APPOINTMENT_MANAGEMENT_MODE_RESCHEDULE,
     RESCHEDULE_APPOINTMENT_SELECTION_NO_MATCH,
+    RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
     RESCHEDULE_CONFIRMATION_REPROMPT_STUB,
     RESCHEDULE_IDENTITY_DOB_ONLY_MESSAGE,
     RESCHEDULE_IDENTITY_ENTRY_MESSAGE,
@@ -127,10 +129,32 @@ from app.services.chat_booking_identity import (
 )
 from app.services.chat_confirmation import (
     ConfirmationType,
+    is_booking_denial,
     is_confirmation_confirmed,
+    is_explicit_booking_abort,
     is_simple_affirmative,
     normalize_email_address,
     normalize_patient_display_name,
+)
+from app.services.chat_intent_switching import (
+    PENDING_INTENT_SWITCH_KEY,
+    IntentSwitchTarget,
+    build_intent_switch_acknowledgment,
+    build_intent_switch_confirmation_message,
+    build_pending_intent_switch_context,
+    classify_pending_intent_switch_reply,
+    current_flow_name,
+    detect_intent_override,
+)
+from app.services.chat_offered_appointment_selection import (
+    prepare_appointment_selection_message,
+)
+from app.services.chat_selection_revision import (
+    has_offered_slot_selection_signals,
+    has_selection_revision_phrase,
+    is_plain_rejection,
+    is_slot_selection_revision_message,
+    message_looks_like_cross_flow_intent_switch,
 )
 from app.services.chat_turn_understanding_interpreter import ChatTurnUnderstandingInterpreter
 from app.services.chat_turn_understanding_records import ChatTurnUnderstandingRecordService
@@ -143,6 +167,7 @@ from app.services.conversation_health import (
     ConversationHealthResult,
     ConversationHealthService,
     EscalationReason,
+    detect_explicit_human_request,
 )
 from app.services.conversations import (
     ConversationCreate,
@@ -153,6 +178,7 @@ from app.services.date_parsing import (
     DateParseStatus,
     NaturalLanguageDateParser,
 )
+from app.services.dob_ambiguity import parse_unambiguous_numeric_dob
 from app.services.human_escalations import HumanEscalationService
 from app.services.human_handoff_notifications import HumanHandoffNotificationService
 from app.services.llm_receptionist import (
@@ -272,6 +298,50 @@ _APPOINTMENT_KEYWORDS = [
     "schedule",
     "book",
 ]
+_GREETING_KEYWORDS = [
+    "hello",
+    "hi",
+    "hey",
+    "good morning",
+    "good afternoon",
+]
+# Tokens that look like part of a person's name (letters plus name punctuation).
+_NAME_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z'\u2019.\-]*")
+# Conversational/clause tokens that are very unlikely to be part of a real name.
+# Used to tighten the comma "name, rest" heuristic so arbitrary clauses such as
+# "On second thought, ..." or "I'd like for ..." are not parsed as a patient
+# name. Kept deliberately narrow so seeded names (John Miller, Ava Thompson, ...)
+# are never rejected.
+_NON_NAME_CLAUSE_TOKENS = frozenset(
+    {
+        "i'd",
+        "i'm",
+        "im",
+        "like",
+        "want",
+        "wanted",
+        "prefer",
+        "please",
+        "just",
+        "actually",
+        "instead",
+        "maybe",
+        "really",
+        "wait",
+        "thought",
+        "second",
+        "changed",
+        "mind",
+        "would",
+        "could",
+        "should",
+        "wanna",
+        "gonna",
+        "lemme",
+        "different",
+        "nevermind",
+    },
+)
 _AVAILABILITY_KEYWORDS = [
     "available",
     "availability",
@@ -361,11 +431,23 @@ _GENERIC_SCHEDULING_FALLBACK_MESSAGE = (
     "I can help with clinic scheduling questions. Please tell me whether "
     "you want to book, cancel, or reschedule an appointment."
 )
+_IDENTITY_ONLY_MENU_MESSAGE = (
+    "Thanks. I can help you book, reschedule, cancel, or check appointments. "
+    "What would you like to do?"
+)
+_ORPHAN_CONFIRMATION_MENU_MESSAGE = (
+    "I can help you book, reschedule, cancel, or check appointments. "
+    "What would you like to do?"
+)
 _SLOT_SELECTION_REPROMPT_MESSAGE = (
     "Please choose one of the appointment times I offered."
 )
 _FINAL_BOOKING_CONFIRMATION_REPROMPT_MESSAGE = (
     "Please confirm whether you want me to book that appointment."
+)
+_BOOKING_DECLINED_MESSAGE = (
+    "No problem — I won't book that appointment. "
+    "Would you like to choose another time or do something else?"
 )
 _ALREADY_CONFIRMED_MESSAGE = (
     "Your appointment is already confirmed. "
@@ -387,6 +469,13 @@ _POST_CANCELLATION_UNKNOWN_MESSAGE = (
 _POST_RESCHEDULE_UNKNOWN_MESSAGE = (
     "Your appointment has been rescheduled. Would you like to schedule, cancel, "
     "or reschedule anything else?"
+)
+_POST_LOOKUP_CLOSING_MESSAGE = "No problem. You're all set. Have a great day."
+_POST_LOOKUP_FOLLOW_UP_PLURAL_MESSAGE = (
+    "Would you like to cancel or reschedule one of these, or book another appointment?"
+)
+_POST_LOOKUP_FOLLOW_UP_SINGULAR_MESSAGE = (
+    "Would you like to cancel or reschedule this appointment, or book another appointment?"
 )
 
 
@@ -527,6 +616,16 @@ def _cleared_completed_flow_for_new_intent_updates() -> dict[str, Any]:
         **_cleared_appointment_management_completed_flow_updates(),
         "appointment_id": None,
         "booking_identity_step": None,
+    }
+
+
+def _cleared_active_flow_for_escalation_updates() -> dict[str, Any]:
+    """Clear sticky flow keys after human escalation without releasing active holds."""
+    return {
+        **_cleared_appointment_management_completed_flow_updates(),
+        "booking_identity_step": None,
+        "pending_confirmation_email": None,
+        PENDING_INTENT_SWITCH_KEY: None,
     }
 
 
@@ -714,6 +813,46 @@ def _is_in_post_reschedule_frame(chat_context: dict[str, Any]) -> bool:
     return True
 
 
+def _is_in_post_lookup_frame(chat_context: dict[str, Any]) -> bool:
+    """Return True when lookup has finished listing upcoming appointments."""
+    if chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_LOOKUP:
+        return False
+    if (
+        chat_context.get("appointment_management_awaiting")
+        != APPOINTMENT_MANAGEMENT_AWAITING_COMPLETED
+    ):
+        return False
+    if chat_context.get("lookup_status") != "listed":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    if _appointment_management_empty_followup(chat_context) is not None:
+        return False
+    offered = chat_context.get("offered_appointments")
+    return isinstance(offered, list) and bool(offered)
+
+
+def _appointment_selection_message_from_action_request(
+    message: str,
+    *,
+    action_keywords: Sequence[str],
+) -> str:
+    """Strip cancel/reschedule keywords so selection can run on the same turn."""
+    return prepare_appointment_selection_message(
+        message,
+        action_keywords=action_keywords,
+    )
+
+
+def _post_lookup_follow_up_message(chat_context: dict[str, Any]) -> str:
+    offered = chat_context.get("offered_appointments")
+    if isinstance(offered, list) and len(offered) == 1:
+        return _POST_LOOKUP_FOLLOW_UP_SINGULAR_MESSAGE
+    return _POST_LOOKUP_FOLLOW_UP_PLURAL_MESSAGE
+
+
 def _appointment_management_empty_followup(chat_context: dict[str, Any]) -> str | None:
     """Return the empty-state follow-up mode, if the turn is in that frame.
 
@@ -886,6 +1025,7 @@ class ChatReceptionistIntent(StrEnum):
     BOOKING_IDENTITY_MISSING = "booking_identity_missing"
     BOOKING_CONFIRMATION_REQUIRED = "booking_confirmation_required"
     BOOKING_CONFIRMED = "booking_confirmed"
+    BOOKING_DECLINED = "booking_declined"
     BOOKING_HOLD_MISSING = "booking_hold_missing"
     BOOKING_HOLD_EXPIRED = "booking_hold_expired"
     BOOKING_CONFLICT = "booking_conflict"
@@ -928,6 +1068,7 @@ _BOOKING_CONTEXT_INTENTS = frozenset(
         ChatReceptionistIntent.BOOKING_IDENTITY_MISSING,
         ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
         ChatReceptionistIntent.BOOKING_CONFIRMED,
+        ChatReceptionistIntent.BOOKING_DECLINED,
         ChatReceptionistIntent.BOOKING_HOLD_MISSING,
         ChatReceptionistIntent.BOOKING_HOLD_EXPIRED,
         ChatReceptionistIntent.BOOKING_CONFLICT,
@@ -938,6 +1079,7 @@ _SUCCESSFUL_FLOW_INTENTS = frozenset(
         ChatReceptionistIntent.AVAILABILITY_RESULTS,
         ChatReceptionistIntent.HOLD_CREATED,
         ChatReceptionistIntent.BOOKING_CONFIRMED,
+        ChatReceptionistIntent.BOOKING_DECLINED,
         ChatReceptionistIntent.BOOKING_CONFIRMATION_REQUIRED,
         ChatReceptionistIntent.PATIENT_IDENTITY_PARTIAL,
         ChatReceptionistIntent.PATIENT_IDENTITY_COMPLETE,
@@ -1101,10 +1243,7 @@ class DeterministicChatResponder:
                 ),
             )
 
-        if self._contains_any(
-            normalized_message,
-            ["hello", "hi", "hey", "good morning", "good afternoon"],
-        ):
+        if self._contains_any(normalized_message, _GREETING_KEYWORDS):
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.GREETING,
                 content=(
@@ -1260,12 +1399,23 @@ class ChatReceptionistService:
                     )
                 else:
                     slot_filling_result = self._skipped_slot_filling_result()
-        reply = self._generate_reply(
-            payload.message,
-            conversation,
-            request_patient_id=payload.patient_id,
-        )
-        if reply.chat_context_updates:
+        normalized_message = payload.message.lower()
+        explicit_human_request = detect_explicit_human_request(payload.message)
+        if self.responder._contains_any(normalized_message, _EMERGENCY_KEYWORDS):
+            reply = self.responder.generate_reply(message=payload.message)
+        elif explicit_human_request:
+            reply = self._build_user_requested_human_escalation_reply()
+            conversation = self.conversations.update_conversation_status(
+                conversation_id=conversation.id,
+                status=ConversationStatus.ESCALATED,
+            )
+        else:
+            reply = self._generate_reply(
+                payload.message,
+                conversation,
+                request_patient_id=payload.patient_id,
+            )
+        if reply.chat_context_updates and not explicit_human_request:
             conversation = self.conversations.merge_chat_context(
                 conversation_id=conversation.id,
                 chat_context=reply.chat_context_updates,
@@ -1304,6 +1454,17 @@ class ChatReceptionistService:
                 human_handoff_notification_email_job_id = (
                     escalation_recording.notification_email_job_id
                 )
+
+        if (
+            health_result is not None
+            and health_result.should_escalate_immediately
+            and health_result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN
+            and reply.chat_context_updates
+        ):
+            conversation = self.conversations.merge_chat_context(
+                conversation_id=conversation.id,
+                chat_context=reply.chat_context_updates,
+            )
 
         generated_response = render_chat_reply(
             chat_reply_snapshot_from_reply(reply),
@@ -1436,27 +1597,16 @@ class ChatReceptionistService:
     ) -> tuple[ChatReceptionistReply, Conversation]:
         if health_result.should_escalate_immediately:
             if health_result.escalation_reason == EscalationReason.USER_REQUESTED_HUMAN:
-                conversation = self.conversations.update_conversation_status(
-                    conversation_id=conversation.id,
-                    status=ConversationStatus.ESCALATED,
-                )
+                if conversation.status != ConversationStatus.ESCALATED:
+                    conversation = self.conversations.update_conversation_status(
+                        conversation_id=conversation.id,
+                        status=ConversationStatus.ESCALATED,
+                    )
+                if reply.intent == ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED:
+                    return reply, conversation
+
                 return (
-                    replace(
-                        reply,
-                        intent=ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED,
-                        content=_HUMAN_HANDOFF_MESSAGE,
-                        chat_context_updates={},
-                        availability_checked=False,
-                        offered_slot_count=None,
-                        hold_created=None,
-                        hold_id=None,
-                        appointment_id=None,
-                        booking_attempted=False,
-                        booking_confirmed=False,
-                        booked_patient_id=None,
-                        booked_appointment_start_time=None,
-                        pending_hold_release=None,
-                    ),
+                    self._build_user_requested_human_escalation_reply(),
                     conversation,
                 )
 
@@ -1478,6 +1628,23 @@ class ChatReceptionistService:
             )
 
         return reply, conversation
+
+    def _build_user_requested_human_escalation_reply(self) -> ChatReceptionistReply:
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.HUMAN_ESCALATION_REQUESTED,
+            content=_HUMAN_HANDOFF_MESSAGE,
+            chat_context_updates=_cleared_active_flow_for_escalation_updates(),
+            availability_checked=False,
+            offered_slot_count=None,
+            hold_created=None,
+            hold_id=None,
+            appointment_id=None,
+            booking_attempted=False,
+            booking_confirmed=False,
+            booked_patient_id=None,
+            booked_appointment_start_time=None,
+            pending_hold_release=None,
+        )
 
     def _record_human_escalation_if_needed(
         self,
@@ -1762,6 +1929,75 @@ class ChatReceptionistService:
                     return self._finish_reply_with_context(
                         post_booking_reply,
                         stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+
+        if _is_in_post_lookup_frame(existing_context):
+            lookup_decision = classify_post_completion_turn(message=message).decision
+            if lookup_decision is PostCompletionTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    ChatReceptionistReply(
+                        intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+                        content=_POST_LOOKUP_CLOSING_MESSAGE,
+                        chat_context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(lookup_decision):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                cleared_context = {**existing_context, **completed_flow_cleanup}
+                if lookup_decision is PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST:
+                    return self._finish_reply_with_context(
+                        ChatReceptionistReply(
+                            intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                            content=self._format_missing_scheduling_target_prompt(),
+                            chat_context_updates=completed_flow_cleanup,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                if lookup_decision is PostCompletionTurnDecision.CANCEL_REQUEST:
+                    return self._finish_reply_with_context(
+                        self._enter_cancellation_from_post_lookup(
+                            message=message,
+                            chat_context=existing_context,
+                            flow_cleanup=completed_flow_cleanup,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                if lookup_decision is PostCompletionTurnDecision.RESCHEDULE_REQUEST:
+                    return self._finish_reply_with_context(
+                        self._enter_reschedule_from_post_lookup(
+                            message=message,
+                            chat_context=existing_context,
+                            flow_cleanup=completed_flow_cleanup,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                if lookup_decision is PostCompletionTurnDecision.APPOINTMENT_LOOKUP_REQUEST:
+                    return self._finish_reply_with_context(
+                        self._enter_lookup_task_frame(
+                            context_updates=completed_flow_cleanup,
+                            message=message,
+                            chat_context=cleared_context,
+                        ),
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+                existing_context = cleared_context
+            else:
+                post_lookup_reply = self._post_lookup_reply_for_unclear_turn(
+                    decision=lookup_decision,
+                    chat_context=existing_context,
+                )
+                if post_lookup_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_lookup_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
                         completed_flow_cleanup=completed_flow_cleanup,
                     )
 
@@ -1781,6 +2017,20 @@ class ChatReceptionistService:
             # clear the parked empty-state frame and let normal routing handle it.
             completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
             existing_context = {**existing_context, **completed_flow_cleanup}
+
+        intent_switch_reply = self._try_active_flow_intent_switch(
+            message=message,
+            conversation=conversation,
+            chat_context=existing_context,
+        )
+        if intent_switch_reply is not None:
+            switch_cleanup = intent_switch_reply.chat_context_updates or {}
+            completed_flow_cleanup = {**completed_flow_cleanup, **switch_cleanup}
+            return self._finish_reply_with_context(
+                intent_switch_reply,
+                stale_confirmation_cleanup=stale_confirmation_cleanup,
+                completed_flow_cleanup=completed_flow_cleanup,
+            )
 
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
@@ -1847,6 +2097,14 @@ class ChatReceptionistService:
                     chat_context=existing_context,
                 ),
             )
+
+        pre_hold_revision_reply = self._try_pre_hold_offered_slot_revision(
+            message=message,
+            conversation=conversation,
+            existing_context=existing_context,
+        )
+        if pre_hold_revision_reply is not None:
+            return finish(pre_hold_revision_reply)
 
         intake_result = self._try_appointment_intake(
             message=message,
@@ -2395,6 +2653,19 @@ class ChatReceptionistService:
 
             return match.group(1)
 
+        numeric = parse_unambiguous_numeric_dob(message)
+        if numeric is not None:
+            has_dob_cue = bool(
+                re.search(r"\b(dob|date of birth|born)\b", message, re.IGNORECASE)
+                or "," in message
+                or _MY_NAME_IS_PATTERN.search(message)
+                or booking_context
+            )
+            if not has_dob_cue:
+                return None
+
+            return numeric
+
         natural = _parse_natural_date_of_birth(message)
         if natural is None:
             return None
@@ -2419,6 +2690,13 @@ class ChatReceptionistService:
         date_of_birth: str | None,
         booking_context: bool = False,
     ) -> str | None:
+        # A revision/denial turn ("On second thought, ...", "Actually, ...",
+        # "Wait, I meant ...", "I changed my mind", "Don't book it") is never a
+        # patient name. Blocking it here keeps a bogus name out of
+        # patient_identity so a later, correct identity is not shadowed by it.
+        if self._message_is_revision_or_denial(message):
+            return None
+
         name_match = _MY_NAME_IS_PATTERN.search(message)
         if name_match is not None:
             remainder = name_match.group(1).strip()
@@ -2460,6 +2738,7 @@ class ChatReceptionistService:
                 booking_context
                 and segments
                 and len(segments[0].split()) >= 2
+                and self._looks_like_person_name(segments[0])
                 and not self._looks_like_scheduling_text(segments[0])
             ):
                 return normalize_patient_display_name(segments[0])
@@ -2469,10 +2748,43 @@ class ChatReceptionistService:
         if first_segment.lower().startswith("my name is "):
             return None
 
-        if len(first_segment.split()) >= 2:
+        if len(first_segment.split()) >= 2 and self._looks_like_person_name(first_segment):
             return normalize_patient_display_name(first_segment)
 
         return None
+
+    def _message_is_revision_or_denial(self, message: str) -> bool:
+        """Whether the message reads as a slot/date revision or a denial.
+
+        Reuses the shared revision-phrase, plain-rejection, and explicit
+        booking-abort detectors so identity parsing and revision routing agree on
+        what counts as "the user is changing or declining", never a name.
+        """
+        normalized = message.lower().strip()
+        if not normalized:
+            return False
+        if has_selection_revision_phrase(normalized):
+            return True
+        if is_plain_rejection(message):
+            return True
+        return is_explicit_booking_abort(message)
+
+    def _looks_like_person_name(self, value: str) -> bool:
+        """Whether a comma-segment plausibly reads as a person's name.
+
+        Every token must look like a name part (letters plus name punctuation)
+        and none may be a conversational/clause word, so arbitrary phrases like
+        "I'd like for Wednesday" are not mistaken for a patient name.
+        """
+        tokens = value.split()
+        if not tokens:
+            return False
+        for token in tokens:
+            if not _NAME_TOKEN_PATTERN.fullmatch(token):
+                return False
+            if token.lower() in _NON_NAME_CLAUSE_TOKENS:
+                return False
+        return True
 
     def _looks_like_scheduling_text(self, value: str) -> bool:
         normalized = value.lower()
@@ -2530,6 +2842,206 @@ class ChatReceptionistService:
             hold_id=flow.hold_id,
             booking_attempted=flow.booking_attempted,
         )
+
+    def _try_active_flow_intent_switch(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        booking_identity_active = self._booking_identity.is_active(chat_context)
+
+        pending_reply = self._handle_pending_intent_switch(
+            message=message,
+            conversation=conversation,
+            chat_context=chat_context,
+            booking_identity_active=booking_identity_active,
+        )
+        if pending_reply is not None:
+            return pending_reply
+
+        detection = detect_intent_override(
+            message,
+            chat_context,
+            parse_patient_fields=self._parse_booking_patient_fields,
+            booking_identity_active=booking_identity_active,
+        )
+        if detection.kind == "none" or detection.target is None:
+            return None
+
+        if detection.kind == "uncertain":
+            from_flow = current_flow_name(
+                chat_context,
+                booking_identity_active=booking_identity_active,
+            )
+            previous_awaiting = chat_context.get("appointment_management_awaiting")
+            pending_context = build_pending_intent_switch_context(
+                from_flow=from_flow,
+                target=detection.target,
+                original_message=detection.source_message or message,
+                previous_awaiting=(
+                    str(previous_awaiting) if isinstance(previous_awaiting, str) else None
+                ),
+            )
+            return ChatReceptionistReply(
+                intent=self._intent_switch_chat_intent(detection.target),
+                content=build_intent_switch_confirmation_message(
+                    from_flow=from_flow,
+                    target=detection.target,
+                ),
+                chat_context_updates={
+                    PENDING_INTENT_SWITCH_KEY: pending_context,
+                },
+            )
+
+        return self._execute_intent_switch(
+            message=message,
+            conversation=conversation,
+            chat_context=chat_context,
+            target=detection.target,
+            flow_cleanup=_cleared_completed_flow_for_new_intent_updates(),
+        )
+
+    def _handle_pending_intent_switch(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+        booking_identity_active: bool,
+    ) -> ChatReceptionistReply | None:
+        pending_raw = chat_context.get(PENDING_INTENT_SWITCH_KEY)
+        if not isinstance(pending_raw, dict):
+            return None
+
+        reply = classify_pending_intent_switch_reply(message)
+        target = IntentSwitchTarget(pending_raw["to_intent"])
+        from_flow = str(pending_raw.get("from_flow", "unknown"))
+
+        if reply.decision == "confirmed":
+            return self._execute_intent_switch(
+                message=str(pending_raw.get("original_message") or message),
+                conversation=conversation,
+                chat_context=chat_context,
+                target=target,
+                flow_cleanup=_cleared_completed_flow_for_new_intent_updates(),
+            )
+
+        if reply.decision == "rejected":
+            resume_context = {**chat_context, PENDING_INTENT_SWITCH_KEY: None}
+            contextual = _resolve_contextual_fallback_reply(resume_context)
+            if contextual is not None:
+                intent, content = contextual
+                return ChatReceptionistReply(
+                    intent=intent,
+                    content=content,
+                    chat_context_updates={PENDING_INTENT_SWITCH_KEY: None},
+                )
+            return ChatReceptionistReply(
+                intent=self._intent_switch_chat_intent_for_flow(from_flow),
+                content=_GENERIC_SCHEDULING_FALLBACK_MESSAGE,
+                chat_context_updates={PENDING_INTENT_SWITCH_KEY: None},
+            )
+
+        retries = int(pending_raw.get("clarification_retries") or 0)
+        if retries >= 1:
+            resume_context = {**chat_context, PENDING_INTENT_SWITCH_KEY: None}
+            contextual = _resolve_contextual_fallback_reply(resume_context)
+            if contextual is not None:
+                intent, content = contextual
+                return ChatReceptionistReply(
+                    intent=intent,
+                    content=content,
+                    chat_context_updates={PENDING_INTENT_SWITCH_KEY: None},
+                )
+
+        confirmation_question = build_intent_switch_confirmation_message(
+            from_flow=from_flow,
+            target=target,
+        )
+        return ChatReceptionistReply(
+            intent=self._intent_switch_chat_intent(target),
+            content=(
+                f"Just to confirm: {confirmation_question} Please reply yes or no."
+            ),
+            chat_context_updates={
+                PENDING_INTENT_SWITCH_KEY: {
+                    **pending_raw,
+                    "clarification_retries": retries + 1,
+                },
+            },
+        )
+
+    def _execute_intent_switch(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        chat_context: dict[str, Any],
+        target: IntentSwitchTarget,
+        flow_cleanup: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        merged_context = {
+            **chat_context,
+            **flow_cleanup,
+            PENDING_INTENT_SWITCH_KEY: None,
+        }
+        combined_cleanup = {**flow_cleanup, PENDING_INTENT_SWITCH_KEY: None}
+        acknowledgment = build_intent_switch_acknowledgment(target)
+
+        if target is IntentSwitchTarget.BOOKING:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                content=(
+                    f"{acknowledgment}{self._format_missing_scheduling_target_prompt()}"
+                ),
+                chat_context_updates=combined_cleanup,
+            )
+
+        if target is IntentSwitchTarget.CANCEL:
+            reply = self._enter_cancellation_task_frame(
+                context_updates=combined_cleanup,
+                message=message,
+                chat_context=merged_context,
+            )
+            return replace(reply, content=f"{acknowledgment}{reply.content}")
+
+        if target is IntentSwitchTarget.RESCHEDULE:
+            reply = self._enter_reschedule_task_frame(
+                context_updates=combined_cleanup,
+                message=message,
+                chat_context=merged_context,
+            )
+            return replace(reply, content=f"{acknowledgment}{reply.content}")
+
+        reply = self._enter_lookup_task_frame(
+            context_updates=combined_cleanup,
+            message=message,
+            chat_context=merged_context,
+        )
+        return replace(reply, content=f"{acknowledgment}{reply.content}")
+
+    def _intent_switch_chat_intent_for_flow(self, from_flow: str) -> ChatReceptionistIntent:
+        mapping = {
+            "booking": ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            "cancel": ChatReceptionistIntent.CANCEL_REQUEST,
+            "reschedule": ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            "lookup": ChatReceptionistIntent.LIST_APPOINTMENTS,
+        }
+        return mapping.get(from_flow, ChatReceptionistIntent.FALLBACK)
+
+    def _intent_switch_chat_intent(
+        self,
+        target: IntentSwitchTarget,
+    ) -> ChatReceptionistIntent:
+        mapping = {
+            IntentSwitchTarget.BOOKING: ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            IntentSwitchTarget.CANCEL: ChatReceptionistIntent.CANCEL_REQUEST,
+            IntentSwitchTarget.RESCHEDULE: ChatReceptionistIntent.RESCHEDULE_REQUEST,
+            IntentSwitchTarget.LOOKUP: ChatReceptionistIntent.LIST_APPOINTMENTS,
+        }
+        return mapping[target]
 
     def _handle_cancellation_flow(
         self,
@@ -2955,6 +3467,133 @@ class ChatReceptionistService:
             context_updates={},
         )
 
+    def _post_lookup_reply_for_unclear_turn(
+        self,
+        *,
+        decision: PostCompletionTurnDecision,
+        chat_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if decision in {
+            PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST,
+            PostCompletionTurnDecision.CANCEL_REQUEST,
+            PostCompletionTurnDecision.RESCHEDULE_REQUEST,
+            PostCompletionTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
+        }:
+            return None
+
+        if decision is PostCompletionTurnDecision.END_CONVERSATION:
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+                content=_POST_LOOKUP_CLOSING_MESSAGE,
+                chat_context_updates=_cleared_post_conversation_terminal_updates(),
+            )
+
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.LIST_APPOINTMENTS,
+            content=_post_lookup_follow_up_message(chat_context),
+            chat_context_updates={},
+        )
+
+    def _enter_cancellation_from_post_lookup(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+        flow_cleanup: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return self._enter_appointment_management_from_post_lookup(
+            message=message,
+            chat_context=chat_context,
+            flow_cleanup=flow_cleanup,
+            list_for_patient=self._appointment_cancellation.list_appointments_for_resolved_patient,
+            handle_selection=self._appointment_cancellation.handle_appointment_selection,
+            flow_result_to_reply=self._cancellation_flow_result_to_reply,
+            enter_task_frame=self._enter_cancellation_task_frame,
+            awaiting_selection=APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+            action_keywords=_CANCEL_KEYWORDS,
+            selection_reprompt=_CANCELLATION_APPOINTMENT_SELECTION_REPROMPT,
+        )
+
+    def _enter_reschedule_from_post_lookup(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+        flow_cleanup: dict[str, Any],
+    ) -> ChatReceptionistReply:
+        return self._enter_appointment_management_from_post_lookup(
+            message=message,
+            chat_context=chat_context,
+            flow_cleanup=flow_cleanup,
+            list_for_patient=self._appointment_rescheduling.list_appointments_for_resolved_patient,
+            handle_selection=self._appointment_rescheduling.handle_appointment_selection,
+            flow_result_to_reply=self._reschedule_flow_result_to_reply,
+            enter_task_frame=self._enter_reschedule_task_frame,
+            awaiting_selection=APPOINTMENT_MANAGEMENT_AWAITING_APPOINTMENT_SELECTION,
+            action_keywords=_RESCHEDULE_KEYWORDS,
+            selection_reprompt=RESCHEDULE_APPOINTMENT_SELECTION_REPROMPT,
+        )
+
+    def _enter_appointment_management_from_post_lookup(
+        self,
+        *,
+        message: str,
+        chat_context: dict[str, Any],
+        flow_cleanup: dict[str, Any],
+        list_for_patient: Callable[..., Any],
+        handle_selection: Callable[..., Any],
+        flow_result_to_reply: Callable[[Any], ChatReceptionistReply],
+        enter_task_frame: Callable[..., ChatReceptionistReply],
+        awaiting_selection: str,
+        action_keywords: Sequence[str],
+        selection_reprompt: str,
+    ) -> ChatReceptionistReply:
+        merged = {**chat_context, **flow_cleanup}
+        list_result = list_for_patient(chat_context=merged)
+        if list_result is None:
+            return enter_task_frame(
+                context_updates=flow_cleanup,
+                message=message,
+                chat_context=merged,
+            )
+
+        combined_updates = {**flow_cleanup, **list_result.chat_context_updates}
+        merged_after_list = {**merged, **list_result.chat_context_updates}
+
+        if merged_after_list.get("appointment_management_awaiting") == awaiting_selection:
+            selection_message = _appointment_selection_message_from_action_request(
+                message,
+                action_keywords=action_keywords,
+            )
+            selection_result = handle_selection(
+                message=selection_message,
+                chat_context=merged_after_list,
+            )
+            selection_updates = {
+                **combined_updates,
+                **selection_result.chat_context_updates,
+            }
+            selection_awaiting = selection_result.chat_context_updates.get(
+                "appointment_management_awaiting",
+            )
+            if (
+                selection_awaiting != awaiting_selection
+                or selection_result.content != selection_reprompt
+            ):
+                return flow_result_to_reply(
+                    replace(
+                        selection_result,
+                        chat_context_updates=selection_updates,
+                    ),
+                )
+
+        return flow_result_to_reply(
+            replace(
+                list_result,
+                chat_context_updates=combined_updates,
+            ),
+        )
+
     def _handle_appointment_management_empty_followup(
         self,
         *,
@@ -2969,10 +3608,22 @@ class ChatReceptionistService:
         for an affirmative, a farewell, or an unclear turn.
         """
         decision = classify_post_completion_turn(message=message).decision
+        offers_booking = followup == APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
         if _post_completion_decision_is_actionable(decision):
+            # An affirmative-with-booking turn (e.g. "yes, book one") classifies as
+            # a new scheduling request. Start booking here so the leading "yes" is
+            # not later misread as a final-booking confirmation by normal routing.
+            if (
+                offers_booking
+                and decision is PostCompletionTurnDecision.NEW_SCHEDULING_REQUEST
+            ):
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                    content=self._format_missing_scheduling_target_prompt(),
+                    chat_context_updates=_cleared_completed_flow_for_new_intent_updates(),
+                )
             return None
 
-        offers_booking = followup == APPOINTMENT_MANAGEMENT_EMPTY_OFFER_BOOKING
         intent = (
             ChatReceptionistIntent.APPOINTMENT_REQUEST
             if offers_booking
@@ -3091,6 +3742,16 @@ class ChatReceptionistService:
         )
         offered_slots = merged_context.get("offered_slots") or []
 
+        if hold_id:
+            slot_revision_reply = self._try_revise_held_slot_selection(
+                message=message,
+                conversation=conversation,
+                merged_context=merged_context,
+                context_updates=context_updates,
+            )
+            if slot_revision_reply is not None:
+                return slot_revision_reply
+
         if merged_context.get("appointment_id"):
             return self._handle_post_booking_message(
                 message=message,
@@ -3120,6 +3781,14 @@ class ChatReceptionistService:
                         booking_attempted=has_confirmation,
                     )
                 return None
+
+            abort_reply = self._try_abort_active_booking(
+                message=message,
+                merged_context=merged_context,
+                context_updates=context_updates,
+            )
+            if abort_reply is not None:
+                return abort_reply
 
             flow_result = self._booking_identity.handle(
                 message=message,
@@ -3185,6 +3854,16 @@ class ChatReceptionistService:
             offered_slots=offered_slots,
             merged_context=merged_context,
         ):
+            if self._is_identity_only_without_scheduling_context(
+                message=message,
+                merged_context=merged_context,
+                has_identity_fields=has_identity_fields,
+            ):
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.FALLBACK,
+                    content=_IDENTITY_ONLY_MENU_MESSAGE,
+                    chat_context_updates=context_updates,
+                )
             return None
 
         existing_raw = merged_context.get("patient_identity")
@@ -3197,6 +3876,19 @@ class ChatReceptionistService:
         }
 
         if has_confirmation and not hold_id and not offered_slots:
+            if not self._has_active_scheduling_context_for_booking_identity(
+                merged_context,
+            ):
+                # Orphan confirmation: a bare "yes"/"confirm"/"book it" with no
+                # active context that expects a yes/no (no hold, offered slot,
+                # selected slot, in-progress intake, or booking identity). Do not
+                # route to the booking-confirmation fallback or ask the user to
+                # hold a time first; surface the standard menu instead.
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.FALLBACK,
+                    content=_ORPHAN_CONFIRMATION_MENU_MESSAGE,
+                    chat_context_updates=context_updates,
+                )
             return ChatReceptionistReply(
                 intent=ChatReceptionistIntent.BOOKING_HOLD_MISSING,
                 content=(
@@ -3254,9 +3946,117 @@ class ChatReceptionistService:
             return True
 
         if has_identity_fields and not hold_id:
-            return True
+            if merged_context is None:
+                return False
+            # Offered slots alone (or an in-progress date/time/slot intake) mean
+            # the user has only *seen* times, not selected one, so identity
+            # collection must not start yet. Require a clearly selected/held slot
+            # or an already-active booking identity step.
+            return self._has_booking_identity_intake_context(merged_context)
 
         return False
+
+    def _has_booking_identity_intake_context(
+        self,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        """Stronger gate for *starting* patient identity intake during booking.
+
+        Unlike :meth:`_has_active_scheduling_context_for_booking_identity` (which
+        also treats merely-offered slots as "active scheduling" for the
+        orphan-confirmation distinction), this requires that the user has
+        actually committed to a specific slot: a hold, an active booking identity
+        step, or a selected slot. Merely-offered slots or an awaiting
+        date/time/slot intake do not qualify.
+        """
+        if merged_context.get("hold_id"):
+            return True
+        if self._booking_identity.is_active(merged_context):
+            return True
+        if merged_context.get("selected_availability_slot_id"):
+            return True
+        return bool(merged_context.get("selected_start_time"))
+
+    def _has_active_scheduling_context_for_booking_identity(
+        self,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        if merged_context.get("hold_id"):
+            return True
+        if self._booking_identity.is_active(merged_context):
+            return True
+        if merged_context.get("offered_slots"):
+            return True
+        if merged_context.get("appointment_intake_awaiting"):
+            return True
+        if merged_context.get("selected_availability_slot_id"):
+            return True
+        return False
+
+    def _message_has_scheduling_intent(
+        self,
+        *,
+        message: str,
+        normalized_message: str,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
+            return True
+        if self.responder._contains_any(normalized_message, _AVAILABILITY_KEYWORDS):
+            return True
+        if self.responder._contains_any(normalized_message, _HOLD_KEYWORDS):
+            return True
+        if self._match_specialty_in_message(normalized_message) is not None:
+            return True
+        if self._match_doctor_in_message(normalized_message) is not None:
+            return True
+        return self._is_hold_request(normalized_message, merged_context, message)
+
+    def _is_identity_only_without_scheduling_context(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+        has_identity_fields: bool,
+    ) -> bool:
+        if self._has_active_scheduling_context_for_booking_identity(merged_context):
+            return False
+        normalized_message = message.lower()
+        if self._message_has_scheduling_intent(
+            message=message,
+            normalized_message=normalized_message,
+            merged_context=merged_context,
+        ):
+            return False
+        if has_identity_fields:
+            return True
+        # A bare full-name opener (e.g. "John Smith") is not captured without
+        # booking context, so the menu prompt would otherwise be missed. Detect it
+        # here, while keeping greetings and non-name text on their own replies.
+        return self._is_bare_name_only_opener(
+            message=message,
+            normalized_message=normalized_message,
+        )
+
+    def _is_bare_name_only_opener(
+        self,
+        *,
+        message: str,
+        normalized_message: str,
+    ) -> bool:
+        if self.responder._contains_any(normalized_message, _GREETING_KEYWORDS):
+            return False
+        opener_identity = self.parse_patient_identity(message, booking_context=True)
+        if opener_identity.full_name is None:
+            return False
+        if opener_identity.date_of_birth or opener_identity.email or opener_identity.phone:
+            return True
+        # With only a name parsed, require every token to look like a name part so
+        # generic multi-word messages are not misread as a patient identity.
+        tokens = message.strip().rstrip(".").split()
+        return bool(tokens) and all(
+            _NAME_TOKEN_PATTERN.fullmatch(token) for token in tokens
+        )
 
     def _attempt_booking(
         self,
@@ -3592,6 +4392,246 @@ class ChatReceptionistService:
             "pending_confirmation_email": None,
             "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME,
         }
+
+    def _cleared_active_hold_context_updates(self) -> dict[str, Any]:
+        """Clear an active hold while preserving offered slot options."""
+        return {
+            "hold_id": None,
+            "hold_expires_at": None,
+            "hold_owner_id": None,
+            "selected_availability_slot_id": None,
+            "selected_start_time": None,
+            "booking_identity_step": None,
+            "pending_confirmation_email": None,
+        }
+
+    def _release_context_hold_best_effort(self, merged_context: dict[str, Any]) -> None:
+        hold_id_raw = merged_context.get("hold_id")
+        if not isinstance(hold_id_raw, str) or not hold_id_raw:
+            return
+        owner_id = merged_context.get("hold_owner_id")
+        try:
+            self.appointment_holds.release_hold_by_id(
+                hold_id=UUID(hold_id_raw),
+                owner_id=str(owner_id) if owner_id else "",
+            )
+        except (AppointmentHoldServiceError, RedisError, ValueError):
+            logger.debug("failed to release held slot during selection revision")
+
+    def _try_abort_active_booking(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        """Abort an in-progress booking when the user clearly denies it.
+
+        Backend decision layer: the orchestrator reports the current booking
+        step, this method validates the denial, and the domain hold service
+        executes the release. Plain "no"/"no thanks" only abort at the final
+        booking confirmation; earlier identity steps require an unambiguous
+        abort phrase ("don't book it", "never mind", ...) so a bare "no" can
+        still answer "have you been seen here before?".
+        """
+        if merged_context.get("appointment_id"):
+            return None
+
+        step_raw = merged_context.get("booking_identity_step")
+        try:
+            step = ChatBookingIdentityStep(step_raw) if isinstance(step_raw, str) else None
+        except ValueError:
+            step = None
+        if step is None or step is ChatBookingIdentityStep.BOOKING_COMPLETED:
+            return None
+
+        normalized_message = message.lower().strip()
+        # A revision phrase ("on second thought", "instead", ...) means the user
+        # wants a different slot, not to abort; leave that to the slot-revision
+        # path so the selection is changed rather than cancelled.
+        if has_selection_revision_phrase(normalized_message):
+            return None
+
+        if step is ChatBookingIdentityStep.AWAIT_FINAL_BOOKING_CONFIRMATION:
+            denied = is_booking_denial(message)
+        else:
+            denied = is_explicit_booking_abort(message)
+        if not denied:
+            return None
+
+        # Do not abort when the message names a different offered time (a new
+        # target without an explicit revision phrase); let the confirmation
+        # reprompt stand rather than discarding a possible slot change.
+        offered_slots = merged_context.get("offered_slots") or []
+        if (
+            isinstance(offered_slots, list)
+            and offered_slots
+            and has_offered_slot_selection_signals(
+                message,
+                normalized_message,
+                offered_slots,
+            )
+        ):
+            return None
+
+        # Best-effort release: if the hold cannot be released we still clear chat
+        # state and never create the appointment, relying on the hold TTL as the
+        # safety net (release is treated as best-effort everywhere in this flow).
+        self._release_context_hold_best_effort(merged_context)
+        aborted_updates = {
+            **context_updates,
+            **self._cleared_hold_context_updates(),
+        }
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.BOOKING_DECLINED,
+            content=_BOOKING_DECLINED_MESSAGE,
+            chat_context_updates=aborted_updates,
+        )
+
+    def _try_pre_hold_offered_slot_revision(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        existing_context: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        """Safely handle a slot/date revision made before any hold exists.
+
+        When the assistant has only *offered* times (no hold yet) and the user
+        revises the requested slot/date ("On second thought, Wednesday",
+        "Actually, 14"), this must never be read as a confirmation or as patient
+        identity, and must never create an appointment or email job. A concrete
+        time that matches an offered slot is selected via the normal hold flow; a
+        new day with no time asks for a time on that day; anything unresolved
+        clears stale booking state and asks a focused scheduling clarification so
+        the next turn cannot be trapped on "hold a time first".
+        """
+        if existing_context.get("hold_id") or existing_context.get("appointment_id"):
+            return None
+
+        offered_slots = existing_context.get("offered_slots") or []
+        awaiting = existing_context.get("appointment_intake_awaiting")
+        has_pre_hold_context = (
+            bool(offered_slots)
+            or awaiting == APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+            or bool(existing_context.get("requested_exact_time"))
+        )
+        if not has_pre_hold_context:
+            return None
+
+        normalized_message = message.lower().strip()
+        if is_simple_affirmative(message) or is_plain_rejection(message):
+            return None
+        if message_looks_like_cross_flow_intent_switch(normalized_message):
+            return None
+        if not has_selection_revision_phrase(normalized_message):
+            return None
+
+        # A concrete time that maps to one of the offered slots: reuse the normal
+        # slot-selection/hold behavior so the revision selects that slot.
+        if (
+            isinstance(offered_slots, list)
+            and offered_slots
+            and has_offered_slot_selection_signals(
+                message,
+                normalized_message,
+                offered_slots,
+            )
+        ):
+            return self._handle_hold_flow(
+                message=message,
+                normalized_message=normalized_message,
+                conversation=conversation,
+                merged_context=existing_context,
+                context_updates={},
+            )
+
+        # A new day (no resolvable time yet): clear the now-stale offered slots,
+        # keep the specialty/doctor, and ask for a time on that day.
+        follow_up_updates = self._appointment_intake.extract_contextual_follow_up_updates(
+            message=message,
+            chat_context=existing_context,
+        )
+        new_date = follow_up_updates.get("requested_date")
+        if isinstance(new_date, str) and new_date:
+            cleared = self._cleared_pre_hold_revision_context_updates()
+            cleared["requested_date"] = new_date
+            cleared["appointment_intake_awaiting"] = APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+            weekday_label = self._weekday_label_for_date(new_date)
+            prompt = (
+                f"Sure \u2014 what time on {weekday_label} would you prefer?"
+                if weekday_label
+                else "Sure \u2014 what time would you prefer?"
+            )
+            return ChatReceptionistReply(
+                intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+                content=prompt,
+                chat_context_updates=cleared,
+            )
+
+        # Unresolved revision: drop stale invalid selection/confirmation/identity
+        # state and ask a focused scheduling clarification without trapping the
+        # user on "please hold a time first".
+        cleared = self._cleared_pre_hold_revision_context_updates()
+        if isinstance(offered_slots, list) and offered_slots:
+            # Keep the already-offered options so the user can still pick one.
+            cleared.pop("offered_slots", None)
+            cleared["appointment_intake_awaiting"] = APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+            prompt = _format_offered_slot_selection_reprompt(offered_slots)
+        else:
+            cleared["appointment_intake_awaiting"] = APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME
+            prompt = "Sure \u2014 what day and time would you prefer?"
+        return ChatReceptionistReply(
+            intent=ChatReceptionistIntent.APPOINTMENT_REQUEST,
+            content=prompt,
+            chat_context_updates=cleared,
+        )
+
+    def _cleared_pre_hold_revision_context_updates(self) -> dict[str, Any]:
+        """Clear stale pre-hold booking state that could trap the next turn."""
+        return {
+            "offered_slots": [],
+            "selected_availability_slot_id": None,
+            "selected_start_time": None,
+            "requested_exact_time": None,
+            "booking_identity_step": None,
+            "pending_confirmation_email": None,
+        }
+
+    def _weekday_label_for_date(self, value: str) -> str | None:
+        try:
+            return date.fromisoformat(value).strftime("%A")
+        except ValueError:
+            return None
+
+    def _try_revise_held_slot_selection(
+        self,
+        *,
+        message: str,
+        conversation: Conversation,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+    ) -> ChatReceptionistReply | None:
+        if not is_slot_selection_revision_message(
+            message,
+            chat_context=merged_context,
+            has_active_hold=bool(merged_context.get("hold_id")),
+        ):
+            return None
+
+        self._release_context_hold_best_effort(merged_context)
+        cleared_hold_updates = {
+            **context_updates,
+            **self._cleared_active_hold_context_updates(),
+        }
+        merged_without_hold = {**merged_context, **cleared_hold_updates}
+        return self._handle_hold_flow(
+            message=message,
+            normalized_message=message.lower().strip(),
+            conversation=conversation,
+            merged_context=merged_without_hold,
+            context_updates=cleared_hold_updates,
+        )
 
     @staticmethod
     def _finish_reply_with_context(
@@ -5254,7 +6294,13 @@ class ChatReceptionistService:
         if self.responder._contains_any(normalized_message, _HOLD_KEYWORDS):
             return True
 
-        if self._message_has_time_pattern(normalized_message):
+        # A bare clock-like time only signals slot selection / a hold request once
+        # availability has been shown (offered slots) or while a hold is being
+        # confirmed/selected. Without that context a concrete time is part of a
+        # rich scheduling request and must reach availability/intake instead.
+        if self._message_has_time_pattern(normalized_message) and (
+            offered_slots or self._has_active_hold_context(merged_context)
+        ):
             return True
 
         if offered_slots and self._extract_offered_time(message) is not None:
@@ -5264,6 +6310,14 @@ class ChatReceptionistService:
             return True
 
         return self._extract_iso_datetime(message) is not None
+
+    def _has_active_hold_context(self, merged_context: dict[str, Any]) -> bool:
+        if merged_context.get("hold_id"):
+            return True
+        return (
+            merged_context.get("appointment_intake_awaiting")
+            == APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+        )
 
     def _is_single_slot_affirmative_hold_selection(
         self,

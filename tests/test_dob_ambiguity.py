@@ -7,6 +7,7 @@ from app.services.dob_ambiguity import (
     detect_ambiguous_numeric_dob,
     parse_dob_ambiguity_confirmation,
     parse_month_day_dob_clarification,
+    parse_unambiguous_numeric_dob,
     try_resolve_pending_dob_ambiguity,
 )
 
@@ -171,3 +172,35 @@ def test_month_day_without_year_requires_pending_ambiguity_context() -> None:
 
     assert confirmed is None
     assert rejection is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_iso"),
+    [
+        ("19/09/1996", "1996-09-19"),
+        ("John Smith, 19/09/1996", "1996-09-19"),
+        ("9/8/1980", None),
+        ("13/08/1980", "1980-08-13"),
+        ("08/13/1980", "1980-08-13"),
+        ("05/05/1980", "1980-05-05"),
+        ("32/09/1996", None),
+        ("19/19/1996", None),
+    ],
+)
+def test_parse_unambiguous_numeric_dob(text: str, expected_iso: str | None) -> None:
+    assert parse_unambiguous_numeric_dob(text) == expected_iso
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "09/08/1980",
+        "John Smith, 09/08/1980",
+        "03/04/1985",
+    ],
+)
+def test_parse_unambiguous_numeric_dob_returns_none_for_ambiguous_dates(
+    text: str,
+) -> None:
+    assert parse_unambiguous_numeric_dob(text) is None
+    assert detect_ambiguous_numeric_dob(text) is not None
