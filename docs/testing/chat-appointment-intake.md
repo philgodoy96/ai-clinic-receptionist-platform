@@ -1,6 +1,6 @@
 # Chat Appointment Intake Manual Testing
 
-Manual test guide for Chat Turn Understanding (CTU) appointment intake on branch `feat/chat-turn-understanding-appointment-intake`.
+Manual test guide for Chat Turn Understanding (CTU) appointment intake and written-chat scheduling reliability.
 
 Architecture and behavior: [Chat Turn Understanding Architecture](../architecture/chat-turn-understanding.md).
 
@@ -93,15 +93,14 @@ High-level expected behavior by message group. Exact routing depends on current 
 | `What about Wednesday?` | Contextual weekday follow-up; provider preserved |
 | `tomorrow morning` | Natural date + morning window |
 | `Sunday afternoon` | Natural date + afternoon window |
+| `Tuesday 15` / `Tuesday at 14` | Contextual weekday + bare hour → `15:00` / `14:00` when slot context makes the hour unambiguous |
 
-### Range availability
+### Offered slot revision (before hold)
 
 | Example | Expected behavior |
 | --- | --- |
-| `What days do you have next week?` | Week range search; grouped day/time options |
-| `What do you have next week?` | Same |
-| `Any availability next week?` | Same |
-| `Do you have anything this week?` | `this week` from clinic today through Sunday |
+| `Actually, Wednesday` | Revises date preference; rechecks availability — does not start identity intake |
+| `On second thought, I'd like for Wednesday` | Scheduling clarification or revised search — not identity collection |
 
 ### Offered slot selection
 
@@ -112,12 +111,23 @@ High-level expected behavior by message group. Exact routing depends on current 
 | `15:00` | Direct `HH:MM` match |
 | `second one` | Ordinal/reference via `selected_slot_reference` when unambiguous |
 
+### Range availability
+
+| Example | Expected behavior |
+| --- | --- |
+| `What days do you have next week?` | Week range search; grouped day/time options |
+| `What do you have next week?` | Same |
+| `Any availability next week?` | Same |
+| `Do you have anything this week?` | `this week` from clinic today through Sunday |
+
 ## Offered doctors and offered slots
 
 - **`offered_doctors`** — stored when the assistant lists doctors for a specialty. Later messages like `It can be Dr. Reed` resolve against this list only.
 - **`offered_slots`** — stored after availability results. Later messages like `3PM`, `15`, `15:00`, or `second one` resolve against offered slots only.
 - **IDs are never exposed** — replies must not contain doctor IDs, slot IDs, hold IDs, UUIDs, or raw ISO timestamps.
 - **Backend validation** — every selected slot reference or normalized time is validated against actually offered slots. The backend must never hold or book an unoffered time.
+- **Identity-only openers** — a bare full name at conversation start does not start booking identity without scheduling context.
+- **Revision/denial phrases** — phrases such as `On second thought` or `Actually, Wednesday` are not parsed as patient names.
 
 ## Time normalization
 
@@ -227,14 +237,13 @@ Set `CHAT_TURN_UNDERSTANDING_INTERPRETER=fake`, restart the API, and run the seq
 - **Slot selection after offered slots** reaches hold creation through the existing flow only after backend validation passes.
 - **No booking** occurs without explicit confirmation after identity collection.
 
-## Out of scope / follow-ups
+## Out of scope for this script
 
-- **Appointment management flows** — booking, lookup, cancel, and reschedule are documented in [Chat Appointment Management Manual Testing](chat-appointment-management.md).
-- **Timezone/seed audit** — future slice; demo availability display may be offset if UTC storage and clinic-local time are not aligned. Do not treat as fixed in this branch.
-- **No second LLM response composer** — reply phrasing remains deterministic by default.
-- **Retell voice flow** — not modified.
-- **Public demos with real LLM providers** — require auth, rate limits, and cost controls.
-- **Post-booking lifecycle** — post-completion routing supports new booking, lookup, cancel, and reschedule intents in the same conversation. See [Chat Appointment Management Manual Testing](chat-appointment-management.md).
+- **Appointment management flows** — booking, lookup, cancel, and reschedule: [Chat Appointment Management Manual Testing](chat-appointment-management.md)
+- **No second LLM response composer** — reply phrasing remains deterministic by default
+- **Retell voice flow** — separate provider-orchestrated path
+- **Public demos with real LLM providers** — require auth, rate limits, and cost controls
+- **Clinical advice, moderation, and live human agents** — outside written-chat demo scope (see architecture doc)
 
 ## Automated coverage
 

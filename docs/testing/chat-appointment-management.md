@@ -1,6 +1,6 @@
 # Chat Appointment Management Manual Testing
 
-Recruiter-friendly manual QA script for the completed written-chat contextual appointment management slice.
+Manual QA script for written-chat contextual appointment management and reliability guards.
 
 Architecture: [Chat Appointment Management](../architecture/chat-appointment-management.md).
 
@@ -55,6 +55,30 @@ Focused checklists:
 The LLM understands. The backend validates and decides. Domain services execute.
 ```
 
+## Demo seed patients
+
+Use seeded patients from `python -m scripts.seed_demo_data`:
+
+| Name | Date of birth | Email |
+| --- | --- | --- |
+| John Miller | 1985-04-12 | `john.miller@example.test` |
+| Ava Thompson | 1992-09-03 | `ava.thompson@example.test` |
+
+Slash-form DOB such as `1985/04/12` is accepted. Do not rely on names that are not in seed data (for example John Smith or Felipe Marques) unless you create a patient during the session.
+
+## Written-chat reliability QA
+
+Quick checks for routing and confirmation boundaries. Start a **new conversation** for each row unless noted.
+
+| Check | Steps | Expected outcome |
+| --- | --- | --- |
+| Orphan booking confirmation | Fresh conversation → send `Yes` | No booking confirmation; no appointment or email job created |
+| Contextual bare hour | Start booking → reach slot selection → send `Tuesday 15` when Tuesday slots are offered | Understood as `15:00` on Tuesday when unambiguous |
+| Pre-hold revision | During intake before a hold → send `On second thought, I'd like for Wednesday` | Scheduling clarification or revised availability — **not** identity intake |
+| Booking final decline | Complete hold + identity → at final confirmation send `No` | Booking aborted; hold released or cleared; no appointment; no confirmation email job |
+| Reschedule slot decline | In reschedule new-slot selection → send `No` | No reschedule; original appointment unchanged |
+| Human handoff priority | Mid-booking or mid-lookup → send `I need to speak to a person` | Handoff/escalation reply takes priority over the active flow |
+
 ## End-to-end demo script
 
 Run these steps in order using one conversation where noted. Use fictional demo patient data only.
@@ -67,6 +91,7 @@ Run these steps in order using one conversation where noted. Use fictional demo 
 | 4 | If DOB is ambiguous (`01/02/2000`), clarify format | Assistant asks MM/DD vs DD/MM before resolving |
 | 5 | Provide email when asked | Email accepted without redundant confirmation step |
 | 6 | Confirm booking (`yes`, `please book it`) | `booking_confirmed`; no internal IDs in reply |
+| 6b | *(alternate)* At final confirmation send `No` | Booking aborted; no appointment or email job |
 | 7 | `show my appointments` | Lists the new appointment in clinic-local time |
 | 8 | `reschedule my appointment` | Lists appointment or asks which; guides to new slot |
 | 9 | Pick a new offered time and confirm reschedule | Success message; original is superseded |
@@ -101,6 +126,25 @@ Run these steps in order using one conversation where noted. Use fictional demo 
 2. In the same conversation, say `reschedule my appointment`.
 3. **Expect:** skips full identity re-entry when patient is already resolved.
 
+### Selection and revision
+
+1. Reach offered slots or offered appointments with multiple choices.
+2. Select with `The one on Monday`, `The one at 14`, or an ordinal.
+3. Revise with `On second thought, I want the one at 14` or `Actually, Wednesday` before final confirmation.
+4. **Expect:** selection updates; no booking, cancel, or reschedule commit until explicit confirmation.
+
+### Booking final decline
+
+1. Complete hold and identity through to `booking_confirmation_required`.
+2. Reply `No`.
+3. **Expect:** polite abort; hold cleared or released; no `booking_confirmed`; no confirmation email job.
+
+### Reschedule new-slot decline
+
+1. Start reschedule for a seeded patient with an upcoming appointment.
+2. Reach new-slot selection and reply `No`.
+3. **Expect:** no reschedule; original appointment still listed on lookup.
+
 ### Post-completion new intent
 
 1. Complete a cancellation.
@@ -114,11 +158,16 @@ Run these steps in order using one conversation where noted. Use fictional demo 
 - `RESCHEDULED` appointments do not appear in lookup or cancel lists.
 - Booking never succeeds without a valid hold (or successful hold refresh at confirmation).
 
-## Out of scope
+## Out of scope for this script
 
-- Retell voice flows — test separately via Retell smoke docs.
-- Real Groq/Resend/Retell keys — optional; not required for this script.
-- Third-party patient management — not supported.
+These are intentionally outside the written-chat demo scope (see architecture doc):
+
+- Retell voice flows — test separately via Retell smoke docs
+- Real Groq/Resend/Retell keys — optional; not required for this script
+- Third-party patient management
+- Patient profile updates (email, address, insurance, medical records)
+- Clinical advice, emergency triage, unsafe/abusive message moderation
+- Live human agent connection (escalation creates internal records only)
 
 ## Automated coverage
 

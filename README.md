@@ -150,7 +150,7 @@ The goal is to build a realistic engineering artifact, not a one-shot generated 
 
 Architecture and runtime implementation are in progress.
 
-Implemented foundations include deterministic chat booking, **written-chat contextual appointment management** (booking, scheduled lookup, rescheduling, cancellation, patient identity reuse, and hold recovery), scheduling tools, clinic time configuration, Redis holds with channel-specific TTL, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, Retell web call service and public demo voice endpoint, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
+Implemented foundations include deterministic chat booking with **written-chat routing and intake reliability** (contextual scheduling expressions, hold routing, identity gates, selection/revision before confirmation, booking and reschedule decline behavior, intent switching, human handoff priority, and lookup follow-up), **written-chat contextual appointment management** (booking, scheduled lookup, rescheduling, cancellation, patient identity reuse, and hold recovery), scheduling tools, clinic time configuration, Redis holds with channel-specific TTL, background email jobs, human escalation, LLM provider boundaries (fake default; optional Groq and Bedrock), LLM reliability orchestration, receptionist response generation, offline LLM evaluation, Redis-backed public demo guardrails, Retell webhook security and tool adapter, Retell web call service and public demo voice endpoint, production-oriented configuration validation, Docker service commands, a public demo deployment runbook, and a Next.js public web demo shell in `web/`.
 
 Configuration and deployment:
 
@@ -225,7 +225,8 @@ The API handles chat, scheduling, and Retell routes. The worker consumes RabbitM
 
 - Redis-backed **public demo guardrails** on chat, Retell tools, appointments, and confirmation emails
 - **Fake/local providers** for development without real keys
-- **No real patient data** — fictional US clinic scenario only
+- **No real patient data** — fictional US clinic scenario only; manual written-chat tests use seeded patients John Miller and Ava Thompson
+- Written chat is a **deterministic simulator** focused on appointment workflow reliability — not clinical advice, live human agents, or full conversational AI
 - No auth/RBAC for public routes in the current demo scope
 
 Full deploy steps, health checks, smoke tests, rollback, and troubleshooting: [`docs/operations/public-demo-deployment.md`](docs/operations/public-demo-deployment.md).
@@ -234,7 +235,7 @@ Full deploy steps, health checks, smoke tests, rollback, and troubleshooting: [`
 
 The `web/` app is a minimal Next.js frontend for the portfolio public demo. It does not implement clinic business logic; chat and scheduling rules stay on the FastAPI backend.
 
-**Safety:** The demo models a **fictional US clinic**. Do not enter real patient names, contact details, or medical information.
+**Safety:** The demo models a **fictional US clinic**. Do not enter real patient names, contact details, or medical information. Written chat is a deterministic backend-orchestrated simulator focused on appointment workflow reliability — not a full production conversational AI or clinical decision-support system. Human escalation creates internal records only; it does not connect to a live agent in the demo. For manual testing, use seeded patients **John Miller** (1985-04-12) and **Ava Thompson** (1992-09-03).
 
 **What it includes:**
 
