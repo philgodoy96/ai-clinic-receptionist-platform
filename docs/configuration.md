@@ -86,7 +86,20 @@ See [Appointment Slot Holds](architecture/appointment-holds.md) and [Chat Appoin
 
 Postgres `EmailJob` records are the durable source of truth for delivery state. RabbitMQ carries wake-up messages only (`email_job_id`). Retry scheduling uses `next_attempt_at`; RabbitMQ TTL retry queues are not used for provider failures.
 
+Booking, reschedule, and escalation flows **create durable `EmailJob` records only**. Chat, scheduling API, and Retell routes do not call Resend (or any email provider) directly. A background worker sends through the configured `EmailDeliveryProvider`.
+
 Email delivery is **at-least-once**. Exactly-once delivery across Postgres and external providers is not guaranteed. When `EMAIL_PROVIDER=resend`, the worker passes `EmailJob.idempotency_key` (or an `email_job:{id}` fallback) to Resend as an `Idempotency-Key` header.
+
+### Provider modes
+
+| Mode | Setting | Use case |
+|------|---------|----------|
+| **Fake** (default) | `EMAIL_PROVIDER=fake` | Local development, CI, and smoke tests. No API keys required. Outbound messages are recorded in memory by `FakeEmailProvider`. |
+| **Resend** (opt-in) | `EMAIL_PROVIDER=resend` | Real outbound email through [Resend](https://resend.com). Requires `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`. Enable only in deployment secret managers — never commit real keys. |
+
+Resend is intentionally opt-in. Startup validation rejects `EMAIL_PROVIDER=resend` without `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`.
+
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -101,7 +114,99 @@ Email delivery is **at-least-once**. Exactly-once delivery across Postgres and e
 | `EMAIL_JOB_BACKOFF_MAX_SECONDS` | `900` | Maximum retry backoff delay in seconds |
 | `EMAIL_JOB_LOCK_TTL_SECONDS` | `300` | Worker lock duration while a job is `processing` |
 | `RESEND_API_KEY` | empty | Resend API key when `EMAIL_PROVIDER=resend` |
+| `RABBITMQ_URL` | local RabbitMQ URL | Required when `EMAIL_JOB_DISPATCH_ENABLED=true` |
 | `HUMAN_ESCALATION_NOTIFICATION_EMAIL` | demo staff email | Default staff notification recipient |
+
+### Runtime requirements
+
+Real appointment confirmation delivery requires all of the following:
+
+1. `EMAIL_PROVIDER=resend`
+2. Valid `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS` (from a verified sending domain or subdomain in Resend)
+3. A worker process running (`python -m scripts.run_email_job_worker` for polling, or `python -m scripts.run_email_worker` / `python -m scripts.run_email_job_consumer` when RabbitMQ dispatch is enabled)
+4. When `EMAIL_JOB_DISPATCH_ENABLED=true`: RabbitMQ reachable from API and worker, with dispatch enabled on the **API** so booking flows publish wake-up messages
+
+With `EMAIL_JOB_DISPATCH_ENABLED=false`, the polling worker can process due jobs without RabbitMQ wake-ups.
+
+Confirming a booking or reschedule creates a pending `EmailJob` and returns as soon as the appointment is committed. **Email is not sent until the worker processes the job.** Sending is asynchronous and best-effort.
+
+### Real Resend configuration
+
+Real outbound delivery is opt-in. Set these values locally or in a deployment secret manager — never commit real API keys or `.env`:
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<set locally, never commit>
+EMAIL_FROM_ADDRESS="AI Clinic Demo <appointments@email.example.com>"
+EMAIL_REPLY_TO=
+EMAIL_JOB_DISPATCH_ENABLED=false
+```
+
+Notes:
+
+- The project uses `EMAIL_FROM_ADDRESS` as the Resend `from` address. There is no separate `RESEND_FROM_EMAIL` setting.
+- The domain or subdomain in `EMAIL_FROM_ADDRESS` must be **verified in Resend** before sends succeed.
+- For local manual smoke with dispatch disabled, run `python -m scripts.run_email_job_worker --once` after confirming a booking or reschedule.
+- With `EMAIL_JOB_DISPATCH_ENABLED=true`, the API publishes wake-up messages and a RabbitMQ consumer (`python -m scripts.run_email_worker` or `python -m scripts.run_email_job_consumer`) processes jobs from the queue.
+
+### Resend sending domain and DNS
+
+Use a **verified domain or subdomain** for transactional mail. A dedicated subdomain is recommended for demo and portfolio deployments (for example `email.example.com`) so sending reputation stays isolated from your primary site domain.
+
+Resend requires DNS verification records on the sending domain, typically including:
+
+- **DKIM** — cryptographic signing for recipient providers
+- **SPF** — authorized sending hosts for the domain
+- **Return-Path** — bounce handling for the subdomain
+
+**DMARC** is recommended on the sending subdomain. For early demo or portfolio phases, a permissive policy is enough to start monitoring without blocking legitimate test mail:
+
+```txt
+v=DMARC1; p=none; pct=100
+```
+
+### Deliverability note
+
+This platform validates **technical delivery**, not guaranteed inbox placement. A successful send means the provider accepted the message, the `EmailJob` reached `sent`, and `provider_message_id` was stored. It does not mean the recipient will see the message in their primary inbox.
+
+End-to-end smoke testing with a verified subdomain and passing SPF, DKIM, and DMARC can still route mail to spam or junk at some mailbox providers (for example Outlook/Hotmail), while others may place it in the inbox. Folder placement depends on recipient-provider filtering and **sender reputation**, not DNS authentication alone.
+
+New domains and subdomains are especially likely to land in spam or junk until reputation builds. For production rollout, plan beyond DNS verification: gradual domain warm-up, consistent sending volume, bounce and complaint monitoring, and ongoing sender reputation monitoring. The application does not warm domains or manage deliverability reputation on your behalf.
+
+Public demos should keep `EMAIL_PROVIDER=fake` unless auth, rate limits, and cost controls are in place.
+
+### Appointment confirmation behavior
+
+| Trigger | Job type | Idempotency key |
+|---------|----------|-----------------|
+| Written-chat booking confirmation | `appointment_confirmation` | `appointment_confirmation:{appointment_id}` |
+| Scheduling API / Retell voice booking | `appointment_confirmation` | same |
+| Reschedule confirmation (new active appointment) | `appointment_confirmation` | same (keyed to the **new** appointment id) |
+
+Jobs store `recipient_email`, `patient_name`, `doctor_name`, `specialty_name`, and `appointment_start_time` when available. The worker renders plain-text subject/body at send time using **clinic-local** date and time (`CLINIC_TIMEZONE`). Templates avoid raw UTC timestamps. Reschedule confirmations use a distinct subject line when `confirmation_reason=reschedule` is present in the job payload.
+
+Appointment email content is transactional and structured. Booking confirmation and reschedule emails include appointment details when available: specialty, clinician, clinic-local date, and clinic-local time. Branded HTML templates are future work; mail is plain text today.
+
+Email delivery does not roll back confirmed appointments. A failed or missing email leaves the appointment in place.
+
+### Idempotency
+
+Appointment confirmation jobs use:
+
+```
+appointment_confirmation:{appointment_id}
+```
+
+A partial unique index on `email_jobs.idempotency_key` prevents duplicate confirmation jobs for the same appointment. Retries and worker crash recovery reuse the same job record; they do not create a second job for the same key. When `EMAIL_PROVIDER=resend`, the same key is passed to Resend as the `Idempotency-Key` header where supported.
+
+### Failure behavior
+
+| Condition | Behavior |
+|-----------|----------|
+| Missing `recipient_email` | Worker records `recipient_email_missing` on the job, retries until `EMAIL_JOB_MAX_ATTEMPTS`, then `failed` |
+| Provider send failure | Retries with exponential backoff via `next_attempt_at`; terminal `failed` after max attempts |
+| Successful send | Job `sent`, `provider_message_id` stored when the provider returns one |
+| Appointment already confirmed | Unaffected — email failure does not undo booking or reschedule |
 
 For local development and CI, keep:
 
@@ -110,15 +215,19 @@ EMAIL_PROVIDER=fake
 EMAIL_JOB_DISPATCH_ENABLED=false
 ```
 
-Optional Resend configuration for a hosted public demo:
+### Current limitations
 
-```env
-EMAIL_PROVIDER=resend
-RESEND_API_KEY=re_...
-EMAIL_FROM_ADDRESS=Clinic <noreply@example.com>
-```
+- **Cancellation emails** are not implemented; only booking and reschedule confirmations enqueue jobs today.
+- **Plain text only** — no rich branded HTML templates yet.
+- **Sender reputation** — verified DNS and `sent` job status confirm technical delivery only; inbox placement is not guaranteed. See [Deliverability note](#deliverability-note).
+- **Public demos** — keep `EMAIL_PROVIDER=fake` by default unless `PUBLIC_DEMO_GUARDRAILS_ENABLED` and cost controls are in place.
 
-See also: [Email Dispatch Reliability](architecture/email-dispatch-reliability.md).
+See also:
+
+- [Email Job Worker](architecture/email-job-worker.md)
+- [Email Confirmation Jobs](architecture/email-confirmation-jobs.md)
+- [Email Dispatch Reliability](architecture/email-dispatch-reliability.md)
+- [Local Development](operations/local-development.md) — manual smoke checklists
 
 ## LLM Provider
 

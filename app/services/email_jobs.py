@@ -119,8 +119,8 @@ class EmailJobService:
                 created=False,
             )
 
-        subject = "Appointment confirmation"
-        body = self._build_confirmation_body(payload)
+        subject = "Your appointment is confirmed"
+        body = "Pending delivery render."
         settings = get_settings()
         email_job = EmailJob(
             job_type=EmailJobType.APPOINTMENT_CONFIRMATION,
@@ -308,19 +308,6 @@ class EmailJobService:
     ) -> EmailJobOperationalMetrics:
         current_time = now or datetime.now(UTC)
         return self.repository.get_operational_metrics(now=current_time)
-
-    def _build_confirmation_body(
-        self,
-        payload: AppointmentConfirmationEmailJobCreate,
-    ) -> str:
-        patient_name = payload.patient_name or "there"
-        appointment_time = payload.appointment_start_time or "the scheduled time"
-        doctor_name = payload.doctor_name or "your clinician"
-
-        return (
-            f"Hello {patient_name}, your appointment with {doctor_name} "
-            f"has been confirmed for {appointment_time}."
-        )
 
     def _build_human_escalation_notification_body(
         self,

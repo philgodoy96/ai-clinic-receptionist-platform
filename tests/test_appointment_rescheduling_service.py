@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.domain.appointment_rescheduling import (
+    APPOINTMENT_RESCHEDULING_SOURCE,
     AppointmentReschedulingHoldExpiredError,
     AppointmentReschedulingMissingConfirmationError,
     AppointmentReschedulingMissingTargetError,
@@ -24,13 +25,19 @@ from app.domain.scheduling.enums import AppointmentStatus, AvailabilitySlotStatu
 from app.domain.voice_conversation import read_voice_context
 from app.models.appointment_reschedule_attempt import AppointmentRescheduleAttempt
 from app.models.conversations import Conversation
+from app.models.email_jobs import EmailJob
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.repositories.appointments import RescheduleAttemptCreateResult
 from app.services.appointment_holds import AppointmentHoldService
 from app.services.appointment_rescheduling import AppointmentReschedulingService
 from app.services.audit_logs import AuditLogService
 from app.services.conversations import ConversationService
-from app.services.email_jobs import EmailJobService
+from app.services.email_jobs import (
+    AppointmentConfirmationEmailJobCreate,
+    AppointmentConfirmationEmailJobResult,
+    EmailJobService,
+    build_appointment_confirmation_idempotency_key,
+)
 from tests.clinic_time_test_support import REFERENCE_CLINIC_NOW_UTC
 from tests.test_appointment_booking_api import FakeAuditLogService
 from tests.test_appointment_booking_service import (
@@ -38,9 +45,11 @@ from tests.test_appointment_booking_service import (
     FakeAppointmentRepository,
     FakeAvailabilitySlotRepository,
     FakeDoctorRepository,
+    FakePatientRepository,
 )
 from tests.test_conversations import FakeConversationRepository
 from tests.test_email_jobs import FakeEmailJobRepository
+from tests.test_scheduling_services import FakeSpecialtyRepository
 
 
 @dataclass
@@ -50,6 +59,7 @@ class ReschedulingContext:
     original_slot: AvailabilitySlot
     new_slot: AvailabilitySlot
     patient: Patient
+    specialty: Specialty
     doctor: Doctor
     appointment_repository: FakeAppointmentRepository
     slot_repository: FakeAvailabilitySlotRepository
@@ -231,6 +241,8 @@ def create_rescheduling_context(
         audit_logs=cast(AuditLogService, audit_logs),
         conversations=conversation_service,
         email_jobs=email_jobs,
+        patients=FakePatientRepository([patient]),
+        specialties=FakeSpecialtyRepository([specialty]),
     )
 
     return ReschedulingContext(
@@ -239,6 +251,7 @@ def create_rescheduling_context(
         original_slot=original_slot,
         new_slot=new_slot,
         patient=patient,
+        specialty=specialty,
         doctor=doctor,
         appointment_repository=appointment_repository,
         slot_repository=slot_repository,
@@ -464,3 +477,145 @@ def test_duplicate_audit_written_on_idempotent_retry() -> None:
     ]
     assert len(duplicate_records) == 1
     assert duplicate_records[0].event_metadata["duplicate"] is True
+
+
+class ExplodingEmailJobService:
+    def get_or_create_appointment_confirmation_email_job(
+        self,
+        payload: AppointmentConfirmationEmailJobCreate,
+    ) -> AppointmentConfirmationEmailJobResult:
+        raise RuntimeError("simulated email enqueue failure")
+
+
+def _confirmation_jobs(context: ReschedulingContext) -> list[EmailJob]:
+    return [
+        job
+        for job in context.email_repository.email_jobs
+        if job.job_type == EmailJobType.APPOINTMENT_CONFIRMATION
+    ]
+
+
+def test_reschedule_confirmation_email_job_targets_new_appointment() -> None:
+    context = create_rescheduling_context()
+
+    result = context.service.reschedule_appointment(_build_request(context))
+
+    confirmation_jobs = _confirmation_jobs(context)
+    assert len(confirmation_jobs) == 1
+    email_job = confirmation_jobs[0]
+    assert email_job.appointment_id == result.new_appointment_id
+    assert email_job.appointment_id != result.original_appointment_id
+
+
+def test_reschedule_confirmation_email_job_includes_patient_email() -> None:
+    context = create_rescheduling_context()
+
+    context.service.reschedule_appointment(_build_request(context))
+
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.recipient_email == context.patient.email
+
+
+def test_reschedule_confirmation_email_job_includes_patient_name() -> None:
+    context = create_rescheduling_context()
+
+    context.service.reschedule_appointment(_build_request(context))
+
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.payload["patient_name"] == context.patient.full_name
+
+
+def test_reschedule_confirmation_email_job_includes_doctor_name() -> None:
+    context = create_rescheduling_context()
+
+    context.service.reschedule_appointment(_build_request(context))
+
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.payload["doctor_name"] == context.doctor.full_name
+
+
+def test_reschedule_confirmation_email_job_includes_specialty_name() -> None:
+    context = create_rescheduling_context()
+
+    context.service.reschedule_appointment(_build_request(context))
+
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.payload["specialty_name"] == context.specialty.name
+
+
+def test_reschedule_confirmation_email_job_includes_confirmation_reason() -> None:
+    context = create_rescheduling_context()
+
+    context.service.reschedule_appointment(_build_request(context))
+
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.payload["confirmation_reason"] == "reschedule"
+    assert email_job.payload["source"] == APPOINTMENT_RESCHEDULING_SOURCE
+
+
+def test_reschedule_confirmation_email_job_uses_new_appointment_idempotency_key() -> None:
+    context = create_rescheduling_context()
+
+    result = context.service.reschedule_appointment(_build_request(context))
+
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.idempotency_key == build_appointment_confirmation_idempotency_key(
+        result.new_appointment_id,
+    )
+
+
+def test_reschedule_confirmation_email_enqueue_is_idempotent_for_same_appointment() -> None:
+    context = create_rescheduling_context()
+
+    result = context.service.reschedule_appointment(_build_request(context))
+    new_appointment = context.appointment_repository.get_by_id(result.new_appointment_id)
+    assert new_appointment is not None
+
+    payload = context.service._build_reschedule_confirmation_email_job_create(
+        request=_build_request(context),
+        new_appointment=new_appointment,
+    )
+    first = context.email_jobs.get_or_create_appointment_confirmation_email_job(payload)
+    second = context.email_jobs.get_or_create_appointment_confirmation_email_job(payload)
+
+    assert first.created is False
+    assert second.created is False
+    assert len(_confirmation_jobs(context)) == 1
+
+
+def test_reschedule_succeeds_when_patient_has_no_email() -> None:
+    context = create_rescheduling_context()
+    context.patient.email = cast(str, None)
+
+    result = context.service.reschedule_appointment(_build_request(context))
+
+    assert result.confirmation_email_created is True
+    email_job = _confirmation_jobs(context)[0]
+    assert email_job.recipient_email is None
+    assert context.original_appointment.status == AppointmentStatus.RESCHEDULED
+    new_appointment = context.appointment_repository.get_by_id(result.new_appointment_id)
+    assert new_appointment is not None
+    assert new_appointment.status == AppointmentStatus.SCHEDULED
+
+
+def test_reschedule_succeeds_when_email_enqueue_fails() -> None:
+    context = create_rescheduling_context()
+    context.service.email_jobs = ExplodingEmailJobService()  # type: ignore[assignment]
+
+    result = context.service.reschedule_appointment(_build_request(context))
+
+    assert result.confirmation_email_created is False
+    assert len(_confirmation_jobs(context)) == 0
+    assert context.original_appointment.status == AppointmentStatus.RESCHEDULED
+    new_appointment = context.appointment_repository.get_by_id(result.new_appointment_id)
+    assert new_appointment is not None
+    assert new_appointment.status == AppointmentStatus.SCHEDULED
+
+
+def test_reschedule_does_not_call_resend_provider_directly() -> None:
+    context = create_rescheduling_context()
+
+    context.service.reschedule_appointment(_build_request(context))
+
+    assert len(_confirmation_jobs(context)) == 1
+    assert context.service.email_jobs is context.email_jobs

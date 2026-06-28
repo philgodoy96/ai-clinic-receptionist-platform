@@ -219,6 +219,8 @@ def create_appointment_rescheduling_service_for_scheduling(
         reschedule_attempts=FakeAppointmentRescheduleAttemptRepository(),
         audit_logs=cast(AuditLogService, FakeAuditLogService()),
         conversations=conversations,
+        patients=scheduling.patients,
+        specialties=scheduling.specialties,
     )
 
 
