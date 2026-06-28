@@ -359,6 +359,8 @@ def get_appointment_rescheduling_service(
         audit_logs=audit_logs,
         conversations=ConversationService(repository=conversation_repository),
         email_jobs=email_jobs,
+        patients=SQLAlchemyPatientRepository(db),
+        specialties=SQLAlchemySpecialtyRepository(db),
     )
 
 

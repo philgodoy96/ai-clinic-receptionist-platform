@@ -554,6 +554,8 @@ def _create_chat_receptionist_service(
         reschedule_attempts=FakeAppointmentRescheduleAttemptRepository(),
         audit_logs=cast(AuditLogService, FakeAuditLogService()),
         conversations=conversations,
+        patients=scheduling.patients,
+        specialties=scheduling.specialties,
     )
     return ChatReceptionistService(
         conversations=conversations,
