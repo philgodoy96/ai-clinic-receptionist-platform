@@ -47,6 +47,7 @@ from app.services.patient_identity_resolution import (
 logger = logging.getLogger(__name__)
 
 _CTU_LOW_CONFIDENCE_THRESHOLD = 0.5
+_SELECTED_TIME_STILL_AVAILABLE_SUFFIX = " That time is still available."
 
 _SEEN_BEFORE_YES_PHRASES = (
     "yes",
@@ -916,16 +917,16 @@ class ChatBookingIdentityOrchestrator:
             prompt = appointment_management_missing_identity_prompt(
                 identity,
                 both_prompt=(
-                    "I still need your full name and date of birth to look up your profile. "
-                    "Your hold is still active."
+                    "I still need your full name and date of birth to look up your profile."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 name_prompt=(
-                    "Thanks. I still need your full name to look up your profile. "
-                    "Your hold is still active."
+                    "Thanks. I still need your full name to look up your profile."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 dob_prompt=(
-                    "Thanks. I still need your date of birth to look up your profile. "
-                    "Your hold is still active."
+                    "Thanks. I still need your date of birth to look up your profile."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
             )
             return BookingIdentityFlowResult(
@@ -1521,8 +1522,8 @@ class ChatBookingIdentityOrchestrator:
             return BookingIdentityFlowResult(
                 intent="booking_identity_missing",
                 content=(
-                    "I still need to confirm the appointment details before booking. "
-                    "Your hold is still active."
+                    "I still need to confirm the appointment details before booking."
+                    f"{_SELECTED_TIME_STILL_AVAILABLE_SUFFIX}"
                 ),
                 chat_context_updates=updates,
                 hold_id=hold_id,

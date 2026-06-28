@@ -6,6 +6,7 @@ from app.services.dob_ambiguity import (
     AMBIGUOUS_NUMERIC_DOB_REASON,
     detect_ambiguous_numeric_dob,
     parse_dob_ambiguity_confirmation,
+    parse_month_day_dob_clarification,
     try_resolve_pending_dob_ambiguity,
 )
 
@@ -114,3 +115,59 @@ def test_empty_or_missing_text_is_not_ambiguous() -> None:
     assert detect_ambiguous_numeric_dob(None) is None
     assert detect_ambiguous_numeric_dob("") is None
     assert detect_ambiguous_numeric_dob("no date here") is None
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_iso"),
+    [
+        ("I meant Sept 8th", "1980-09-08"),
+        ("Sept 8", "1980-09-08"),
+        ("September 8", "1980-09-08"),
+        ("Sep 8th", "1980-09-08"),
+        ("I meant August 9th", "1980-08-09"),
+    ],
+)
+def test_parse_month_day_dob_clarification_reuses_pending_year(
+    message: str,
+    expected_iso: str,
+) -> None:
+    assert parse_month_day_dob_clarification(message, year=1980) == expected_iso
+
+
+def test_parse_month_day_dob_clarification_ignores_explicit_year() -> None:
+    assert parse_month_day_dob_clarification("September 8, 1981", year=1980) is None
+
+
+def test_try_resolve_pending_dob_ambiguity_accepts_month_day_without_year() -> None:
+    context = {
+        "pending_dob_ambiguity": {
+            "proposed_iso": "1980-09-08",
+            "alternative_iso": "1980-08-09",
+        },
+    }
+
+    confirmed, rejection = try_resolve_pending_dob_ambiguity("I meant Sept 8th", context)
+
+    assert confirmed == "1980-09-08"
+    assert rejection is None
+
+
+def test_try_resolve_pending_dob_ambiguity_accepts_alternate_month_day_without_year() -> None:
+    context = {
+        "pending_dob_ambiguity": {
+            "proposed_iso": "1980-09-08",
+            "alternative_iso": "1980-08-09",
+        },
+    }
+
+    confirmed, rejection = try_resolve_pending_dob_ambiguity("I meant August 9th", context)
+
+    assert confirmed == "1980-08-09"
+    assert rejection is None
+
+
+def test_month_day_without_year_requires_pending_ambiguity_context() -> None:
+    confirmed, rejection = try_resolve_pending_dob_ambiguity("I meant Sept 8th", {})
+
+    assert confirmed is None
+    assert rejection is None
