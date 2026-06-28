@@ -129,7 +129,8 @@ Implemented:
 - Scheduling-aware chat flow with read-only specialty and doctor responses
 - Chat availability guidance
 - Chat appointment hold flow
-- Chat booking confirmation flow with patient identity parsing and confirmation email enqueue
+- Chat booking confirmation flow with patient identity parsing, partial identity memory, ambiguous DOB clarification, written-chat email handling without redundant confirmation, and confirmation email enqueue
+- Written-chat contextual appointment management: scheduled lookup, cancellation, rescheduling, resolved patient identity reuse, channel-specific hold TTL, expired hold recovery at booking confirmation, reschedule status semantics, prompt/state alignment for single-slot yes/no hold prompts, and post-completion routing for new intents in the same conversation (see `docs/architecture/chat-appointment-management.md`)
 - Fake LLM provider foundation with structured output parsing and shadow analysis metadata
 - Real LLM provider adapter with configurable `FakeLLMProvider` default, optional Groq adapter for hosted public demo, and optional Bedrock adapter
 - Structured-output-assisted slot filling with validated merge into `chat_context`
@@ -168,8 +169,6 @@ Upcoming:
 - richer response-quality evaluation dataset for receptionist phrasing
 - Prompt regression reports
 - Voice provider transfer integration
-- Written chat reschedule flow
-- Written chat cancellation flow
 - Chat message/client idempotency for duplicate POST requests
 - Durable action idempotency for duplicate chat scheduling actions
 - Dedicated LLM run persistence table (`llm_runs`)
@@ -183,7 +182,7 @@ Upcoming:
 - Assignment notification job
 - Staff notification provider adapter
 - Cost tracking aggregation
-- Hold expiration handling in chat
+- Hold expiration handling in chat — partial: refresh at final booking confirmation; no mid-flow renewal
 - Demo reset strategy
 
 ## Stage 7 — Retell Tool Integration
@@ -219,7 +218,6 @@ Implemented:
 Upcoming:
 
 - Tool call recording
-- Written chat reschedule flow
 - Patient-aware hold recovery for authenticated patient sessions
 - Dynamic doctor schedule engine, production rolling schedule rules, and background availability generation jobs
 - Admin schedule management

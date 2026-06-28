@@ -68,7 +68,19 @@ See also: [Scheduling Application Services](architecture/scheduling-services.md)
 | `DATABASE_URL` | local PostgreSQL URL | SQLAlchemy database URL |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
 | `RABBITMQ_URL` | local RabbitMQ URL | RabbitMQ connection URL |
-| `APPOINTMENT_HOLD_TTL_SECONDS` | `300` | Redis hold TTL in seconds |
+| `APPOINTMENT_HOLD_TTL_SECONDS` | `300` | Redis hold TTL in seconds for Retell voice and default holds |
+| `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` | `600` | Redis hold TTL in seconds for written-chat holds (longer so users can pause while typing) |
+
+For local development and CI:
+
+```env
+APPOINTMENT_HOLD_TTL_SECONDS=300
+CHAT_APPOINTMENT_HOLD_TTL_SECONDS=600
+```
+
+Written chat booking and reschedule holds use `CHAT_APPOINTMENT_HOLD_TTL_SECONDS`. Retell voice tools use `APPOINTMENT_HOLD_TTL_SECONDS`. Hold TTL is backend-owned; provider tool arguments cannot extend it.
+
+See [Appointment Slot Holds](architecture/appointment-holds.md) and [Chat Appointment Management](architecture/chat-appointment-management.md).
 
 ## Email Jobs
 
@@ -313,6 +325,7 @@ Controls whether chat uses the structured turn understanding interpreter for:
 
 - **Appointment intake** — specialty, doctor, date, time, soonest intent, and offered-doctor selection before availability routing
 - **Booking identity intake** — patient status and identity fields during hold confirmation
+- **Appointment management** — optional identity extraction during lookup, cancel, and reschedule `patient_identity` steps
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -354,9 +367,9 @@ CHAT_TURN_UNDERSTANDING_INTERPRETER=disabled
 
 Do not expose public Groq-backed chat turn understanding without authentication, rate limits, and cost controls.
 
-This setting does not change public Chat API schemas, hold creation rules, booking confirmation, cancellation, rescheduling, or Retell behavior.
+This setting does not change public Chat API schemas, hold creation rules, booking confirmation, or Retell behavior. Appointment management flows (lookup, cancel, reschedule) use the same orchestration and domain services regardless of interpreter mode.
 
-See [Chat Turn Understanding Architecture](architecture/chat-turn-understanding.md) and [Chat Appointment Intake Manual Testing](testing/chat-appointment-intake.md).
+See [Chat Turn Understanding Architecture](architecture/chat-turn-understanding.md), [Chat Appointment Management](architecture/chat-appointment-management.md), and [Chat Appointment Intake Manual Testing](testing/chat-appointment-intake.md).
 
 ## Deployment Environment Templates
 

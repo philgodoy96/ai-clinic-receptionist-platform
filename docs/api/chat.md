@@ -142,11 +142,26 @@ The chat API may return intents such as:
 
 This implementation is read-only for specialty and doctor listing.
 
-It does not:
+It does not call an LLM for public reply selection.
 
-- cancel appointments
-- reschedule appointments
-- call an LLM
+## Appointment Management (Written Chat)
+
+Written chat supports contextual appointment management in the same conversation:
+
+- **Book** — intake, hold, identity, confirmation (see [Appointment Holds](#appointment-holds) and [Booking Confirmation](#booking-confirmation))
+- **List scheduled appointments** — `show my appointments`, `check my appointments`
+- **Reschedule** — select appointment, pick new slot, explicit confirmation
+- **Cancel** — identity, selection, explicit confirmation
+
+Architecture: [Chat Appointment Management](../architecture/chat-appointment-management.md).
+
+Manual testing: [Chat Appointment Management Manual Testing](../testing/chat-appointment-management.md).
+
+Core principle:
+
+    The LLM understands. The backend validates and decides. Domain services execute.
+
+Retell voice uses separate provider-orchestrated tool routes; this section applies to written chat only.
 
 ## Availability Guidance
 
@@ -216,7 +231,9 @@ Example flow:
 
 The hold is not a booking.
 
-The hold may expire.
+Written chat holds use `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` (default **600** seconds). Retell voice holds use `APPOINTMENT_HOLD_TTL_SECONDS` (default **300** seconds).
+
+The hold may expire. If it expires at final booking confirmation while the slot is still available, the backend attempts to refresh the hold before booking.
 
 The API may return these intents:
 
@@ -233,18 +250,16 @@ This phase does not:
 
 ## Booking Confirmation
 
-After a temporary hold is created, the Chat API can confirm the booking when the user provides patient identity and explicit confirmation.
+After a temporary hold is created, the Chat API collects patient identity and requires explicit confirmation before booking.
 
-Required patient identity fields:
+Identity collection supports:
 
-- full_name
-- date_of_birth
-- phone
-- email
+- partial field memory (name or DOB alone → ask only for the missing field)
+- ambiguous numeric DOB clarification
+- resolved patient context reuse in later management flows
+- written-chat email acceptance without a redundant confirmation step when the user types a valid address
 
-The current deterministic parser supports simple structured messages such as:
-
-    My name is Jane Doe, DOB 1990-01-15, phone +15551234567, email jane@example.com. Confirm.
+Required fields vary by patient type (new vs returning). Email is required for confirmation delivery.
 
 The API may return these intents:
 
@@ -303,11 +318,10 @@ Examples:
 
 This implementation does not yet include:
 
-- LLM-driven reply or intent selection in the public API response
-- Appointment cancellation from chat
-- Appointment rescheduling from chat
-- Conversation state machine
-- Escalation assignment workflow
-- Retell webhook ingestion
+- LLM-driven reply or intent selection in the public API response (optional LLM phrasing via `RECEPTIONIST_RESPONSE_MODE=llm` is separate)
+- Third-party or family-member patient management
+- Rich patient portal features beyond scheduled appointment lookup
+- Conversation state machine as a separate public API surface
+- Retell webhook ingestion from chat routes
 
-Those capabilities are planned for later implementation phases.
+Public demo routes remain unauthenticated. Real provider integrations should be protected by auth, rate limits, and cost controls.
