@@ -362,6 +362,10 @@ _GENERIC_SCHEDULING_FALLBACK_MESSAGE = (
     "I can help with clinic scheduling questions. Please tell me whether "
     "you want to book, cancel, or reschedule an appointment."
 )
+_IDENTITY_ONLY_MENU_MESSAGE = (
+    "Thanks. I can help you book, reschedule, cancel, or check appointments. "
+    "What would you like to do?"
+)
 _SLOT_SELECTION_REPROMPT_MESSAGE = (
     "Please choose one of the appointment times I offered."
 )
@@ -3199,6 +3203,16 @@ class ChatReceptionistService:
             offered_slots=offered_slots,
             merged_context=merged_context,
         ):
+            if self._is_identity_only_without_scheduling_context(
+                message=message,
+                merged_context=merged_context,
+                has_identity_fields=has_identity_fields,
+            ):
+                return ChatReceptionistReply(
+                    intent=ChatReceptionistIntent.FALLBACK,
+                    content=_IDENTITY_ONLY_MENU_MESSAGE,
+                    chat_context_updates=context_updates,
+                )
             return None
 
         existing_raw = merged_context.get("patient_identity")
@@ -3268,9 +3282,68 @@ class ChatReceptionistService:
             return True
 
         if has_identity_fields and not hold_id:
-            return True
+            if merged_context is None:
+                return False
+            return self._has_active_scheduling_context_for_booking_identity(
+                merged_context,
+            )
 
         return False
+
+    def _has_active_scheduling_context_for_booking_identity(
+        self,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        if merged_context.get("hold_id"):
+            return True
+        if self._booking_identity.is_active(merged_context):
+            return True
+        if merged_context.get("offered_slots"):
+            return True
+        if merged_context.get("appointment_intake_awaiting"):
+            return True
+        if merged_context.get("selected_availability_slot_id"):
+            return True
+        return False
+
+    def _message_has_scheduling_intent(
+        self,
+        *,
+        message: str,
+        normalized_message: str,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        if self.responder._contains_any(normalized_message, _APPOINTMENT_KEYWORDS):
+            return True
+        if self.responder._contains_any(normalized_message, _AVAILABILITY_KEYWORDS):
+            return True
+        if self.responder._contains_any(normalized_message, _HOLD_KEYWORDS):
+            return True
+        if self._match_specialty_in_message(normalized_message) is not None:
+            return True
+        if self._match_doctor_in_message(normalized_message) is not None:
+            return True
+        return self._is_hold_request(normalized_message, merged_context, message)
+
+    def _is_identity_only_without_scheduling_context(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+        has_identity_fields: bool,
+    ) -> bool:
+        if not has_identity_fields:
+            return False
+        if self._has_active_scheduling_context_for_booking_identity(merged_context):
+            return False
+        normalized_message = message.lower()
+        if self._message_has_scheduling_intent(
+            message=message,
+            normalized_message=normalized_message,
+            merged_context=merged_context,
+        ):
+            return False
+        return True
 
     def _attempt_booking(
         self,

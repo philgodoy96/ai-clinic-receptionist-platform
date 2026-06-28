@@ -124,7 +124,7 @@ def test_rendered_request_includes_conversation_state_and_expected_response_type
     request = build_interpretation_request(
         conversation_state=ConversationState.COLLECTING_PATIENT_IDENTITY,
         expected_response_type=ExpectedResponseType.PATIENT_IDENTITY,
-        latest_user_message="Felipe Marques, Sep 19th 1996",
+        latest_user_message="John Smith, Sep 19th 1996",
     )
 
     interpreter.interpret(request)

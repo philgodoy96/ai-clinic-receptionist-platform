@@ -694,7 +694,7 @@ def test_new_patient_name_then_slash_dob_is_accepted() -> None:
     # The new-patient flow collects identity step-by-step: the name turn only
     # captures the name and asks for the DOB next, so the slash DOB is supplied
     # on the following turn.
-    send_chat_messages(service, conversation.id, ("No.", "Felipe Marques"))
+    send_chat_messages(service, conversation.id, ("No.", "John Smith"))
     result = service.handle_message(
         ChatMessageInput(message="19/09/1996", conversation_id=conversation.id),
     )
@@ -704,7 +704,7 @@ def test_new_patient_name_then_slash_dob_is_accepted() -> None:
     assert "just to confirm" not in reply
     assert "email" in reply
     chat_context = result.conversation.conversation_metadata["chat_context"]
-    assert chat_context["patient_identity"]["full_name"] == "Felipe Marques"
+    assert chat_context["patient_identity"]["full_name"] == "John Smith"
     assert chat_context["patient_identity"]["date_of_birth"] == "1996-09-19"
 
 
