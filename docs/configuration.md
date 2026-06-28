@@ -165,7 +165,15 @@ Resend requires DNS verification records on the sending domain, typically includ
 v=DMARC1; p=none; pct=100
 ```
 
-Even with SPF, DKIM, and DMARC passing, **new domains and subdomains may still land in spam or junk** until sender reputation builds. Production deployments should use verified sending domains and operational monitoring (Resend dashboard, job failure metrics). Public demos should keep `EMAIL_PROVIDER=fake` unless auth, rate limits, and cost controls are in place.
+### Deliverability note
+
+This platform validates **technical delivery**, not guaranteed inbox placement. A successful send means the provider accepted the message, the `EmailJob` reached `sent`, and `provider_message_id` was stored. It does not mean the recipient will see the message in their primary inbox.
+
+End-to-end smoke testing with a verified subdomain and passing SPF, DKIM, and DMARC can still route mail to spam or junk at some mailbox providers (for example Outlook/Hotmail), while others may place it in the inbox. Folder placement depends on recipient-provider filtering and **sender reputation**, not DNS authentication alone.
+
+New domains and subdomains are especially likely to land in spam or junk until reputation builds. For production rollout, plan beyond DNS verification: gradual domain warm-up, consistent sending volume, bounce and complaint monitoring, and ongoing sender reputation monitoring. The application does not warm domains or manage deliverability reputation on your behalf.
+
+Public demos should keep `EMAIL_PROVIDER=fake` unless auth, rate limits, and cost controls are in place.
 
 ### Appointment confirmation behavior
 
@@ -211,7 +219,7 @@ EMAIL_JOB_DISPATCH_ENABLED=false
 
 - **Cancellation emails** are not implemented; only booking and reschedule confirmations enqueue jobs today.
 - **Plain text only** — no rich branded HTML templates yet.
-- **Sender reputation** — verified DNS does not guarantee inbox placement; new subdomains may land in spam/junk.
+- **Sender reputation** — verified DNS and `sent` job status confirm technical delivery only; inbox placement is not guaranteed. See [Deliverability note](#deliverability-note).
 - **Public demos** — keep `EMAIL_PROVIDER=fake` by default unless `PUBLIC_DEMO_GUARDRAILS_ENABLED` and cost controls are in place.
 
 See also:
