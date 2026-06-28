@@ -91,6 +91,7 @@ from app.services.chat_appointment_lookup import (
     APPOINTMENT_MANAGEMENT_MODE_LOOKUP,
     ChatAppointmentLookupOrchestrator,
     LookupFlowResult,
+    is_appointment_lookup_message,
 )
 from app.services.chat_appointment_lookup import (
     APPOINTMENT_MANAGEMENT_AWAITING_PATIENT_IDENTITY as LOOKUP_AWAITING_PATIENT_IDENTITY,
@@ -124,6 +125,7 @@ from app.services.chat_booking_identity import (
 from app.services.chat_confirmation import (
     ConfirmationType,
     is_confirmation_confirmed,
+    is_simple_affirmative,
     normalize_email_address,
     normalize_patient_display_name,
 )
@@ -165,6 +167,10 @@ from app.services.post_booking_turn import (
 from app.services.post_cancellation_turn import (
     PostCancellationTurnDecision,
     classify_post_cancellation_turn,
+)
+from app.services.post_completion_turn_classification import (
+    POST_COMPLETION_ACTIONABLE_DECISIONS,
+    PostCompletionTurnDecision,
 )
 from app.services.post_reschedule_turn import (
     PostRescheduleTurnDecision,
@@ -226,20 +232,6 @@ _RESCHEDULE_KEYWORDS = [
     "move appointment",
     "move my appointment",
     "move an appointment",
-]
-_APPOINTMENT_LOOKUP_PHRASES = [
-    "show my scheduled appointments",
-    "see my scheduled appointments",
-    "what my scheduled appointments",
-    "see what my scheduled appointments",
-    "what appointments do i have",
-    "what are my upcoming appointments",
-    "can i see my appointments",
-    "do i have any appointments scheduled",
-    "list my appointments",
-    "view my appointments",
-    "my upcoming appointments",
-    "my scheduled appointments",
 ]
 _CANCELLATION_IDENTITY_ENTRY_MESSAGE = (
     "Of course. I can look it up first. What is the patient's full name and date of birth?"
@@ -498,21 +490,45 @@ def _build_contextual_fallback_reply(chat_context: dict[str, Any]) -> str | None
 
 
 def _is_appointment_lookup_request(normalized_message: str) -> bool:
-    if any(keyword in normalized_message for keyword in _CANCEL_KEYWORDS):
-        return False
-    if any(keyword in normalized_message for keyword in _RESCHEDULE_KEYWORDS):
-        return False
-    if any(phrase in normalized_message for phrase in _APPOINTMENT_LOOKUP_PHRASES):
-        return True
-    if "book" in normalized_message and "appointment" in normalized_message:
-        return False
-    if "upcoming" in normalized_message and "appointment" in normalized_message:
-        return True
-    if "scheduled" in normalized_message and "appointment" in normalized_message:
-        viewing_verbs = ("see", "show", "list", "view", "check", "look up", "lookup")
-        if any(verb in normalized_message for verb in viewing_verbs):
-            return True
-    return False
+    return is_appointment_lookup_message(normalized_message)
+
+
+def _cleared_appointment_management_completed_flow_updates() -> dict[str, Any]:
+    """Clear stale appointment-management frame keys after a completed flow."""
+    return {
+        "appointment_management_mode": None,
+        "appointment_management_awaiting": None,
+        "cancellation_status": None,
+        "reschedule_status": None,
+        "lookup_status": None,
+        "offered_appointments": None,
+        "offered_slots": [],
+        "appointment_intake_awaiting": None,
+    }
+
+
+def _cleared_post_conversation_terminal_updates() -> dict[str, Any]:
+    """Clear completed-flow keys after the user closes the conversation."""
+    return {
+        **_cleared_appointment_management_completed_flow_updates(),
+        "appointment_id": None,
+        "booking_identity_step": None,
+    }
+
+
+def _cleared_completed_flow_for_new_intent_updates() -> dict[str, Any]:
+    """Clear completed-flow keys so a new intent can start in the same conversation."""
+    return {
+        **_cleared_appointment_management_completed_flow_updates(),
+        "appointment_id": None,
+        "booking_identity_step": None,
+    }
+
+
+def _post_completion_decision_is_actionable(
+    decision: PostCompletionTurnDecision,
+) -> bool:
+    return decision in POST_COMPLETION_ACTIONABLE_DECISIONS
 
 
 def _parse_natural_date_of_birth(message: str) -> str | None:
@@ -613,6 +629,21 @@ def _is_in_post_cancellation_frame(chat_context: dict[str, Any]) -> bool:
     ):
         return False
     if chat_context.get("cancellation_status") != "cancelled":
+        return False
+    if chat_context.get("hold_id"):
+        return False
+    if chat_context.get("appointment_intake_awaiting"):
+        return False
+    booking_step = chat_context.get("booking_identity_step")
+    if isinstance(booking_step, str) and booking_step != (
+        ChatBookingIdentityStep.BOOKING_COMPLETED.value
+    ):
+        return False
+    return True
+
+
+def _is_in_post_booking_follow_up_frame(chat_context: dict[str, Any]) -> bool:
+    if not chat_context.get("appointment_id"):
         return False
     if chat_context.get("hold_id"):
         return False
@@ -1600,42 +1631,120 @@ class ChatReceptionistService:
             stale_confirmation_cleanup = self._cleared_hold_context_updates()
             existing_context = {**existing_context, **stale_confirmation_cleanup}
 
+        completed_flow_cleanup: dict[str, Any] = {}
+
         if _is_in_post_cancellation_frame(existing_context):
-            post_cancellation_reply = self._handle_post_cancellation_message(
+            cancellation_decision = self._resolve_post_cancellation_decision(
                 message=message,
-                merged_context=existing_context,
+                chat_context=existing_context,
             )
-            if post_cancellation_reply is not None:
-                return post_cancellation_reply
+            if cancellation_decision is PostCancellationTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    self._post_cancellation_reply_for_decision(
+                        decision=cancellation_decision,
+                        context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(
+                PostCompletionTurnDecision(cancellation_decision.value),
+            ):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                existing_context = {**existing_context, **completed_flow_cleanup}
+            else:
+                post_cancellation_reply = self._post_cancellation_reply_for_decision(
+                    decision=cancellation_decision,
+                    context_updates={},
+                )
+                if post_cancellation_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_cancellation_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
 
         if _is_in_post_reschedule_frame(existing_context):
-            post_reschedule_reply = self._handle_post_reschedule_message(
+            reschedule_decision = self._resolve_post_reschedule_decision(
                 message=message,
-                merged_context=existing_context,
+                chat_context=existing_context,
             )
-            if post_reschedule_reply is not None:
-                return post_reschedule_reply
+            if reschedule_decision is PostRescheduleTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    self._post_reschedule_reply_for_decision(
+                        decision=reschedule_decision,
+                        context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(
+                PostCompletionTurnDecision(reschedule_decision.value),
+            ):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                existing_context = {**existing_context, **completed_flow_cleanup}
+            else:
+                post_reschedule_reply = self._post_reschedule_reply_for_decision(
+                    decision=reschedule_decision,
+                    context_updates={},
+                )
+                if post_reschedule_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_reschedule_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
+
+        if _is_in_post_booking_follow_up_frame(existing_context):
+            post_booking_understanding = self._resolve_post_booking_decision(
+                message=message,
+                chat_context=existing_context,
+            )
+            booking_decision = post_booking_understanding.decision
+            if booking_decision is PostBookingTurnDecision.END_CONVERSATION:
+                completed_flow_cleanup = _cleared_post_conversation_terminal_updates()
+                return self._finish_reply_with_context(
+                    self._post_booking_reply_for_decision(
+                        decision=booking_decision,
+                        appointment_id=existing_context["appointment_id"],
+                        hold_id=existing_context.get("hold_id"),
+                        context_updates=completed_flow_cleanup,
+                    ),
+                    stale_confirmation_cleanup=stale_confirmation_cleanup,
+                    completed_flow_cleanup=completed_flow_cleanup,
+                )
+            if _post_completion_decision_is_actionable(
+                PostCompletionTurnDecision(booking_decision.value),
+            ):
+                completed_flow_cleanup = _cleared_completed_flow_for_new_intent_updates()
+                existing_context = {**existing_context, **completed_flow_cleanup}
+            else:
+                post_booking_reply = self._post_booking_reply_for_decision(
+                    decision=booking_decision,
+                    appointment_id=existing_context["appointment_id"],
+                    hold_id=existing_context.get("hold_id"),
+                    context_updates={},
+                )
+                if post_booking_reply is not None:
+                    return self._finish_reply_with_context(
+                        post_booking_reply,
+                        stale_confirmation_cleanup=stale_confirmation_cleanup,
+                        completed_flow_cleanup=completed_flow_cleanup,
+                    )
 
         date_extraction = self._extract_requested_date(message)
         time_extraction = self._extract_time_preference(message)
 
         def finish(reply: ChatReceptionistReply) -> ChatReceptionistReply:
-            if stale_confirmation_cleanup:
-                reply = replace(
-                    reply,
-                    chat_context_updates={
-                        **stale_confirmation_cleanup,
-                        **reply.chat_context_updates,
-                    },
-                )
-            if date_extraction.date_parsing is not None:
-                reply = replace(reply, date_parsing=date_extraction.date_parsing)
-            if time_extraction.time_preference_parsing is not None:
-                reply = replace(
-                    reply,
-                    time_preference_parsing=time_extraction.time_preference_parsing,
-                )
-            return reply
+            return self._finish_reply_with_context(
+                reply,
+                stale_confirmation_cleanup=stale_confirmation_cleanup,
+                completed_flow_cleanup=completed_flow_cleanup,
+                date_extraction=date_extraction,
+                time_extraction=time_extraction,
+            )
 
         if _is_in_cancellation_flow(existing_context):
             return finish(
@@ -2709,6 +2818,7 @@ class ChatReceptionistService:
             PostCancellationTurnDecision.NEW_SCHEDULING_REQUEST,
             PostCancellationTurnDecision.CANCEL_REQUEST,
             PostCancellationTurnDecision.RESCHEDULE_REQUEST,
+            PostCancellationTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
         }:
             return None
 
@@ -2763,6 +2873,7 @@ class ChatReceptionistService:
             PostRescheduleTurnDecision.NEW_SCHEDULING_REQUEST,
             PostRescheduleTurnDecision.CANCEL_REQUEST,
             PostRescheduleTurnDecision.RESCHEDULE_REQUEST,
+            PostRescheduleTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
         }:
             return None
 
@@ -2819,6 +2930,7 @@ class ChatReceptionistService:
             PostBookingTurnDecision.NEW_SCHEDULING_REQUEST,
             PostBookingTurnDecision.CANCEL_REQUEST,
             PostBookingTurnDecision.RESCHEDULE_REQUEST,
+            PostBookingTurnDecision.APPOINTMENT_LOOKUP_REQUEST,
         }:
             return None
 
@@ -3377,6 +3489,36 @@ class ChatReceptionistService:
             "pending_confirmation_email": None,
             "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_DATE_OR_TIME,
         }
+
+    @staticmethod
+    def _finish_reply_with_context(
+        reply: ChatReceptionistReply | None,
+        *,
+        stale_confirmation_cleanup: dict[str, Any],
+        completed_flow_cleanup: dict[str, Any],
+        date_extraction: _RequestedDateExtraction | None = None,
+        time_extraction: _TimePreferenceExtraction | None = None,
+    ) -> ChatReceptionistReply:
+        if reply is None:
+            msg = "expected a receptionist reply"
+            raise ValueError(msg)
+
+        context_updates = dict(reply.chat_context_updates)
+        if stale_confirmation_cleanup:
+            context_updates = {**stale_confirmation_cleanup, **context_updates}
+        if completed_flow_cleanup:
+            context_updates = {**completed_flow_cleanup, **context_updates}
+        if context_updates != reply.chat_context_updates:
+            reply = replace(reply, chat_context_updates=context_updates)
+
+        if date_extraction is not None and date_extraction.date_parsing is not None:
+            reply = replace(reply, date_parsing=date_extraction.date_parsing)
+        if time_extraction is not None and time_extraction.time_preference_parsing is not None:
+            reply = replace(
+                reply,
+                time_preference_parsing=time_extraction.time_preference_parsing,
+            )
+        return reply
 
     def _resolve_patient_for_booking(
         self,
@@ -4997,6 +5139,12 @@ class ChatReceptionistService:
     ) -> bool:
         offered_slots = merged_context.get("offered_slots") or []
 
+        if self._is_single_slot_affirmative_hold_selection(
+            message=message,
+            merged_context=merged_context,
+        ):
+            return True
+
         if offered_slots and "book" in normalized_message:
             return True
 
@@ -5013,6 +5161,22 @@ class ChatReceptionistService:
             return True
 
         return self._extract_iso_datetime(message) is not None
+
+    def _is_single_slot_affirmative_hold_selection(
+        self,
+        *,
+        message: str,
+        merged_context: dict[str, Any],
+    ) -> bool:
+        offered_slots = merged_context.get("offered_slots") or []
+        if len(offered_slots) != 1:
+            return False
+        if (
+            merged_context.get("appointment_intake_awaiting")
+            != APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION
+        ):
+            return False
+        return is_simple_affirmative(message)
 
     def _handle_hold_flow(
         self,
@@ -5053,6 +5217,12 @@ class ChatReceptionistService:
             )
 
         selected_slot = selection.slot
+
+        if selected_slot is None and self._is_single_slot_affirmative_hold_selection(
+            message=message,
+            merged_context=merged_context,
+        ):
+            selected_slot = offered_slots[0]
 
         if selected_slot is None:
             if self._message_has_slot_selection_attempt(normalized_message, message):

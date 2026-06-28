@@ -43,9 +43,15 @@ def _lookup_message() -> str:
     "message",
     [
         "show my scheduled appointments",
+        "show my appointments",
+        "check my appointments",
+        "see my appointments",
         "what appointments do I have?",
         "what are my upcoming appointments?",
         "can I see my appointments?",
+        "Can I check my appointments?",
+        "I'd like to check my appointments",
+        "I'd like to see my appointments",
         _lookup_message(),
         "do I have any appointments scheduled?",
     ],
@@ -117,7 +123,8 @@ def test_lookup_with_resolved_patient_lists_without_identity_prompt() -> None:
 
     assert result.intent == ChatReceptionistIntent.LIST_APPOINTMENTS
     assert "full name" not in result.reply.lower()
-    assert "Here are your upcoming scheduled appointments" in result.reply
+    assert "Here is your upcoming scheduled appointment:" in result.reply
+    assert "cancel or reschedule this appointment?" in result.reply.lower()
     assert "Dermatology with Dr. Emily Carter" in result.reply
     assert "Wednesday, July 8" in result.reply
     assert "10:00" in result.reply
@@ -125,6 +132,42 @@ def test_lookup_with_resolved_patient_lists_without_identity_prompt() -> None:
     chat_context = result.conversation.conversation_metadata["chat_context"]
     assert chat_context.get("resolved_patient_id") == str(patient.id)
     assert chat_context_id_not_exposed(result.reply, chat_context=chat_context)
+
+
+def test_lookup_single_appointment_uses_singular_wording() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _add_appointments(
+        service,
+        [
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+    started = service.handle_message(ChatMessageInput(message="hello"))
+    service.conversations.merge_chat_context(
+        conversation_id=started.conversation.id,
+        chat_context={
+            "resolved_patient_id": str(patient.id),
+            "resolved_patient_name": patient.full_name,
+            "resolved_patient_date_of_birth": patient.date_of_birth.isoformat(),
+        },
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="check my appointments",
+            conversation_id=started.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.LIST_APPOINTMENTS
+    assert "Here is your upcoming scheduled appointment:" in result.reply
+    assert "cancel or reschedule this appointment?" in result.reply
+    assert "Here are your upcoming scheduled appointments:" not in result.reply
+    assert "any of these" not in result.reply.lower()
 
 
 def test_lookup_name_only_asks_for_dob() -> None:
@@ -364,6 +407,24 @@ def test_fake_interpreter_classifies_list_appointments_separately() -> None:
         ChatTurnIntent.CANCEL_REQUEST,
         ChatTurnIntent.RESCHEDULE_REQUEST,
     }
+
+
+def test_fake_interpreter_classifies_broadened_lookup_phrases() -> None:
+    interpreter = FakeChatTurnUnderstandingInterpreter()
+    result = interpreter.interpret(
+        ChatTurnUnderstandingRequest(
+            conversation_state=ConversationState.IDLE,
+            expected_response_type=ExpectedResponseType.OPEN_TEXT,
+            latest_user_message="I'd like to check my appointments",
+            allowed_intents=[
+                ChatTurnIntent.APPOINTMENT_REQUEST,
+                ChatTurnIntent.LIST_APPOINTMENTS,
+                ChatTurnIntent.FALLBACK,
+            ],
+        ),
+    )
+
+    assert result.intent is ChatTurnIntent.LIST_APPOINTMENTS
 
 
 def test_lookup_completed_context_allows_cancel_follow_up() -> None:

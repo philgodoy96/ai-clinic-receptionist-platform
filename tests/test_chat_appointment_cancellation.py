@@ -1148,6 +1148,43 @@ def test_post_cancellation_end_conversation_decision_closes_politely(
 
     assert "You're all set. Have a great day!" in result.reply
     assert result.intent == ChatReceptionistIntent.CANCEL_REQUEST
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("appointment_management_mode") is None
+    assert chat_context.get("cancellation_status") is None
+    assert chat_context.get("resolved_patient_id") == str(patient.id)
+
+
+def test_post_cancellation_farewell_then_new_booking_starts_scheduling() -> None:
+    service, _repository, patient, emily, _reed = _create_chat_service_with_patient()
+    _cancel_result, conversation_id, _appointment = _complete_cancellation(
+        service,
+        appointments=[
+            _wednesday_appointment(
+                patient_id=patient.id,
+                doctor_id=emily.id,
+                specialty_id=emily.specialty_id,
+            ),
+        ],
+    )
+
+    farewell = service.handle_message(
+        ChatMessageInput(message="no thanks", conversation_id=conversation_id),
+    )
+    assert "Have a great day!" in farewell.reply
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="I'd like to book a new appointment",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    assert "has been cancelled" not in result.reply.lower()
+    assert "You're all set" not in result.reply
+    assert result.intent != ChatReceptionistIntent.FALLBACK
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("resolved_patient_id") == str(patient.id)
+    assert chat_context.get("appointment_management_mode") != APPOINTMENT_MANAGEMENT_MODE_CANCEL
 
 
 @pytest.mark.parametrize(

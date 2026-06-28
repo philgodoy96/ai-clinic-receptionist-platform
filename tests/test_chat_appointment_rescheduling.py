@@ -2342,6 +2342,37 @@ def test_post_reschedule_no_thanks_closes_politely() -> None:
     )
 
     assert "all set" in result.reply.lower()
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context.get("appointment_management_mode") is None
+    assert chat_context.get("reschedule_status") is None
+    assert chat_context.get("resolved_patient_id") == str(patient.id)
+
+
+def test_post_reschedule_farewell_then_lookup_routes_normally() -> None:
+    service, _repository, emily, patient = _reschedule_wednesday_pm_service()
+    appointment = _wednesday_appointment(
+        patient_id=patient.id,
+        doctor_id=emily.id,
+        specialty_id=emily.specialty_id,
+    )
+    _reschedule_result, conversation_id, _appointment = _complete_reschedule(
+        service,
+        appointments=[appointment],
+    )
+
+    service.handle_message(
+        ChatMessageInput(message="that's all", conversation_id=conversation_id),
+    )
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Can I check my appointments?",
+            conversation_id=conversation_id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.LIST_APPOINTMENTS
+    assert "anything else" not in result.reply.lower()
+    assert "full name" not in result.reply.lower()
 
 
 def test_post_reschedule_yes_offers_schedule_cancel_reschedule() -> None:
