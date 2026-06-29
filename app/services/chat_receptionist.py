@@ -26,7 +26,10 @@ from app.domain.human_escalations import (
 )
 from app.domain.receptionist.enums import ReceptionistResponseMode
 from app.domain.scheduling.appointment_holds import AppointmentHold
-from app.domain.scheduling.availability import AvailabilityCheckStatus
+from app.domain.scheduling.availability import (
+    AvailabilityCheckStatus,
+    format_friendly_date,
+)
 from app.domain.scheduling.expressions import (
     DateExpression,
     DateExpressionKind,
@@ -241,6 +244,42 @@ _TIME_PATTERN = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 # A message that is exactly an integer (e.g. ``1`` or ``10``), used for
 # slot-aware option-number / clock-time interpretation during slot selection.
 _BARE_INTEGER_PATTERN = re.compile(r"\d{1,2}")
+_WEEKDAY_SELECTION_ALIASES = {
+    "monday": 0,
+    "mon": 0,
+    "tuesday": 1,
+    "tue": 1,
+    "tues": 1,
+    "wednesday": 2,
+    "wed": 2,
+    "weds": 2,
+    "thursday": 3,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "friday": 4,
+    "fri": 4,
+    "saturday": 5,
+    "sat": 5,
+    "sunday": 6,
+    "sun": 6,
+}
+_WEEKDAY_SELECTION_PATTERN = re.compile(
+    r"\b("
+    r"monday|mon|tuesday|tues|tue|wednesday|weds|wed|"
+    r"thursday|thurs|thur|thu|friday|fri|saturday|sat|sunday|sun"
+    r")\b",
+    re.IGNORECASE,
+)
+# Interrogative / tentative cues that mark an availability inquiry (e.g.
+# ``Could it be on 2026-07-06 at 2pm?``) rather than a direct slot selection.
+_TENTATIVE_AVAILABILITY_QUESTION_PATTERN = re.compile(
+    r"\b("
+    r"could|can|would|will|do you|does|is there|are there|is it|is\s+\d|"
+    r"what about|how about|any chance|possible|available"
+    r")\b",
+    re.IGNORECASE,
+)
 _DR_MENTION_PATTERN = re.compile(r"\bdr\.?\s+[a-z]", re.IGNORECASE)
 _SPECIALTY_MENTION_PATTERN = re.compile(
     r"\b\w+(?:ology|iatry|surgery|ologist)\b",
@@ -1157,6 +1196,12 @@ class _TimePreferenceExtraction:
 class _OfferedSlotSelection:
     slot: dict[str, Any] | None = None
     ambiguous: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _OfferedSlotDateConstraint:
+    calendar_date: date | None = None
+    weekday_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2249,6 +2294,50 @@ class ChatReceptionistService:
                     content=_HELD_TIME_PREFERENCE_CLARIFICATION_MESSAGE,
                     chat_context_updates=context_updates,
                     hold_created=False,
+                ),
+            )
+
+        if self._has_offered_slot_day_time_selection_signal(message, existing_context):
+            if self._is_tentative_availability_question(normalized_message):
+                # ``Could it be on 2026-07-06 at 2pm?`` is an availability inquiry,
+                # not a direct slot pick. Let the availability flow confirm the
+                # exact time and offer to hold it instead of auto-holding.
+                return finish(
+                    self._handle_availability_flow(
+                        merged_context=merged_context,
+                        context_updates=context_updates,
+                        normalized_message=normalized_message,
+                    ),
+                )
+            existing_offered_slots = existing_context.get("offered_slots") or []
+            offered_selection = self._select_offered_slot(
+                message,
+                normalized_message,
+                existing_offered_slots,
+            )
+            if offered_selection.slot is None and not offered_selection.ambiguous:
+                # The day+time names no currently offered slot. If the message
+                # resolved to a new concrete date + time for the active provider,
+                # treat it as a fresh exact-time availability request instead of
+                # reprompting the user to pick from the stale offered list.
+                new_availability_reply = self._try_new_exact_time_availability(
+                    merged_context=merged_context,
+                    context_updates=context_updates,
+                    normalized_message=normalized_message,
+                )
+                if new_availability_reply is not None:
+                    return finish(new_availability_reply)
+            hold_context_updates = (
+                self._offered_slot_selection_preserving_context_updates(context_updates)
+            )
+            hold_merged_context = {**existing_context, **hold_context_updates}
+            return finish(
+                self._handle_hold_flow(
+                    message=message,
+                    normalized_message=normalized_message,
+                    conversation=conversation,
+                    merged_context=hold_merged_context,
+                    context_updates=hold_context_updates,
                 ),
             )
 
@@ -4880,7 +4969,8 @@ class ChatReceptionistService:
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
             content=(
-                f"I did not find open times for {doctor_name} on {requested_date}. "
+                "I did not find open times for "
+                f"{doctor_name} {self._availability_date_phrase(requested_date)}. "
                 "Please try another date or doctor."
             ),
             chat_context_updates={
@@ -4986,7 +5076,8 @@ class ChatReceptionistService:
         return ChatReceptionistReply(
             intent=ChatReceptionistIntent.AVAILABILITY_NO_SLOTS,
             content=(
-                f"I did not find open times for {specialty_name} on {requested_date}. "
+                "I did not find open times for "
+                f"{specialty_name} {self._availability_date_phrase(requested_date)}. "
                 "Please try another date or doctor."
             ),
             chat_context_updates={
@@ -5557,6 +5648,47 @@ class ChatReceptionistService:
                 return "tomorrow"
         return slot_date.strftime("%A")
 
+    def _clinic_today_or_none(self) -> date | None:
+        if self.clinic_time_service is not None:
+            return self.clinic_time_service.clinic_today()
+        clinic_time = self.scheduling._clinic_time_service
+        if clinic_time is not None:
+            return clinic_time.clinic_today()
+        return None
+
+    def _format_friendly_requested_date_label(self, requested_date: str) -> str:
+        """Render a stored ISO date as a receptionist-friendly label.
+
+        Prefers relative wording (``today``/``tomorrow``) when the clinic-local
+        date is known, otherwise falls back to a friendly calendar label such as
+        ``June 30``. Never surfaces the raw ``YYYY-MM-DD`` value unless the input
+        cannot be parsed as an ISO date.
+        """
+        try:
+            parsed = date.fromisoformat(requested_date)
+        except ValueError:
+            return requested_date
+
+        clinic_today = self._clinic_today_or_none()
+        if clinic_today is not None:
+            if parsed == clinic_today:
+                return "today"
+            if parsed == clinic_today + timedelta(days=1):
+                return "tomorrow"
+        return format_friendly_date(parsed)
+
+    def _availability_date_phrase(self, requested_date: str) -> str:
+        """Return a clause-ready date phrase (``tomorrow`` / ``on June 30``).
+
+        Relative labels read naturally without a preposition, while calendar
+        labels keep the ``on`` so the surrounding availability sentence stays
+        grammatical.
+        """
+        label = self._format_friendly_requested_date_label(requested_date)
+        if label in {"today", "tomorrow"}:
+            return label
+        return f"on {label}"
+
     def _format_earliest_doctor_availability_slots(
         self,
         slots: Sequence[AvailabilitySlot],
@@ -5933,8 +6065,9 @@ class ChatReceptionistService:
         if len(slots) > _MAX_OFFERED_SLOTS:
             suffix = f" There are {len(slots) - _MAX_OFFERED_SLOTS} more openings available."
 
+        date_phrase = self._availability_date_phrase(requested_date)
         return (
-            f"I found openings with {doctor_name} on {requested_date} at {times_text}. "
+            f"I found openings with {doctor_name} {date_phrase} at {times_text}. "
             f"Which time works better?{suffix}"
         )
 
@@ -5955,8 +6088,9 @@ class ChatReceptionistService:
         ]
         openings_text = self._join_names(opening_descriptions)
 
+        date_phrase = self._availability_date_phrase(requested_date)
         return (
-            f"I found {specialty_name} openings on {requested_date}: {openings_text}. "
+            f"I found {specialty_name} openings {date_phrase}: {openings_text}. "
             "Which time works better?"
         )
 
@@ -6274,6 +6408,77 @@ class ChatReceptionistService:
 
         return bool(relevant_updates & context_updates.keys())
 
+    def _is_tentative_availability_question(self, normalized_message: str) -> bool:
+        """Detect availability inquiries that should not auto-pick an offered slot.
+
+        Messages such as ``Could it be on 2026-07-06 at 2pm?`` or
+        ``Is 10:00 available?`` ask whether a time works rather than committing
+        to it, so they belong in the availability flow (which offers to hold)
+        instead of the slot-selection auto-hold path. Bare picks like
+        ``Wednesday 10:00`` contain none of these interrogative cues.
+        """
+        return bool(_TENTATIVE_AVAILABILITY_QUESTION_PATTERN.search(normalized_message))
+
+    def _has_offered_slot_day_time_selection_signal(
+        self,
+        message: str,
+        existing_context: dict[str, Any],
+    ) -> bool:
+        offered_slots = existing_context.get("offered_slots")
+        if not isinstance(offered_slots, list) or not offered_slots:
+            return False
+        if existing_context.get("hold_id") or existing_context.get("appointment_id"):
+            return False
+        if self._extract_offered_time(message) is None:
+            return False
+        return self._extract_offered_slot_date_constraint(message) is not None
+
+    def _offered_slot_selection_preserving_context_updates(
+        self,
+        context_updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        preserved = dict(context_updates)
+        for key in (
+            "offered_slots",
+            "selected_availability_slot_id",
+            "selected_start_time",
+        ):
+            preserved.pop(key, None)
+        return preserved
+
+    def _try_new_exact_time_availability(
+        self,
+        *,
+        merged_context: dict[str, Any],
+        context_updates: dict[str, Any],
+        normalized_message: str,
+    ) -> ChatReceptionistReply | None:
+        """Route a day+time that no offered slot matches to a fresh availability check.
+
+        The contextual follow-up has already resolved a concrete ``requested_date``
+        and ``requested_exact_time`` for messages like ``Wednesday at 10:00``. When
+        the active conversation still has provider context, reuse the existing
+        exact-time availability flow so the user is told whether that new date/time
+        is available (and offered alternatives if not) rather than being asked to
+        pick from the stale offered list. Returns ``None`` when there is no concrete
+        new date + time to check, so the caller can fall back to the offered-slot
+        reprompt.
+        """
+        requested_date = merged_context.get("requested_date")
+        requested_exact_time = self._requested_exact_time(merged_context)
+        if not requested_date or not requested_exact_time:
+            return None
+        if not (
+            merged_context.get("selected_doctor_id")
+            or merged_context.get("selected_specialty_id")
+        ):
+            return None
+        return self._handle_availability_flow(
+            merged_context=merged_context,
+            context_updates=context_updates,
+            normalized_message=normalized_message,
+        )
+
     def _is_hold_request(
         self,
         normalized_message: str,
@@ -6513,6 +6718,13 @@ class ChatReceptionistService:
 
         normalized_time = self._extract_offered_time(message)
         if normalized_time is not None:
+            day_time_selection = self._match_offered_slots_by_day_and_time(
+                message,
+                normalized_time,
+                offered_slots,
+            )
+            if day_time_selection is not None:
+                return day_time_selection
             return self._match_offered_slots_by_time(normalized_time, offered_slots)
 
         return _OfferedSlotSelection()
@@ -6562,6 +6774,88 @@ class ChatReceptionistService:
         if matches:
             return _OfferedSlotSelection(slot=matches[0])
         return _OfferedSlotSelection()
+
+    def _match_offered_slots_by_day_and_time(
+        self,
+        message: str,
+        normalized_time: str,
+        offered_slots: list[dict[str, Any]],
+    ) -> _OfferedSlotSelection | None:
+        date_constraint = self._extract_offered_slot_date_constraint(message)
+        if date_constraint is None:
+            return None
+
+        matches = [
+            offered_slot
+            for offered_slot in offered_slots
+            if offered_slot.get("display_time") == normalized_time
+            and self._offered_slot_matches_date_constraint(
+                offered_slot,
+                date_constraint,
+            )
+        ]
+        distinct_starts = {match.get("start_time") for match in matches}
+        if len(distinct_starts) > 1:
+            return _OfferedSlotSelection(ambiguous=True)
+        if matches:
+            return _OfferedSlotSelection(slot=matches[0])
+        return _OfferedSlotSelection()
+
+    def _extract_offered_slot_date_constraint(
+        self,
+        message: str,
+    ) -> _OfferedSlotDateConstraint | None:
+        requested_date = self._extract_requested_date(message).normalized_date
+        if requested_date is not None:
+            try:
+                return _OfferedSlotDateConstraint(
+                    calendar_date=date.fromisoformat(requested_date),
+                )
+            except ValueError:
+                return None
+
+        weekday_match = _WEEKDAY_SELECTION_PATTERN.search(message)
+        if weekday_match is None:
+            return None
+
+        weekday_index = _WEEKDAY_SELECTION_ALIASES[weekday_match.group(1).lower()]
+        return _OfferedSlotDateConstraint(weekday_index=weekday_index)
+
+    def _offered_slot_matches_date_constraint(
+        self,
+        offered_slot: dict[str, Any],
+        date_constraint: _OfferedSlotDateConstraint,
+    ) -> bool:
+        slot_date = self._offered_slot_clinic_date(offered_slot)
+        if slot_date is None:
+            return False
+
+        if date_constraint.calendar_date is not None:
+            return slot_date == date_constraint.calendar_date
+
+        if date_constraint.weekday_index is not None:
+            return slot_date.weekday() == date_constraint.weekday_index
+
+        return False
+
+    def _offered_slot_clinic_date(self, offered_slot: dict[str, Any]) -> date | None:
+        display_date = offered_slot.get("display_date")
+        if isinstance(display_date, str) and display_date:
+            try:
+                return date.fromisoformat(display_date)
+            except ValueError:
+                pass
+
+        start_time = offered_slot.get("start_time")
+        if not isinstance(start_time, str) or not start_time:
+            return None
+
+        try:
+            parsed_start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+        return to_clinic_local_datetime(parsed_start, self._clinic_timezone()).date()
 
     def _message_has_slot_selection_attempt(
         self,

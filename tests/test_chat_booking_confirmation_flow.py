@@ -539,6 +539,7 @@ def test_dispatch_publish_failure_does_not_rollback_booking() -> None:
     from app.messaging.email_job_dispatch import EmailJobDispatchPublisherError
     from app.services.conversations import ConversationService
     from app.services.email_jobs import EmailJobService
+    from tests.guardrail_test_overrides import disable_demo_guardrails_for_test_app
     from tests.test_chat_api import FakeDatabaseSession, FakeEmailJobService
     from tests.test_chat_receptionist_service import (
         FakeAppointmentHoldService,
@@ -554,6 +555,7 @@ def test_dispatch_publish_failure_does_not_rollback_booking() -> None:
             raise EmailJobDispatchPublisherError("publish failed")
 
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     hold_service = FakeAppointmentHoldService()
