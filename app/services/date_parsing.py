@@ -29,6 +29,51 @@ _WEEKDAY_TO_INDEX = {
     "sunday": 6,
 }
 
+_MONTH_NAME_TO_INDEX = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sept": 9,
+    "sep": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+# Longest names first so abbreviations do not shadow full names (e.g. ``sept``).
+_MONTH_NAMES_ALTERNATION = "|".join(
+    sorted(_MONTH_NAME_TO_INDEX, key=len, reverse=True),
+)
+# ``July 6`` / ``July 6th`` / ``July 06`` / ``July 6, 2026`` / ``July 6 2026``.
+_MONTH_DAY_PATTERN = re.compile(
+    rf"\b(?P<month>{_MONTH_NAMES_ALTERNATION})\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?"
+    r"(?:,?\s+(?P<year>\d{4}))?\b",
+    re.IGNORECASE,
+)
+# ``6 July`` / ``6th of July`` / ``6 July 2026``.
+_DAY_MONTH_PATTERN = re.compile(
+    r"\b(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    rf"(?P<month>{_MONTH_NAMES_ALTERNATION})"
+    r"(?:,?\s+(?P<year>\d{4}))?\b",
+    re.IGNORECASE,
+)
+
 _UNSUPPORTED_PHRASES = (
     "next week",
     "this week",
@@ -241,13 +286,79 @@ class NaturalLanguageDateParser:
                 ),
             )
 
+        matches.extend(self._find_month_name_dates(text, today))
+
         return matches
+
+    def _find_month_name_dates(self, text: str, today: date) -> list[_NaturalLanguageMatch]:
+        matches: list[_NaturalLanguageMatch] = []
+        consumed_spans: list[tuple[int, int]] = []
+
+        # ``6 July`` is matched first so ``July 06`` is not spuriously extracted
+        # from a trailing year (e.g. the ``July 20`` inside ``6 July 2026``).
+        for pattern in (_DAY_MONTH_PATTERN, _MONTH_DAY_PATTERN):
+            for match in pattern.finditer(text):
+                start, end = match.span()
+                overlaps_existing = any(
+                    start < span_end and span_start < end
+                    for span_start, span_end in consumed_spans
+                )
+                if overlaps_existing:
+                    continue
+
+                month_index = _MONTH_NAME_TO_INDEX[match.group("month").lower()]
+                day = int(match.group("day"))
+                year_text = match.group("year")
+                year = int(year_text) if year_text else None
+
+                resolved_date = self._resolve_calendar_date(month_index, day, year, today)
+                if resolved_date is None:
+                    continue
+
+                consumed_spans.append((start, end))
+                matches.append(
+                    _NaturalLanguageMatch(
+                        source_text=match.group(0),
+                        parsed_date=resolved_date,
+                    ),
+                )
+
+        return matches
+
+    def _resolve_calendar_date(
+        self,
+        month: int,
+        day: int,
+        year: int | None,
+        today: date,
+    ) -> date | None:
+        if year is not None:
+            return self._safe_date(year, month, day)
+
+        # No explicit year: pick the next upcoming occurrence of month/day.
+        this_year = self._safe_date(today.year, month, day)
+        if this_year is not None and this_year >= today:
+            return this_year
+
+        next_year = self._safe_date(today.year + 1, month, day)
+        if next_year is not None:
+            return next_year
+
+        return this_year
+
+    @staticmethod
+    def _safe_date(year: int, month: int, day: int) -> date | None:
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
 
     def _this_weekday(self, today: date, weekday_index: int) -> date:
         start_of_week = today - timedelta(days=today.weekday())
         return start_of_week + timedelta(days=weekday_index)
 
     def _next_weekday(self, today: date, weekday_index: int) -> date:
-        start_of_week = today - timedelta(days=today.weekday())
-        start_of_next_week = start_of_week + timedelta(days=7)
-        return start_of_next_week + timedelta(days=weekday_index)
+        days_ahead = (weekday_index - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return today + timedelta(days=days_ahead)

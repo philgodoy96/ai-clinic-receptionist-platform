@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -70,6 +70,7 @@ from tests.test_scheduling_services import (
     EMILY_JULY_SLOT_1_ID,
     EMILY_JULY_SLOT_2_ID,
     FakeAppointmentRepository,
+    FakeAvailabilitySlotRepository,
     create_availability_slot,
     create_demo_scheduling_service,
     create_demo_scheduling_service_with_emily_afternoon_july_availability,
@@ -1660,6 +1661,51 @@ def _morning_dermatology_scheduling() -> SchedulingService:
     )
 
 
+def _multiday_dermatology_scheduling() -> tuple[SchedulingService, Doctor, list[Any]]:
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    availability_slots = [
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 2, 18, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 8, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 8, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=availability_slots,
+    )
+    return scheduling, emily, availability_slots
+
+
 @pytest.mark.parametrize("selection_message", ["10h", "10 h", "10hs"])
 def test_hold_h_suffix_selects_offered_10_00_slot(selection_message: str) -> None:
     service, _repository, hold_service = _create_availability_guidance_service(
@@ -1743,6 +1789,7 @@ def _offered_slot(
     *,
     display_time: str,
     start_time: str,
+    display_date: str = "2026-07-02",
     availability_slot_id: str | None = None,
 ) -> dict[str, Any]:
     return {
@@ -1752,7 +1799,7 @@ def _offered_slot(
         "specialty_name": "Dermatology",
         "start_time": start_time,
         "display_time": display_time,
-        "display_date": "2026-07-02",
+        "display_date": display_date,
     }
 
 
@@ -1801,6 +1848,422 @@ def test_select_offered_slot_duplicate_display_time_is_ambiguous() -> None:
 
     assert selection.ambiguous is True
     assert selection.slot is None
+
+
+@pytest.mark.parametrize("message", ["Wednesday 10:00", "Wednesday at 10:00", "Wed 10"])
+def test_select_offered_slot_day_and_time_disambiguates_duplicate_times(
+    message: str,
+) -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+    offered_slots = [
+        _offered_slot(
+            display_time="10:00",
+            start_time="2026-07-02T14:00:00+00:00",
+            display_date="2026-07-02",
+        ),
+        _offered_slot(
+            display_time="10:00",
+            start_time="2026-07-08T14:00:00+00:00",
+            display_date="2026-07-08",
+        ),
+        _offered_slot(
+            display_time="11:00",
+            start_time="2026-07-08T15:00:00+00:00",
+            display_date="2026-07-08",
+        ),
+    ]
+
+    selection = service._select_offered_slot(message, message.lower(), offered_slots)
+
+    assert selection.ambiguous is False
+    assert selection.slot is offered_slots[1]
+
+
+def test_select_offered_slot_relative_day_and_time_matches_exact_date() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+    offered_slots = [
+        _offered_slot(
+            display_time="14:00",
+            start_time="2026-07-02T18:00:00+00:00",
+            display_date="2026-07-02",
+        ),
+        _offered_slot(
+            display_time="14:00",
+            start_time="2026-07-08T18:00:00+00:00",
+            display_date="2026-07-08",
+        ),
+    ]
+
+    selection = service._select_offered_slot(
+        "tomorrow at 2pm",
+        "tomorrow at 2pm",
+        offered_slots,
+    )
+
+    assert selection.ambiguous is False
+    assert selection.slot is offered_slots[0]
+
+
+def test_select_offered_slot_day_and_time_does_not_fallback_to_near_match() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+    offered_slots = [
+        _offered_slot(
+            display_time="10:00",
+            start_time="2026-07-08T14:00:00+00:00",
+            display_date="2026-07-08",
+        ),
+        _offered_slot(
+            display_time="11:00",
+            start_time="2026-07-08T15:00:00+00:00",
+            display_date="2026-07-08",
+        ),
+    ]
+
+    selection = service._select_offered_slot(
+        "Wednesday 15:00",
+        "wednesday 15:00",
+        offered_slots,
+    )
+
+    assert selection.ambiguous is False
+    assert selection.slot is None
+
+
+def test_hold_flow_selects_existing_offered_slot_by_day_and_time() -> None:
+    scheduling, emily, slots = _multiday_dermatology_scheduling()
+    service, _repository, hold_service = _create_availability_guidance_service(scheduling)
+    offered_slots = service._serialize_offered_slots(
+        slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        specialty_name="Dermatology",
+        use_slot_date=True,
+    )
+    conversation = service.conversations.create_conversation(
+        ConversationCreate(
+            channel=ConversationChannel.CHAT,
+            conversation_metadata={
+                "chat_context": {
+                    "selected_doctor_id": str(emily.id),
+                    "selected_doctor_name": "Dr. Emily Carter",
+                    "selected_specialty_name": "Dermatology",
+                    "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+                    "offered_slots": offered_slots,
+                },
+            },
+        ),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Wednesday 10:00",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert "Please check availability first" not in result.reply
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-08T14:00:00+00:00"
+
+
+def test_friendly_requested_date_label_uses_relative_and_calendar_wording() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    # The fake scheduling clinic clock is fixed at 2026-07-01 (clinic-local).
+    assert service._format_friendly_requested_date_label("2026-07-01") == "today"
+    assert service._format_friendly_requested_date_label("2026-07-02") == "tomorrow"
+    assert service._format_friendly_requested_date_label("2026-07-09") == "July 9"
+
+
+def test_doctor_availability_reply_does_not_show_raw_iso_date() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-02"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "2026-07-02" not in result.reply
+    # 2026-07-02 is the day after the fixed clinic date, so it renders as "tomorrow".
+    assert "tomorrow" in result.reply
+
+
+@pytest.mark.parametrize("date_message", ["July 2", "July 02", "July 2nd", "2 July"])
+def test_month_name_date_after_doctor_selection_checks_availability(
+    date_message: str,
+) -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    first = service.handle_message(ChatMessageInput(message="Dr. Emily Carter"))
+    result = service.handle_message(
+        ChatMessageInput(
+            message=date_message,
+            conversation_id=first.conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "What day or time works best" not in result.reply
+    # 2026-07-02 is the day after the fixed clinic date, so it renders as "tomorrow".
+    assert "tomorrow" in result.reply
+
+
+def test_doctor_no_slots_reply_uses_friendly_calendar_date() -> None:
+    service, _repository, _hold_service = _create_availability_guidance_service(
+        _morning_dermatology_scheduling(),
+    )
+
+    result = service.handle_message(
+        ChatMessageInput(message="Dr. Emily Carter on 2026-07-09"),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_NO_SLOTS
+    assert "2026-07-09" not in result.reply
+    assert "July 9" in result.reply
+
+
+def _emily_offered_day_time_service() -> tuple[
+    ChatReceptionistService,
+    FakeAppointmentHoldService,
+    Doctor,
+]:
+    from app.services.clock import FixedClock as ClinicFixedClock
+    from tests.clinic_time_test_support import make_test_clinic_time_service
+
+    dermatology = create_specialty(name="Dermatology")
+    emily = Doctor(
+        id=uuid4(),
+        specialty_id=dermatology.id,
+        full_name="Dr. Emily Carter",
+        email="emily.carter@example-clinic.test",
+        phone_number="+1-555-0101",
+        is_active=True,
+    )
+    # Clinic-local dates are EDT (UTC-4): 14:00 UTC == 10:00 clinic-local.
+    availability_slots = [
+        # Tomorrow (Tuesday 2026-06-30): 10:00, 11:00, 14:00, 15:00.
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 6, 30, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 6, 30, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 6, 30, 18, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 6, 30, 19, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        # Wednesday 2026-07-01: 10:00, 11:00, 14:00 (no 18:00).
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 1, 14, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 1, 15, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+        create_availability_slot(
+            doctor_id=emily.id,
+            start_time=datetime(2026, 7, 1, 18, 0, tzinfo=UTC),
+            status=AvailabilitySlotStatus.AVAILABLE,
+        ),
+    ]
+    clinic_time_service = make_test_clinic_time_service(
+        clock=ClinicFixedClock(current_time=datetime(2026, 6, 29, 14, 0, tzinfo=UTC)),
+    )
+    scheduling = create_service(
+        specialties=[dermatology],
+        doctors=[emily],
+        availability_slots=availability_slots,
+        clinic_time_service=clinic_time_service,
+    )
+    repository = FakeConversationRepository()
+    conversations = ConversationService(repository=repository)
+    hold_service = FakeAppointmentHoldService()
+    service = create_chat_receptionist_service(
+        conversations=conversations,
+        scheduling=scheduling,
+        hold_service=hold_service,
+        date_parser=NaturalLanguageDateParser(clock=FixedClock(current_date=date(2026, 6, 29))),
+        time_preference_parser=TimePreferenceParser(),
+        clinic_time_service=clinic_time_service,
+    )
+    return service, hold_service, emily
+
+
+def _offered_slots_for_dates(
+    service: ChatReceptionistService,
+    emily: Doctor,
+    slot_dates: set[date],
+) -> list[dict[str, Any]]:
+    slot_repository = cast(
+        FakeAvailabilitySlotRepository,
+        service.scheduling.availability_slots,
+    )
+    all_slots = [
+        slot
+        for slot in slot_repository.slots
+        if slot.start_time.date() in slot_dates
+    ]
+    return service._serialize_offered_slots(
+        all_slots,
+        doctor_names={emily.id: "Dr. Emily Carter"},
+        specialty_name="Dermatology",
+        use_slot_date=True,
+    )
+
+
+def _offered_slot_conversation(
+    service: ChatReceptionistService,
+    emily: Doctor,
+    offered_slots: list[dict[str, Any]],
+) -> Any:
+    return service.conversations.create_conversation(
+        ConversationCreate(
+            channel=ConversationChannel.CHAT,
+            conversation_metadata={
+                "chat_context": {
+                    "selected_doctor_id": str(emily.id),
+                    "selected_doctor_name": "Dr. Emily Carter",
+                    "selected_specialty_name": "Dermatology",
+                    "appointment_intake_awaiting": APPOINTMENT_INTAKE_AWAITING_SLOT_SELECTION,
+                    "offered_slots": offered_slots,
+                },
+            },
+        ),
+    )
+
+
+def test_new_day_time_not_in_offered_slots_checks_new_availability() -> None:
+    service, hold_service, emily = _emily_offered_day_time_service()
+    offered = _offered_slots_for_dates(service, emily, {date(2026, 6, 30)})
+    conversation = _offered_slot_conversation(service, emily, offered)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Wednesday at 10:00",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "could not match" not in result.reply.lower()
+    assert "check availability first" not in result.reply.lower()
+    assert "Wednesday" in result.reply
+    assert "10:00" in result.reply
+    assert "hold" in result.reply.lower()
+    # Checking new availability must not create a hold yet.
+    assert hold_service.create_hold_calls == []
+
+
+def test_day_time_in_offered_slots_selects_existing_slot_without_new_lookup() -> None:
+    service, hold_service, emily = _emily_offered_day_time_service()
+    offered = _offered_slots_for_dates(
+        service,
+        emily,
+        {date(2026, 6, 30), date(2026, 7, 1)},
+    )
+    conversation = _offered_slot_conversation(service, emily, offered)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Wednesday at 10:00",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.HOLD_CREATED
+    assert len(hold_service.create_hold_calls) == 1
+    chat_context = result.conversation.conversation_metadata["chat_context"]
+    assert chat_context["selected_start_time"] == "2026-07-01T14:00:00+00:00"
+
+
+def test_offered_time_only_selects_when_offered_else_reprompts() -> None:
+    service, hold_service, emily = _emily_offered_day_time_service()
+    offered = _offered_slots_for_dates(service, emily, {date(2026, 6, 30)})
+
+    selected = service.handle_message(
+        ChatMessageInput(
+            message="15:00",
+            conversation_id=_offered_slot_conversation(service, emily, offered).id,
+        ),
+    )
+
+    assert selected.intent == ChatReceptionistIntent.HOLD_CREATED
+    selected_context = selected.conversation.conversation_metadata["chat_context"]
+    assert selected_context["selected_start_time"] == "2026-06-30T19:00:00+00:00"
+
+    reprompt = service.handle_message(
+        ChatMessageInput(
+            message="16:00",
+            conversation_id=_offered_slot_conversation(service, emily, offered).id,
+        ),
+    )
+
+    assert reprompt.intent == ChatReceptionistIntent.HOLD_SLOT_NOT_FOUND
+    assert "listed times" in reprompt.reply.lower()
+
+
+def test_bare_weekday_keeps_availability_lookup_behavior() -> None:
+    service, hold_service, emily = _emily_offered_day_time_service()
+    offered = _offered_slots_for_dates(service, emily, {date(2026, 6, 30)})
+    conversation = _offered_slot_conversation(service, emily, offered)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Wednesday",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "could not match" not in result.reply.lower()
+    assert "10:00" in result.reply
+    assert hold_service.create_hold_calls == []
+
+
+def test_new_day_time_unavailable_offers_alternatives_not_near_match() -> None:
+    service, hold_service, emily = _emily_offered_day_time_service()
+    offered = _offered_slots_for_dates(service, emily, {date(2026, 6, 30)})
+    conversation = _offered_slot_conversation(service, emily, offered)
+
+    result = service.handle_message(
+        ChatMessageInput(
+            message="Wednesday at 18:00",
+            conversation_id=conversation.id,
+        ),
+    )
+
+    assert result.intent == ChatReceptionistIntent.AVAILABILITY_RESULTS
+    assert "could not match" not in result.reply.lower()
+    assert "not available" in result.reply.lower()
+    # Offers real Wednesday alternatives rather than silently picking a near match.
+    assert "10:00" in result.reply
+    assert hold_service.create_hold_calls == []
 
 
 def test_hold_generic_request_returns_hold_request(

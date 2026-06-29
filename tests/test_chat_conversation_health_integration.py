@@ -36,6 +36,7 @@ from app.services.llm_receptionist import LLMReceptionistAnalysisService
 from app.services.slot_filling import LLMChatSlotFillingService
 from app.services.time_preferences import TimePreferenceParser
 from tests.chat_booking_flow_support import complete_new_patient_booking
+from tests.guardrail_test_overrides import disable_demo_guardrails_for_test_app
 from tests.test_chat_appointment_cancellation import (
     _add_appointments,
     _wednesday_appointment,
@@ -442,6 +443,7 @@ def health_chat_api_client() -> Generator[
     None,
 ]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     chat_service = create_chat_receptionist_service(
