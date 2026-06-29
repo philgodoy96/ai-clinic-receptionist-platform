@@ -52,7 +52,7 @@ PUBLIC_DEMO_MODE=true
 PUBLIC_DEMO_GUARDRAILS_ENABLED=true
 ```
 
-Recommended real demo providers in future implementation phases:
+Optional hosted demo configuration (enable only when keys and guardrails are in place):
 
 ```env
 LLM_PROVIDER=groq
@@ -86,14 +86,12 @@ When a quota is exceeded, the API returns 429.
 
 When guardrails are enabled but Redis is unavailable, protected endpoints fail closed.
 
-## Future Work
+## Outside demo scope / production hardening
 
-Future implementation phases may add:
+These are intentional boundaries or production concerns—not missing demo requirements:
 
-- demo data reset/cleanup
-- global LLM call budget
-- global voice call budget
+- demo data reset/cleanup automation
+- global LLM or voice call budgets
 - frontend-side friction controls
 - CAPTCHA or edge protection
-- admin-only debug APIs
-- deployment runbook
+- auth/RBAC on admin or debug APIs

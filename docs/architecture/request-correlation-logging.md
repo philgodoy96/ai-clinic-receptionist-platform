@@ -82,15 +82,15 @@ Structured logs should not contain:
 
 Logs should focus on operational metadata.
 
-## Current Limitations
+## Extension points (not active in default demo runtime)
 
-This implementation does not yet include:
+The following are outside the current demo observability baseline:
 
-- OpenTelemetry traces
-- Trace IDs and span IDs
-- Log shipping to Datadog
+- OpenTelemetry traces and trace/span IDs
+- Prometheus metrics export
+- Log shipping to external platforms
 - Request body logging
 - PII redaction middleware
 - Distributed tracing across workers
 
-Those capabilities are planned for later implementation phases.
+These are production-hardening extension points. Dependencies exist in the project but are not wired into the running application.
