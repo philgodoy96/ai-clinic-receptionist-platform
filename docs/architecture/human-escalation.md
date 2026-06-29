@@ -1,18 +1,20 @@
 # Human Escalation Foundation
 
+> Staff notification is modeled as a durable email job. Local/demo mode uses the fake email provider; hosted demos may use Resend when configured. This demo does not include a live operator console or real-time human handoff queue.
+
 ## Context
 
-The AI Clinic Receptionist Platform supports deterministic chat booking, LLM-assisted slot filling, and conversation health signals.
+The AI Clinic Receptionist Platform supports deterministic chat booking, optional LLM-assisted slot filling, and conversation health signals.
 
 When the conversation should not continue as automation, the system creates an operational handoff record.
 
-## Design Principle
+## Design principle
 
 Human escalation is operational handoff, not AI roleplay.
 
 The system must not use another LLM pretending to be a human receptionist.
 
-## Current Implementation
+## Current implementation
 
 The current implementation includes:
 
@@ -28,7 +30,7 @@ The current implementation includes:
 - chat integration for immediate escalation signals
 - chat-triggered notification job enqueue and post-commit RabbitMQ dispatch wake-up
 
-## When Escalation Is Created
+## When escalation is created
 
 This implementation creates a HumanEscalation record for immediate escalation signals:
 
@@ -43,8 +45,6 @@ Only one active escalation should exist per conversation.
 
 If an active escalation already exists, repeated requests reuse the existing record.
 
-This protects against duplicate user messages, retries, and future duplicate webhook delivery.
-
 The same idempotency applies to notification jobs: one durable `human_escalation_notification` email job is created per escalation, and repeated immediate signals reuse the existing job.
 
 ## Boundaries
@@ -53,17 +53,16 @@ Human escalation does not:
 
 - create appointment holds
 - create appointments
-- send confirmation emails
+- send booking confirmation emails
 - call an LLM
-- send real staff email in this phase
-- implement a human chat dashboard
-- provide live human chat when an escalation is assigned
+- connect the patient to a live staff member in real time
+- provide a human chat dashboard or operator console
 
 Assignment records operational ownership only. It does not connect the patient to a staff member in real time.
 
 See also: [Escalation Assignment Workflow](./escalation-assignment-workflow.md)
 
-## Operational States
+## Operational states
 
 Escalations may be:
 
@@ -72,19 +71,14 @@ Escalations may be:
 - resolved
 - cancelled
 
-## Security Boundary
+## Security boundary
 
-For this portfolio demo, authentication and RBAC are intentionally out of scope so the project can remain focused on backend reliability, AI receptionist workflows, observability, and operational handoff design.
+For this portfolio demo, authentication and RBAC are outside demo scope so the project can remain focused on backend reliability, appointment workflows, structured observability, and operational handoff design.
 
-In production, these endpoints must require staff authentication and role-based authorization.
+In production, escalation management endpoints would require staff authentication and role-based authorization.
 
-## Future Work
+## Outside demo scope
 
-Future implementation phases may add:
-
-- escalation listing dashboard
-- staff notification provider adapter
-- voice provider call transfer
-- audit trail expansion
-- staff user identity integration
-- assignment notification job
+- Live operator console or real-time handoff queue
+- Voice provider call transfer
+- Auth/RBAC on public routes

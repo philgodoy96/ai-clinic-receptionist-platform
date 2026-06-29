@@ -1,279 +1,185 @@
 # Architecture Overview
 
-## Business Context
+## Business context
 
-AI Clinic Receptionist Platform is a production-style applied AI and backend systems project for a fictional US-based clinic.
+AI Clinic Receptionist Platform is a portfolio demo of a production-minded applied AI and backend system for a fictional US-based clinic.
 
-The system allows patients to interact with an AI receptionist through:
+Patients interact through:
 
-1. A backend-orchestrated chat channel
-2. A Retell-orchestrated voice channel
+1. **Written chat** (default local demo) — backend-orchestrated deterministic appointment workflow simulator with optional LLM-assisted analysis and phrasing
+2. **Retell voice** (optional) — provider-orchestrated when explicitly enabled and configured
 
-The receptionist supports appointment scheduling, rescheduling, cancellation, patient lookup, doctor and specialty information, temporary slot holding, human escalation, guardrails, auditability, observability, and background confirmation jobs.
+The receptionist supports appointment scheduling, rescheduling, cancellation, patient lookup, temporary slot holding, human escalation records, guardrails, auditability, structured observability, and durable background email jobs.
 
-## Non-Goals
+## Demo scope and non-goals
 
-The system does not implement:
+This demo is not clinical advice, diagnosis, emergency triage, or medical decision support. Do not enter real patient data.
 
-- A full clinic CRM
-- Billing
-- Insurance workflows
-- Medical diagnosis
-- Electronic health records
-- OAuth in V1
-- A custom voice WebSocket simulator
-- A generic chatbot experience unrelated to clinic workflows
+Outside demo scope (intentional boundaries or production-hardening concerns):
 
-## Core Architecture Decision
+- Full clinic CRM, billing, insurance workflows, electronic health records
+- Patient profile updates
+- Advanced unsafe/abusive message moderation policy
+- Auth/RBAC on public demo routes
+- Live human operator console or real-time handoff queue
+- OpenAI, Vapi, or Twilio integrations
+- Cancellation confirmation emails
+- Prometheus/OpenTelemetry runtime export and Grafana dashboards
+
+## Core architecture decision
 
 Chat UX and voice UX must not be modeled as the same interaction pattern.
 
-Chat is backend-orchestrated.
+**Chat** is backend-orchestrated. The backend manages conversation state, routing, validation, and domain execution.
 
-Voice is Retell-orchestrated.
+**Voice** is Retell-orchestrated when enabled. Retell manages real-time voice UX; the backend exposes tools and enforces business rules.
 
-The backend exposes tools and business capabilities to Retell but does not manage every spoken turn.
+## Integration readiness matrix
+
+| Component / provider | Status | Default demo behavior | Production / optional integration note |
+|---|---|---|---|
+| FastAPI | Implemented | API server for chat, scheduling, health, optional Retell routes | Deploy API and email worker as separate processes |
+| PostgreSQL | Implemented | Durable patients, appointments, conversations, email jobs, escalations | Managed Postgres required for hosted demo |
+| Redis | Implemented | Appointment holds; guardrails when enabled | Required for holds and public demo quotas |
+| RabbitMQ / email worker | Implemented | Wake-up dispatch when `EMAIL_JOB_DISPATCH_ENABLED=true`; polling fallback available | Worker processes durable `EmailJob` records |
+| Fake email | Implemented (default) | Records sends in memory; no outbound mail | Local development and CI default |
+| Resend | Implemented (optional) | Not active unless `EMAIL_PROVIDER=resend` | Verified sending domain required for hosted demo |
+| Fake LLM | Implemented (default) | Deterministic chat orchestration; fake CTU interpreter | Local development and CI default |
+| Groq | Implemented (optional) | Not active unless configured | Hosted demo LLM analysis/phrasing when enabled |
+| Bedrock | Implemented (optional) | Not active unless configured | Enterprise-style AWS adapter |
+| Retell | Implemented (optional) | Disabled by default (`RETELL_ENABLED=false`) | Voice tools, webhooks, web calls when configured |
+| Human escalation | Implemented | Durable `HumanEscalation` record + staff notification email job | No live operator console; fake email by default |
+| Structured logging | Implemented | JSON logs, `request_id`, `correlation_id`, audit log correlation | stdout by default |
+| Health endpoints | Implemented | `GET /health`, `GET /health/dependencies` | Readiness checks PostgreSQL |
+| Prometheus / OpenTelemetry | Extension point | Not runtime-wired in the app | Production-hardening export; dependencies present but not active |
+| Auth / RBAC | Outside demo scope | Public routes unauthenticated | Production hardening: admin auth, webhook signatures, guardrails |
 
 ## Channels
 
-### Chat Channel
+### Chat channel
 
 The chat channel is backend-orchestrated.
 
 The backend manages:
 
-- Conversation state
-- Messages
-- Slot collection
-- Appointment management (booking, scheduled lookup, reschedule, cancel)
-- Tool decisions
-- LLM responses
-- Persistence
-- Guardrails
-- Audit logs
-- Observability
+- Conversation state and messages
+- Deterministic routing and state guards for booking, cancellation, rescheduling, lookup, and human escalation
+- Slot collection and appointment management
+- Optional LLM-assisted turn understanding and response phrasing (fake provider by default)
+- Persistence, guardrails, audit logs, and structured logging
 
-Written-chat appointment flows follow the principle:
+Written-chat appointment flows follow:
 
-    The LLM understands. The backend validates and decides. Domain services execute.
+    The optional LLM understands. The backend validates and decides. Domain services execute.
 
-Written chat uses deterministic routing and state guards around booking, cancellation, rescheduling, lookup, and human escalation. The backend validates conversation state before holds, domain mutations, or email jobs execute. Selection and revision are supported before final confirmation; destructive actions require explicit confirmation where applicable.
+Selection and revision are supported before final confirmation. Destructive actions require explicit confirmation where applicable.
 
 See [Chat Appointment Management](chat-appointment-management.md).
 
-### Retell Voice Channel
+### Retell voice channel (optional)
 
-The Retell voice channel is provider-orchestrated.
+When `RETELL_ENABLED=true`, the Retell voice channel is provider-orchestrated.
 
-Retell manages:
+Retell manages real-time voice UX, turn-taking, speech-to-text, and text-to-speech.
 
-- Real-time voice UX
-- Turn-taking
-- Speech-to-text
-- Text-to-speech
-- Low-latency conversation flow
+The backend exposes tools for patient lookup, scheduling, holds, booking, cancellation, rescheduling, and escalation case creation.
 
-The backend exposes tools for:
+Default local demo is chat-first; voice requires explicit configuration.
 
-- Patient lookup
-- Patient creation
-- Specialty listing
-- Doctor listing
-- Availability lookup
-- Appointment slot holding
-- Appointment booking
-- Upcoming appointment listing
-- Appointment rescheduling
-- Appointment cancellation
-- Escalation case creation
-
-## Backend Responsibilities
+## Backend responsibilities
 
 The backend is responsible for:
 
-- Validating tool payloads
-- Enforcing business rules
-- Protecting patient data
-- Persisting durable state
-- Creating audit logs
-- Publishing background jobs
-- Exposing admin/demo endpoints
-- Emitting metrics
-- Creating traces
-- Providing dependency health checks
+- Validating tool payloads and enforcing business rules
+- Persisting durable state and creating audit logs
+- Publishing background email jobs
+- Exposing health and demo endpoints
+- Structured JSON logging with request and correlation IDs
+- Dependency health checks
 
-## Core Entities
+The backend does not provide auth/RBAC on public demo routes.
 
-Initial domain entities:
+## Core entities
 
-- Patient
-- Doctor
-- Specialty
-- AvailabilitySlot
-- Appointment
-- AppointmentHold
-- Conversation
-- Message
-- ToolCall
-- AuditLog
-- EscalationCase
-- JobExecution
+- Patient, Doctor, Specialty, AvailabilitySlot, Appointment, AppointmentHold
+- Conversation, Message, ToolCall, AuditLog
+- EscalationCase, EmailJob, JobExecution
 
-## Durable State
+## Durable state
 
-PostgreSQL stores:
+PostgreSQL stores patients, doctors, specialties, availability slots, appointments, hold history, conversations, messages, tool calls, audit logs, escalation cases, email jobs, and job executions.
 
-- Patients
-- Doctors
-- Specialties
-- Availability slots
-- Appointments
-- Appointment hold history
-- Conversations
-- Messages or transcripts
-- Tool calls
-- Audit logs
-- Escalation cases
-- Job executions
+## Temporary state
 
-## Temporary State
+Redis stores appointment slot holds, rate limits, and short-lived locks. Redis is not durable conversation memory.
 
-Redis stores:
+## Background jobs
 
-- Appointment slot holds
-- Rate limits
-- Short-lived locks
+RabbitMQ dispatches email job wake-up messages when enabled. The email worker processes durable `EmailJob` records from PostgreSQL.
 
-Redis must not be treated as durable conversation memory.
+Job types include booking/reschedule confirmation emails and `human_escalation_notification` staff alerts.
 
-## Background Jobs
+- **Default:** FakeEmailProvider (no outbound mail)
+- **Optional:** ResendProvider when `EMAIL_PROVIDER=resend`
 
-RabbitMQ is used for:
+Cancellation confirmation emails are outside demo scope.
 
-- Appointment confirmation email jobs
-- Reschedule confirmation email jobs
-- Cancellation email jobs
-
-The first implementation uses FakeEmailProvider.
-
-A real provider such as ResendProvider can be added later behind the same provider interface.
-
-## Appointment Hold Flow
-
-The appointment hold flow protects against double booking.
+## Appointment hold flow
 
 1. Chat or Retell checks availability.
 2. User selects a slot.
 3. Backend creates a temporary hold in Redis.
-4. Backend returns hold_id.
-5. User confirms.
-6. Backend validates hold ownership and expiration.
-7. Backend creates appointment in PostgreSQL.
-8. Backend removes hold.
-9. Backend enqueues confirmation email job.
+4. User confirms.
+5. Backend validates hold ownership and expiration.
+6. Backend creates appointment in PostgreSQL, removes hold, enqueues confirmation email job.
 
-Example Redis key pattern:
-
-    appointment_hold:{doctor_id}:{start_time}
-
-Channel-specific TTL (configured in environment):
-
-- `APPOINTMENT_HOLD_TTL_SECONDS` — default `300` (Retell voice and general holds)
-- `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` — default `600` (written chat)
-
-Written chat may refresh an expired hold at final booking confirmation when the slot is still available.
+Channel-specific TTL: `APPOINTMENT_HOLD_TTL_SECONDS` (default 300) for voice; `CHAT_APPOINTMENT_HOLD_TTL_SECONDS` (default 600) for written chat.
 
 ## Guardrails
 
-Guardrails exist in two layers:
-
 1. Provider prompt/runtime guidance
 2. Backend validation and enforcement
+3. Public demo guardrails (Redis-backed quotas when enabled)
 
-Provider guidance should prevent unsafe conversational behavior.
-
-Backend enforcement must protect data and business invariants.
-
-Important principle:
-
-    Provider prompt guides behavior. Backend enforces policy.
-
-Public demo guardrails add a third operational layer for unauthenticated hosted demos:
-
-- Redis-backed per-IP and global quotas
-- Protected chat and Retell tool routes
-- Standardized `429` responses when limits are exceeded
-
-See: [Public Demo Guardrails](public-demo-guardrails.md)
+See [Public Demo Guardrails](public-demo-guardrails.md).
 
 ## Observability
 
-Observability is part of the system design.
+### Implemented
 
-The system should track:
+- Structured JSON logs to stdout
+- `request_id` and `correlation_id` on requests, errors, and audit logs
+- Audit logs for important domain events
+- Health endpoints: `GET /health`, `GET /health/dependencies`
 
-- Structured logs
-- request_id
-- correlation_id
-- conversation_id
-- Audit logs
-- Prometheus metrics
-- OpenTelemetry traces
-- Health endpoints
-- Dependency health endpoint
+Important events include conversation lifecycle, scheduling actions, escalation creation, email job enqueue/complete, tool call failures, and rate-limit blocks.
 
-Important events include:
+See [Request Correlation and Structured Logging](request-correlation-logging.md).
 
-- conversation_started
-- conversation_completed
-- patient_lookup_requested
-- appointment_slot_held
-- appointment_booked
-- appointment_rescheduled
-- appointment_cancelled
-- escalation_created
-- email_job_enqueued
-- email_job_completed
-- tool_call_failed
-- guardrail_triggered
-- rate_limit_blocked
+### Extension points (not active in default demo runtime)
 
-## Scaling Considerations
+- Prometheus metrics export
+- OpenTelemetry traces and distributed tracing across workers
+- Log shipping and dashboards (for example Grafana)
 
-The backend should support horizontal scaling by keeping durable and shared state outside application memory.
+Dependencies for Prometheus and OpenTelemetry exist in the project but are not wired into the running application.
 
-Shared components:
+## Human escalation
 
-- PostgreSQL for durable records
-- Redis for temporary operational state
-- RabbitMQ for background jobs
+Human escalation creates a durable internal record and enqueues a staff notification email job. Local/demo mode uses the fake email provider; hosted demos may use Resend when configured.
 
-Important scaling constraints:
+This demo does not include a live operator console or real-time human handoff queue.
 
-- Appointment booking must avoid double booking.
-- Redis holds must expire automatically.
-- PostgreSQL should enforce uniqueness for active appointment slots.
-- Workers must process jobs idempotently.
-- Provider calls must be observable and rate-limited.
+See [Human Escalation Foundation](human-escalation.md) and [Human Handoff Notification Job](human-handoff-notification-job.md).
 
-## Security Considerations
+## Security considerations
 
-V1 keeps authentication intentionally simple for demo usage.
+Public demo routes (chat, optional Retell tools) are intentionally unauthenticated. Auth/RBAC is outside demo scope.
 
-Public/demo routes:
+Production hardening concerns include admin authentication, Retell webhook signature validation, provider budget limits, and stronger abuse protection.
 
-- Chat demo
-- Retell tool endpoints
+The system avoids unnecessary sensitive identifiers such as SSN.
 
-Admin/demo routes may be open locally for easy testing.
+## Scaling considerations
 
-Production hardening should include:
-
-- Admin authentication
-- X-Admin-Token
-- Retell webhook signature validation
-- Provider callback allowlisting
-- Provider budget limits
-- Stronger abuse protection
-
-The system must avoid unnecessary sensitive identifiers such as SSN.
+Horizontal scaling relies on PostgreSQL (durable state), Redis (temporary state), and RabbitMQ (job dispatch). Booking must avoid double booking via Redis holds and PostgreSQL uniqueness. Workers must process jobs idempotently.

@@ -1,7 +1,7 @@
 [project]
 name = "ai-clinic-receptionist-platform"
 version = "0.1.0"
-description = "Production-style AI receptionist for clinics with chat, Retell voice tools, scheduling, guardrails, observability, and background jobs."
+description = "Portfolio demo of a production-minded clinic receptionist backend with written chat, optional Retell voice, scheduling, guardrails, structured logging, and background email jobs."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
