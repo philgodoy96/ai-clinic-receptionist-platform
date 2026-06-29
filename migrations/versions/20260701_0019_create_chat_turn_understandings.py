@@ -81,53 +81,53 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["conversation_id"],
             ["conversations.id"],
-            name="fk_chat_turn_understandings_conversation_id_conversations",
+            name="fk_ctu_conversation",
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["user_message_id"],
             ["conversation_messages.id"],
-            name="fk_chat_turn_understandings_user_message_id_conversation_messages",
+            name="fk_ctu_user_msg",
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["assistant_message_id"],
             ["conversation_messages.id"],
-            name="fk_chat_turn_understandings_assistant_message_id_conversation_messages",
+            name="fk_ctu_assistant_msg",
             ondelete="SET NULL",
         ),
-        sa.PrimaryKeyConstraint("id", name="pk_chat_turn_understandings"),
+        sa.PrimaryKeyConstraint("id", name="pk_ctu"),
         sa.UniqueConstraint(
             "user_message_id",
-            name="uq_chat_turn_understandings_user_message_id",
+            name="uq_ctu_user_msg",
         ),
     )
     op.create_index(
-        "ix_chat_turn_understandings_conversation_created_at",
+        "ix_ctu_conversation_created_at",
         "chat_turn_understandings",
         ["conversation_id", "created_at"],
         unique=False,
     )
     op.create_index(
-        "ix_chat_turn_understandings_user_message_id",
+        "ix_ctu_user_msg_id",
         "chat_turn_understandings",
         ["user_message_id"],
         unique=False,
     )
     op.create_index(
-        "ix_chat_turn_understandings_assistant_message_id",
+        "ix_ctu_assistant_msg_id",
         "chat_turn_understandings",
         ["assistant_message_id"],
         unique=False,
     )
     op.create_index(
-        "ix_chat_turn_understandings_prompt_version_created_at",
+        "ix_ctu_prompt_version_created_at",
         "chat_turn_understandings",
         ["prompt_version", "created_at"],
         unique=False,
     )
     op.create_index(
-        "ix_chat_turn_understandings_failure_category",
+        "ix_ctu_failure_category",
         "chat_turn_understandings",
         ["failure_category"],
         unique=False,
@@ -136,23 +136,23 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index(
-        "ix_chat_turn_understandings_failure_category",
+        "ix_ctu_failure_category",
         table_name="chat_turn_understandings",
     )
     op.drop_index(
-        "ix_chat_turn_understandings_prompt_version_created_at",
+        "ix_ctu_prompt_version_created_at",
         table_name="chat_turn_understandings",
     )
     op.drop_index(
-        "ix_chat_turn_understandings_assistant_message_id",
+        "ix_ctu_assistant_msg_id",
         table_name="chat_turn_understandings",
     )
     op.drop_index(
-        "ix_chat_turn_understandings_user_message_id",
+        "ix_ctu_user_msg_id",
         table_name="chat_turn_understandings",
     )
     op.drop_index(
-        "ix_chat_turn_understandings_conversation_created_at",
+        "ix_ctu_conversation_created_at",
         table_name="chat_turn_understandings",
     )
     op.drop_table("chat_turn_understandings")
