@@ -234,3 +234,22 @@ Manual QA script: [Chat Appointment Management Manual Testing](../testing/chat-a
 Architecture: [Chat Appointment Management](../architecture/chat-appointment-management.md).
 
 Retell/voice remains a separate provider-driven path and is not required for written-chat testing.
+
+## Validation
+
+Run these commands from the repository root to validate backend changes:
+
+```powershell
+docker compose config
+python -m pytest tests -q
+python -m ruff check .
+python -m mypy app tests
+```
+
+Frontend validation (from `web/`):
+
+```powershell
+cd web
+npm run lint
+npm run build
+```
