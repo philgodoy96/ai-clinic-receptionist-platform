@@ -27,6 +27,7 @@ from app.services.email_jobs import (
     build_appointment_confirmation_idempotency_key,
 )
 from tests.chat_booking_flow_support import post_new_patient_booking_via_api
+from tests.guardrail_test_overrides import disable_demo_guardrails_for_test_app
 from tests.test_chat_receptionist_service import (
     FakeAppointmentHoldService,
     create_chat_receptionist_service,
@@ -109,6 +110,7 @@ class FakeDatabaseSession:
 @pytest.fixture()
 def chat_booking_client() -> Generator[ChatBookingApiContext, None, None]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversations = ConversationService(repository=repository)
     hold_service = FakeAppointmentHoldService()
