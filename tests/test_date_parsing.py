@@ -53,6 +53,28 @@ def test_parse_next_monday_from_wednesday_reference_date(
     assert result.source_text.lower().startswith("next ")
 
 
+def test_parse_next_friday_from_wednesday_uses_upcoming_friday(
+    parser: NaturalLanguageDateParser,
+) -> None:
+    result = parser.parse("next friday")
+
+    assert result.status == DateParseStatus.PARSED
+    assert result.normalized_date == "2026-07-03"
+    assert result.source_text is not None
+    assert result.source_text.lower().startswith("next ")
+
+
+def test_parse_next_same_weekday_uses_following_week(
+    parser: NaturalLanguageDateParser,
+) -> None:
+    result = parser.parse("next wednesday")
+
+    assert result.status == DateParseStatus.PARSED
+    assert result.normalized_date == "2026-07-08"
+    assert result.source_text is not None
+    assert result.source_text.lower().startswith("next ")
+
+
 def test_parse_this_friday_from_wednesday_reference_date(
     parser: NaturalLanguageDateParser,
 ) -> None:
@@ -176,3 +198,63 @@ def test_bare_weekday_is_not_parsed_globally(parser: NaturalLanguageDateParser) 
     result = parser.parse("What about Wednesday?")
 
     assert result.status == DateParseStatus.NOT_FOUND
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "July 6",
+        "July 06",
+        "July 6th",
+        "july 6th please",
+        "Jul 6",
+        "6 July",
+        "6th July",
+        "6th of July",
+    ],
+)
+def test_parse_month_name_date_infers_upcoming_year(
+    parser: NaturalLanguageDateParser,
+    text: str,
+) -> None:
+    result = parser.parse(text)
+
+    assert result.status == DateParseStatus.PARSED
+    assert result.normalized_date == "2026-07-06"
+
+
+def test_parse_month_name_date_with_explicit_year(
+    parser: NaturalLanguageDateParser,
+) -> None:
+    result = parser.parse("July 6, 2027")
+
+    assert result.status == DateParseStatus.PARSED
+    assert result.normalized_date == "2027-07-06"
+
+
+def test_parse_month_name_date_with_year_no_comma(
+    parser: NaturalLanguageDateParser,
+) -> None:
+    result = parser.parse("6 July 2027")
+
+    assert result.status == DateParseStatus.PARSED
+    assert result.normalized_date == "2027-07-06"
+
+
+def test_parse_past_month_name_date_rolls_to_next_year(
+    parser: NaturalLanguageDateParser,
+) -> None:
+    # Reference date is 2026-07-01, so a bare ``June 1`` is already past.
+    result = parser.parse("June 1")
+
+    assert result.status == DateParseStatus.PARSED
+    assert result.normalized_date == "2027-06-01"
+
+
+def test_parse_invalid_month_name_date_is_not_found(
+    parser: NaturalLanguageDateParser,
+) -> None:
+    result = parser.parse("February 30")
+
+    assert result.status == DateParseStatus.NOT_FOUND
+    assert result.normalized_date is None

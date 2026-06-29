@@ -51,6 +51,7 @@ from app.services.time_preferences import TimePreferenceParser
 from tests.chat_booking_flow_support import (
     post_new_patient_booking_via_api,
 )
+from tests.guardrail_test_overrides import disable_demo_guardrails_for_test_app
 from tests.llm_provider_test_helpers import build_receptionist_analysis_payload
 from tests.llm_reliability_test_helpers import (
     AlwaysFailingLLMProvider,
@@ -75,6 +76,7 @@ from tests.test_scheduling_services import (
 @pytest.fixture()
 def chat_client() -> Generator[ChatApiContext, None, None]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
     chat_service = create_chat_receptionist_service(
@@ -145,6 +147,7 @@ class FailingEmailJobDispatchPublisher:
 @pytest.fixture()
 def booking_chat_api_client() -> Generator[BookingChatApiContext, None, None]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
     hold_service = FakeAppointmentHoldService()
@@ -199,6 +202,7 @@ def booking_chat_api_client() -> Generator[BookingChatApiContext, None, None]:
 @pytest.fixture()
 def booking_chat_api_client_failing_dispatch() -> Generator[BookingChatApiContext, None, None]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
     hold_service = FakeAppointmentHoldService()
@@ -252,6 +256,7 @@ def booking_chat_api_client_failing_dispatch() -> Generator[BookingChatApiContex
 @pytest.fixture()
 def human_escalation_chat_api_client() -> Generator[HumanEscalationChatApiContext, None, None]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
     escalation_repository = FakeHumanEscalationRepository()
@@ -305,6 +310,7 @@ def human_escalation_chat_api_client_failing_dispatch() -> Generator[
     None,
 ]:
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
     escalation_repository = FakeHumanEscalationRepository()
@@ -682,6 +688,7 @@ def chat_client_with_default_fake_llm(
     assert isinstance(llm_analysis.provider, FakeLLMProvider)
 
     app = create_app()
+    disable_demo_guardrails_for_test_app(app)
     repository = FakeConversationRepository()
     conversation_service = ConversationService(repository=repository)
     scheduling = create_demo_scheduling_service()
