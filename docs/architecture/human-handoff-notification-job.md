@@ -2,29 +2,30 @@
 
 ## Context
 
-The platform can create `HumanEscalation` records when the chat flow detects an immediate handoff signal.
+The platform creates `HumanEscalation` records when the chat flow detects an immediate handoff signal.
 
-This implementation phase adds a durable notification job so the escalation can become actionable by future staff workflows.
+A durable notification job makes the escalation actionable for staff workflows without requiring a live operator console.
 
-## Design Principle
+## Design principle
 
 Escalation creates an operational record.
 
 Notification jobs make the handoff actionable.
 
-The demo still does not include a real staff inbox, Slack integration, live human chat, or human dashboard.
+Staff notification is modeled as a durable email job. Local/demo mode uses the fake email provider; hosted demos may use Resend when configured. This demo does not include a live operator console, Slack integration, or real-time human handoff queue.
 
-## Current Implementation
+## Current implementation
 
-The current implementation uses the existing email job/background dispatch pattern.
+The implementation uses the existing email job and background dispatch pattern.
 
-When an immediate chat escalation is created, the system creates a durable notification job for future staff notification.
+When an immediate chat escalation is created, the system creates a durable `human_escalation_notification` email job.
 
-RabbitMQ dispatch is best-effort after commit.
+- **Fake provider (default):** job is processed by the email worker and recorded in memory; no outbound mail
+- **Resend (optional):** when `EMAIL_PROVIDER=resend` is configured, the worker sends real staff notification mail to `HUMAN_ESCALATION_NOTIFICATION_EMAIL`
 
-If RabbitMQ publish fails, the escalation and notification job remain durable in PostgreSQL.
+RabbitMQ dispatch is best-effort after commit. If RabbitMQ publish fails, the escalation and notification job remain durable in PostgreSQL.
 
-## Notification Triggers
+## Notification triggers
 
 Notification jobs are created for immediate escalation reasons:
 
@@ -39,7 +40,7 @@ Notification job creation is idempotent per escalation.
 
 Repeated user messages or retried requests should not create duplicate staff notification jobs.
 
-## Payload Boundary
+## Payload boundary
 
 Notification payloads may include:
 
@@ -59,21 +60,16 @@ Notification payloads must not include:
 - raw LLM output
 - clinical diagnosis
 
-## Active Holds
+## Active holds
 
 Human escalation does not automatically release active appointment holds.
 
-If a hold exists, safe hold context may be included so future staff workflows know a temporary hold was present.
+If a hold exists, safe hold context may be included so staff workflows know a temporary hold was present.
 
 The hold remains governed by Redis TTL or explicit release/cancel actions.
 
-## Future Work
+## Outside demo scope
 
-Future implementation phases may add:
-
-- real staff email provider
-- Slack notification provider
-- staff assignment
-- escalation dashboard
-- voice provider call transfer
-- escalation resolution audit expansion
+- Live operator console or real-time handoff queue
+- Slack or non-email notification providers
+- Voice provider call transfer
