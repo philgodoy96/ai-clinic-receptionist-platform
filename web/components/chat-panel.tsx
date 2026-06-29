@@ -72,14 +72,18 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
   const [sessionRestored, setSessionRestored] = useState(
     () => loadDemoConversationId() !== null,
   );
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const localMessageIdRef = useRef(0);
   const isSubmittingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [messages, isLoading]);
 
   // When the panel unmounts (Exit chat), abort any in-flight request so a late
@@ -186,7 +190,7 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
   }
 
   return (
-    <section className="mx-auto flex h-full w-full max-w-3xl flex-1 flex-col px-4 py-6 sm:px-6">
+    <section className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-6 sm:px-6">
       <div className="mb-4 flex items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-white-900">Demo chat</h2>
@@ -207,8 +211,14 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
         <DemoDisclaimer />
       </div>
 
-      <div className="flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
-        <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+      <div
+        className="flex flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm"
+        style={{ height: "min(40rem, calc(100dvh - 13rem))" }}
+      >
+        <div
+          ref={messagesContainerRef}
+          className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6"
+        >
           {sessionRestored && messages.length === 0 ? (
             <p className="text-sm text-zinc-500">
               Session restored. Send a message to continue the conversation.
@@ -258,7 +268,6 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
 
           {isLoading ? <TypingIndicator /> : null}
 
-          <div ref={messagesEndRef} />
         </div>
 
         <form

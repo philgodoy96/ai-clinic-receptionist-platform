@@ -28,7 +28,7 @@ export function DemoPage() {
 
   if (view === "chat") {
     return (
-      <main className="flex min-h-[calc(100vh-8rem)] flex-1 flex-col">
+      <main className="flex flex-1 flex-col">
         <ChatPanel onExit={handleExit} />
       </main>
     );
