@@ -76,10 +76,19 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const localMessageIdRef = useRef(0);
   const isSubmittingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  // When the panel unmounts (Exit chat), abort any in-flight request so a late
+  // response cannot append to the next, freshly-reset chat session.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
   async function submitMessage(message: string) {
     const trimmed = message.trim();
@@ -88,6 +97,8 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
     }
 
     isSubmittingRef.current = true;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     const typingStartedAt = Date.now();
 
     localMessageIdRef.current += 1;
@@ -105,15 +116,24 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
     setIsLoading(true);
 
     try {
-      const response = await sendChatMessage({
-        message: trimmed,
-        conversation_id: conversationId,
-        conversation_metadata: conversationId
-          ? {}
-          : { source: "public_demo" },
-      });
+      const response = await sendChatMessage(
+        {
+          message: trimmed,
+          conversation_id: conversationId,
+          conversation_metadata: conversationId
+            ? {}
+            : { source: "public_demo" },
+        },
+        { signal: controller.signal },
+      );
 
       await waitForMinimumTypingDuration(typingStartedAt);
+
+      // The user exited (panel unmounting) while this request was in flight.
+      // Skip all state updates so the late response is dropped.
+      if (controller.signal.aborted) {
+        return;
+      }
 
       saveDemoConversationId(response.conversation_id);
       setConversationId(response.conversation_id);
@@ -128,6 +148,10 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
         },
       ]);
     } catch (submitError) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       if (
         submitError instanceof ApiClientError &&
         submitError.code === "conversation_not_found"
@@ -148,9 +172,11 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
       ]);
       setInput(trimmed);
     } finally {
-      isSubmittingRef.current = false;
-      setIsLoading(false);
-      inputRef.current?.focus();
+      if (!controller.signal.aborted) {
+        isSubmittingRef.current = false;
+        setIsLoading(false);
+        inputRef.current?.focus();
+      }
     }
   }
 
