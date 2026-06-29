@@ -23,15 +23,44 @@ const SUGGESTED_PROMPTS = [
   "This is an emergency",
 ] as const;
 
+const MIN_TYPING_INDICATOR_MS = 700;
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  variant?: "error";
 };
 
 type ChatPanelProps = {
   onExit: () => void;
 };
+
+function TypingIndicator() {
+  return (
+    <div className="flex justify-start" aria-live="polite" aria-label="Receptionist is typing">
+      <div className="flex max-w-[85%] items-center gap-2 rounded-2xl rounded-bl-md bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
+        <span></span>
+        <span className="inline-flex items-end gap-0.5 pb-0.5" aria-hidden="true">
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:0ms]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:150ms]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400 [animation-delay:300ms]" />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function waitForMinimumTypingDuration(startedAt: number): Promise<void> {
+  const elapsed = Date.now() - startedAt;
+  const remaining = MIN_TYPING_INDICATOR_MS - elapsed;
+  if (remaining <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    setTimeout(resolve, remaining);
+  });
+}
 
 export function ChatPanel({ onExit }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -40,11 +69,11 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
     loadDemoConversationId(),
   );
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [sessionRestored, setSessionRestored] = useState(
     () => loadDemoConversationId() !== null,
   );
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const localMessageIdRef = useRef(0);
   const isSubmittingRef = useRef(false);
 
@@ -59,7 +88,20 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
     }
 
     isSubmittingRef.current = true;
-    setError(null);
+    const typingStartedAt = Date.now();
+
+    localMessageIdRef.current += 1;
+    const userMessageId = `user-${localMessageIdRef.current}`;
+
+    setMessages((current) => [
+      ...current,
+      {
+        id: userMessageId,
+        role: "user",
+        content: trimmed,
+      },
+    ]);
+    setInput("");
     setIsLoading(true);
 
     try {
@@ -71,20 +113,14 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
           : { source: "public_demo" },
       });
 
-      localMessageIdRef.current += 1;
+      await waitForMinimumTypingDuration(typingStartedAt);
 
       saveDemoConversationId(response.conversation_id);
       setConversationId(response.conversation_id);
       setSessionRestored(false);
-      setInput("");
 
       setMessages((current) => [
         ...current,
-        {
-          id: `user-${localMessageIdRef.current}`,
-          role: "user",
-          content: trimmed,
-        },
         {
           id: response.assistant_message_id,
           role: "assistant",
@@ -100,11 +136,21 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
         setConversationId(null);
       }
 
+      localMessageIdRef.current += 1;
+      setMessages((current) => [
+        ...current,
+        {
+          id: `error-${localMessageIdRef.current}`,
+          role: "assistant",
+          content: toSafeChatErrorMessage(submitError),
+          variant: "error",
+        },
+      ]);
       setInput(trimmed);
-      setError(toSafeChatErrorMessage(submitError));
     } finally {
       isSubmittingRef.current = false;
       setIsLoading(false);
+      inputRef.current?.focus();
     }
   }
 
@@ -130,15 +176,6 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
           Exit chat
         </button>
       </div>
-
-      {error ? (
-        <div
-          role="alert"
-          className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
-        >
-          {error}
-        </div>
-      ) : null}
 
       <div className="mb-4">
         <DemoDisclaimer />
@@ -181,22 +218,19 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
               <div
                 className={
                   message.role === "user"
-                    ? "max-w-[85%] rounded-2xl rounded-br-md bg-teal-700 px-4 py-3 text-sm leading-6 text-white"
-                    : "max-w-[85%] rounded-2xl rounded-bl-md bg-zinc-100 px-4 py-3 text-sm leading-6 text-zinc-800"
+                    ? "max-w-[85%] whitespace-pre-line rounded-2xl rounded-br-md bg-teal-700 px-4 py-3 text-sm leading-6 text-white"
+                    : message.variant === "error"
+                      ? "max-w-[85%] whitespace-pre-line rounded-2xl rounded-bl-md border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-800"
+                      : "max-w-[85%] whitespace-pre-line rounded-2xl rounded-bl-md bg-zinc-100 px-4 py-3 text-sm leading-6 text-zinc-800"
                 }
+                role={message.variant === "error" ? "alert" : undefined}
               >
                 {message.content}
               </div>
             </div>
           ))}
 
-          {isLoading ? (
-            <div className="flex justify-start">
-              <div className="rounded-2xl rounded-bl-md bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
-                Receptionist is typing...
-              </div>
-            </div>
-          ) : null}
+          {isLoading ? <TypingIndicator /> : null}
 
           <div ref={messagesEndRef} />
         </div>
@@ -210,6 +244,7 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
               Message
             </label>
             <input
+              ref={inputRef}
               id="chat-input"
               type="text"
               value={input}
@@ -217,11 +252,13 @@ export function ChatPanel({ onExit }: ChatPanelProps) {
               disabled={isLoading}
               placeholder="Type your message..."
               maxLength={2000}
-              className="min-w-0 flex-1 rounded-full border border-zinc-300 px-4 py-3 text-sm text-zinc-900 outline-none transition-colors focus:border-teal-500 disabled:cursor-not-allowed disabled:bg-zinc-50"
+              aria-busy={isLoading}
+              className="min-w-0 flex-1 rounded-full border border-zinc-300 px-4 py-3 text-sm text-zinc-900 outline-none transition-colors focus:border-teal-500 disabled:cursor-not-allowed disabled:bg-zinc-50 disabled:text-zinc-500"
             />
             <button
               type="submit"
               disabled={isLoading || input.trim().length === 0}
+              aria-busy={isLoading}
               className="inline-flex h-12 items-center justify-center rounded-full bg-teal-700 px-6 text-sm font-medium text-white transition-colors hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isLoading ? "Sending..." : "Send"}
