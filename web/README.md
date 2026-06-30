@@ -59,8 +59,8 @@ Safe to expose to the browser. Copy from [`.env.example`](.env.example).
 | Variable | Description |
 |----------|-------------|
 | `NEXT_PUBLIC_API_BASE_URL` | Backend API origin for display and server-side references (no trailing slash). Default: `http://localhost:8000` |
-| `NEXT_PUBLIC_GITHUB_URL` | Repository link for the landing page and footer |
-| `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Architecture documentation link |
+| `NEXT_PUBLIC_GITHUB_URL` | Repository link for the landing page and footer (optional; defaults to the portfolio repo in `lib/config.ts`) |
+| `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Architecture documentation link (optional; defaults to GitHub `docs/architecture` in `lib/config.ts`) |
 | `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | Voice demo feature flag (`true` / `false`) |
 
 ### Server-only

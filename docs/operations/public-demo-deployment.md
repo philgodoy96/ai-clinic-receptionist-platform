@@ -2,7 +2,19 @@
 
 This runbook describes how to deploy the hosted **public unauthenticated demo** for the fictional clinic receptionist platform. It is intended for portfolio-style deployments on a managed platform (Railway, Render, Fly.io, ECS, etc.), not for a full production clinic system.
 
-Use `.env.demo.example` as the environment checklist and [Configuration](../configuration.md) for variable reference.
+## Portfolio demo presentation
+
+The **canonical public demo** is the [recorded walkthrough](https://youtu.be/v2MyZqSqsJ8). The system was validated against a managed-service deployment (API, email worker, Postgres, Redis, RabbitMQ, and optional Groq / Resend / Retell integrations). A permanently hosted live deployment is **not maintained** as the primary portfolio path.
+
+That is an intentional demo strategy, not a gap in the implementation:
+
+- Free-tier live hosting introduces cold starts that degrade the receptionist UX.
+- Free tiers do not provide a practical always-on background worker for durable email job dispatch.
+- The production-style architecture (API + worker + Postgres + Redis + RabbitMQ + provider adapters) remains documented and deployable when you use managed services.
+
+For portfolio viewers, start with the video. Use this runbook and [local development](local-development.md) when you want to run or redeploy the stack yourself.
+
+Use `.env.demo.example` as the environment checklist and [Configuration](../configuration.md) for variable reference. **Never commit** `.env`, real API keys, or webhook secrets.
 
 ## Deployment Architecture
 
@@ -54,7 +66,7 @@ flowchart TB
 |-----------|------|------------------------|
 | **Web service** | Next.js public demo UI: landing, chat panel, voice entry | Recommended for portfolio demo |
 | **API service** | FastAPI app: chat, scheduling, Retell tools, health | Yes |
-| **Email worker** | RabbitMQ consumer that processes durable `EmailJob` records | Yes when `EMAIL_JOB_DISPATCH_ENABLED=true` |
+| **Email worker** | RabbitMQ consumer that processes durable `EmailJob` records | Yes when `EMAIL_JOB_DISPATCH_ENABLED=true`; API-only free deployments often disable dispatch |
 | **PostgreSQL** | Durable conversations, appointments, email jobs, audit logs | Yes |
 | **Redis** | Appointment holds, demo guardrails, rate-limit counters | Yes when guardrails enabled |
 | **RabbitMQ** | Wake-up queue for email job processing | Yes when dispatch enabled |
@@ -88,8 +100,8 @@ Only **`NEXT_PUBLIC_*`** vars belong in the web deployment. Do not put backend s
 |----------|----------|-------|
 | `NEXT_PUBLIC_API_BASE_URL` | Recommended | Public API origin (no trailing slash); used for display and as rewrite fallback |
 | `API_PROXY_TARGET` | Recommended when API is on another host | Server-only; Next.js rewrites `/api/v1/*` to this origin |
-| `NEXT_PUBLIC_GITHUB_URL` | Optional | Footer / landing link |
-| `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Optional | Footer / landing link |
+| `NEXT_PUBLIC_GITHUB_URL` | Optional | Footer / landing link (defaults to the portfolio repository when unset) |
+| `NEXT_PUBLIC_ARCHITECTURE_DOC_URL` | Optional | Footer / landing link (defaults to `docs/architecture` on GitHub when unset) |
 | `NEXT_PUBLIC_VOICE_DEMO_ENABLED` | Optional | `false` = voice configuration preview; `true` = live Retell Web SDK voice demo (requires backend `RETELL_WEB_CALL_ENABLED`) |
 
 Example (split deployment):
