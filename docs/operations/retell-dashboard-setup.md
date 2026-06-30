@@ -187,7 +187,7 @@ Configure the prompt so the agent:
 | Ask “Is there anything else you need today?” after a successful booking and **wait for the answer** | End on “um” or short pauses mid-flow |
 | Continue the conversation when unsure whether the caller is finished | End the call while a tool request is in flight |
 
-Full anti-patterns and dialogue examples: [Retell Conversation UX Playbook — Caller wants to end call](retell-conversation-ux-playbook.md#9-caller-wants-to-end-the-call) and [Smoke Scenario 8](retell-voice-smoke-scenarios.md#scenario-8--no-premature-end_call).
+Full anti-patterns and dialogue examples: [Retell Conversation UX Playbook — Caller wants to end call](retell-conversation-ux-playbook.md#9-caller-wants-to-end-the-call) and [Smoke Scenario 8](retell-voice-smoke-scenarios.md#scenario-8-no-premature-end_call).
 
 ## Custom Function / Tool Setup Checklist
 
@@ -264,7 +264,7 @@ When exposing a local API to Retell webhooks via ngrok or a similar tunnel:
 1. Point Retell **tool** and **lifecycle** webhook URLs at the tunnel HTTPS origin (for example `https://<subdomain>.ngrok-free.app/api/v1/retell/tools` and `.../api/v1/retell/webhooks/lifecycle`).
 2. Set `TRUST_PROXY_HEADERS=true` on the API so per-IP demo guardrails see the caller IP from `X-Forwarded-For`, not the tunnel edge.
 3. **Preserve the `x-retell-signature` header** — Retell signs the raw request body; do not strip or rewrite signature headers at the tunnel or reverse proxy. If verification fails with a valid secret, confirm the proxy forwards `x-retell-signature` unchanged.
-4. Keep **Payload: args only** **OFF** so Retell sends `call.call_id` and provider `tool_call_id` for idempotency (see [Smoke Scenario 10](retell-voice-smoke-scenarios.md#scenario-10--provider-tool_call_id-behavior)).
+4. Keep **Payload: args only** **OFF** so Retell sends `call.call_id` and provider `tool_call_id` for idempotency (see [Smoke Scenario 10](retell-voice-smoke-scenarios.md#scenario-10-provider-tool_call_id-behavior)).
 5. Use the same tunnel base URL for all nine custom functions and the lifecycle webhook unless you intentionally split hosts.
 6. For local-only testing without real signatures, use `RETELL_ALLOW_INSECURE_WEBHOOKS=true` in `local` / `development` `APP_ENV` only (see [Retell Webhook Security](../architecture/retell-webhook-security.md)).
 
@@ -380,7 +380,7 @@ After dashboard and deployment configuration:
 - [ ] Demo disclaimer visible in UI (fictional clinic).
 - [ ] Callers use sample contact information only — no real PHI collected or spoken.
 - [ ] `VOICE_PATIENT_INTAKE_MODE` matches environment (`demo_auto_create` for public demo; `lookup_only` otherwise).
-- [ ] Transcript review: no “slot”, “hold reference”, “patient not found”, or UUID strings in agent speech (see [Smoke Scenarios — transcript review](retell-voice-smoke-scenarios.md)).
+- [ ] Transcript review: no “slot”, “hold reference”, “patient not found”, or UUID strings in agent speech (see [Smoke Scenarios — After smoke tests](retell-voice-smoke-scenarios.md#after-smoke-tests)).
 
 ## Rollback Steps
 
