@@ -2,6 +2,22 @@
 
 Portfolio demo of a production-minded clinic receptionist backend: written chat appointment workflows, optional Retell voice integration, persistence, guardrails, structured observability, and durable background email jobs.
 
+**Repository:** [github.com/philgodoy96/ai-clinic-receptionist-platform](https://github.com/philgodoy96/ai-clinic-receptionist-platform)
+
+## Watch the demo
+
+**Watch the demo:** [https://youtu.be/v2MyZqSqsJ8](https://youtu.be/v2MyZqSqsJ8)
+
+The recording walks through the fictional clinic receptionist end to end:
+
+- voice appointment booking through Retell
+- written-chat booking
+- rescheduling in the same conversation
+- appointment cancellation
+- backend state handling, holds, confirmation boundaries, and provider integration boundaries
+
+The video is the canonical public demo. Run the stack locally (see below) to explore the same flows interactively.
+
 ## Demo scope
 
 This project models a fictional clinic for portfolio demonstration. It is not for clinical advice, diagnosis, emergency triage, or medical decision support. Do not enter real patient data. The demo focuses on appointment workflow reliability, state handling, confirmation boundaries, provider boundaries, and backend execution safety.
@@ -94,6 +110,8 @@ Patient identity uses safer identifiers: full name, date of birth, phone number,
 
 This repository is a **portfolio demo with production-minded backend patterns**. Written chat appointment flows, persistence, email workers, human escalation, health endpoints, structured logging, and the public web shell are implemented and demo-ready. Retell voice, Groq/Bedrock LLM, and Resend email are optional integration boundaries—not active in the default local demo.
 
+The system was validated against a managed-service deployment setup (API, worker, Postgres, Redis, RabbitMQ, and optional provider integrations). The **portfolio presentation uses the recorded demo video** above rather than a permanently hosted live deployment. That is intentional: free-tier hosting introduces cold starts and does not provide a practical always-on background worker for email jobs. The production-style architecture remains in the codebase and docs for API + worker + Postgres + Redis + RabbitMQ + provider integrations when you deploy with managed services.
+
 **Architecture overview:** [`docs/architecture/overview.md`](docs/architecture/overview.md)
 
 **Configuration and deployment:**
@@ -110,24 +128,25 @@ This repository is a **portfolio demo with production-minded backend patterns**.
 - [`docs/architecture/public-demo-guardrails.md`](docs/architecture/public-demo-guardrails.md)
 - [`docs/roadmap.md`](docs/roadmap.md) — engineering scope ledger
 
-## Public demo deployment
+## Deployment and demo modes
 
-| | **Local mode** | **Public demo mode** |
+| | **Local mode** | **Managed-service deployment** |
 |---|---|---|
-| **Purpose** | Development and CI | Hosted unauthenticated portfolio demo |
+| **Purpose** | Development, CI, and interactive exploration | Validated portfolio deployment pattern (not maintained as the primary public demo) |
 | **Config template** | [`.env.example`](.env.example) | [`.env.demo.example`](.env.demo.example) |
 | **Providers** | Fake LLM and fake email by default | Optional Groq / Resend / Retell when configured |
 | **Guardrails** | Disabled | Redis-backed rate limits and quotas |
 | **Patient data** | Fictional demo clinic only | Fictional demo clinic only — no real PHI |
+| **Email worker** | RabbitMQ consumer or polling fallback | Separate worker process when `EMAIL_JOB_DISPATCH_ENABLED=true` |
 
 **Local mode** needs no external API keys. Use Docker Compose for PostgreSQL, Redis, and RabbitMQ. After migrations and `python -m scripts.seed_demo_data`, refresh demo availability with `python -m app.scripts.generate_demo_availability`.
 
-**Public demo mode** enables bounded internet-facing access with `PUBLIC_DEMO_MODE=true` and guardrails enabled.
-
-Deploy as **two processes** from the same Docker image:
+**Managed-service deployment** (documented for reference) enables bounded internet-facing access with `PUBLIC_DEMO_MODE=true` and guardrails enabled. Deploy as **two processes** from the same Docker image when email dispatch is enabled:
 
 - **API:** `python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`
 - **Email worker:** `python -m scripts.run_email_worker`
+
+An API-only deployment on free tiers can disable background email dispatch (`EMAIL_JOB_DISPATCH_ENABLED=false`); durable `EmailJob` records are still created, but outbound mail requires the worker and RabbitMQ path described in the architecture docs.
 
 Health checks: `GET /health` and `GET /health/dependencies`.
 
@@ -152,3 +171,13 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). Details: [`web/README.md`](web/README.md).
+
+## Validation
+
+Manual checks before sharing the portfolio:
+
+- **Backend:** `pytest` (full suite)
+- **Frontend:** `cd web && npm run build` (and `npm run lint` / `npm run typecheck` as needed)
+- **Demo flow:** follow the [recorded demo](https://youtu.be/v2MyZqSqsJ8) scenarios locally, or replay the video for the public portfolio presentation
+
+Do not commit `.env`, provider API keys, or webhook secrets. Use `.env.example` and `.env.demo.example` as templates only.

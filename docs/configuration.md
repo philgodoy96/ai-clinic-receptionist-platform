@@ -2,7 +2,7 @@
 
 Application settings are loaded from environment variables and an optional local `.env` file through Pydantic settings.
 
-See `.env.example` for a safe local template and `.env.demo.example` for a hosted public demo deployment template.
+See `.env.example` for a safe local template and `.env.demo.example` for a hosted public demo deployment template. The [recorded portfolio demo](https://youtu.be/v2MyZqSqsJ8) is the canonical public walkthrough; managed-service deployment settings below document the validated production-style pattern. Never commit real API keys or webhook secrets.
 
 ## Application
 
