@@ -1,5 +1,9 @@
 # Architecture Overview
 
+## Portfolio demo presentation
+
+The [recorded demo](https://youtu.be/v2MyZqSqsJ8) is the canonical public walkthrough. The codebase was validated on a managed-service deployment pattern; live hosting is not maintained as the primary portfolio path. Run locally or follow [Public Demo Deployment](../operations/public-demo-deployment.md) to redeploy API, worker, Postgres, Redis, RabbitMQ, and optional Groq / Resend / Retell integrations.
+
 ## Business context
 
 AI Clinic Receptionist Platform is a portfolio demo of a production-minded applied AI and backend system for a fictional US-based clinic.
