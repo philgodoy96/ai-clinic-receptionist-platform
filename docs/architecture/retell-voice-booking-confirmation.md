@@ -72,7 +72,7 @@ Voice booking prefers an opaque `patient_resolution_id` from `resolve_patient_id
 
 Phone numbers are optional only if the shared booking rules allow them.
 
-The voice path does not store raw transcripts or audio for identity verification.
+The voice path does not store raw transcripts or audio for patient identity resolution.
 
 See also: [Voice Patient Identity Resolution](voice-patient-identity-resolution.md).
 
