@@ -41,7 +41,7 @@ The system models a fictional US-based clinic receptionist. Patients can book, r
 - **Voice (optional)** — Retell integration boundary for web calls, tool routes, and call lifecycle when enabled; chat-first by default locally
 - Appointment scheduling, rescheduling, cancellation, and lookup
 - Temporary appointment slot holding (Redis)
-- Human escalation as durable internal record plus staff notification email job path (no live operator console)
+- Simulated human escalation as a durable internal record plus staff notification email job path (no live operator console)
 - Durable email jobs with fake provider by default; Resend optional
 - Structured JSON logging, request/correlation IDs, audit logs, and health endpoints
 - Public demo guardrails for hosted deployments
@@ -91,7 +91,7 @@ The receptionist supports:
 - Scheduled appointment lookup, rescheduling, and cancellation (written chat; Retell voice when enabled)
 - Doctor and specialty information, availability lookup, temporary slot holding
 - Retell voice tools when configured: `get_clinic_context`, availability, hold/release, booking/cancel/reschedule with explicit confirmation
-- Human escalation case creation and durable staff notification email jobs
+- Simulated human escalation case creation and durable staff notification email jobs
 - Booking and reschedule confirmation email jobs (fake provider by default)
 
 ## Demo clinic scenario
@@ -100,7 +100,7 @@ The demo uses a fictional US clinic in the `America/New_York` timezone.
 
 Business hours default to Monday–Friday, 09:00–17:00 clinic local time. The backend resolves relative dates and enforces business rules.
 
-Patient identity uses safer identifiers: full name, date of birth, phone number, and email. The system avoids highly sensitive identifiers such as SSN.
+Patient lookup in the demo uses simplified identity matching based on name and date of birth, with email or phone used to disambiguate when needed. This is sufficient for the fictional scheduling workflow, but it is not production-grade healthcare identity verification. A real clinic deployment would require clinic-specific verification rules, additional identifiers, and manual review or human escalation for ambiguous matches. Human escalation is simulated in this demo. Patient records avoid highly sensitive identifiers such as SSN.
 
 **Seeded patients for manual testing:** John Miller (1985-04-12) and Ava Thompson (1992-09-03).
 

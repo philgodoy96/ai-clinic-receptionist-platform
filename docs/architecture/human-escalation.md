@@ -1,6 +1,6 @@
 # Human Escalation Foundation
 
-> Staff notification is modeled as a durable email job. Local/demo mode uses the fake email provider; hosted demos may use Resend when configured. This demo does not include a live operator console or real-time human handoff queue.
+> Staff notification is modeled as a durable email job. Local/demo mode uses the fake email provider; hosted demos may use Resend when configured. Human escalation is simulated in this demo. This demo does not include a live operator console or real-time human handoff queue.
 
 ## Context
 

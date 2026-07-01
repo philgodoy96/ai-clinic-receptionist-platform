@@ -36,12 +36,14 @@ A doctor can have many availability slots and many appointments.
 
 Represents a lightweight patient record.
 
-Patient identity uses safer identifiers:
+Patient records store lightweight demo scheduling identifiers:
 
 - Full name
 - Date of birth
 - Phone number
 - Email
+
+Patient lookup in the demo uses simplified identity matching based on name and date of birth, with email or phone used to disambiguate when needed. This is sufficient for the fictional scheduling workflow, but it is not production-grade healthcare identity verification.
 
 The model intentionally avoids highly sensitive identifiers such as:
 
