@@ -66,10 +66,11 @@ Date of birth is a weak unique key in any real clinic population:
 - DOB is often spoken ambiguously over voice ("April twelfth" vs "April twenty-first").
 - DOB does not prove the caller owns the record; it only narrows candidates.
 
-The scheduling domain already requires **full name + date of birth + at least one of email or phone** for lookup (`SchedulingService` / `PatientRepository.get_by_identity`). Voice resolution preserves and extends that rule:
+The scheduling read API requires **full name + date of birth + at least one of email or phone** for direct lookup (`SchedulingService` / `PatientRepository.get_by_identity`). Conversational chat and voice resolution use progressive matching:
 
-- Email and phone are stronger contact anchors (unique in the demo schema).
-- Name + DOB alone may surface `multiple_matches` or `possible_match`, never a silent `exact_match` for booking.
+- Name + DOB may yield `exact_match` when exactly one patient matches after normalization.
+- Email and phone disambiguate `multiple_matches` and strengthen matching when provided.
+- `possible_match` requires caller confirmation before booking.
 
 Resolution must not downgrade to DOB-only matching to "make the demo work."
 

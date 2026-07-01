@@ -19,6 +19,8 @@ The receptionist supports appointment scheduling, rescheduling, cancellation, pa
 
 This demo is not clinical advice, diagnosis, emergency triage, or medical decision support. Do not enter real patient data.
 
+Patient lookup in the demo uses simplified identity matching based on name and date of birth, with email or phone used to disambiguate when needed. This is sufficient for the fictional scheduling workflow, but it is not production-grade healthcare identity verification.
+
 Outside demo scope (intentional boundaries or production-hardening concerns):
 
 - Full clinic CRM, billing, insurance workflows, electronic health records
@@ -52,7 +54,7 @@ Chat UX and voice UX must not be modeled as the same interaction pattern.
 | Groq | Implemented (optional) | Not active unless configured | Hosted demo LLM analysis/phrasing when enabled |
 | Bedrock | Implemented (optional) | Not active unless configured | Enterprise-style AWS adapter |
 | Retell | Implemented (optional) | Disabled by default (`RETELL_ENABLED=false`) | Voice tools, webhooks, web calls when configured |
-| Human escalation | Implemented | Durable `HumanEscalation` record + staff notification email job | No live operator console; fake email by default |
+| Human escalation | Implemented | Simulated handoff — durable `HumanEscalation` record + staff notification email job | No live operator console; fake email by default |
 | Structured logging | Implemented | JSON logs, `request_id`, `correlation_id`, audit log correlation | stdout by default |
 | Health endpoints | Implemented | `GET /health`, `GET /health/dependencies` | Readiness checks PostgreSQL |
 | Prometheus / OpenTelemetry | Extension point | Not runtime-wired in the app | Production-hardening export; dependencies present but not active |
@@ -172,7 +174,7 @@ Dependencies for Prometheus and OpenTelemetry exist in the project but are not w
 
 Human escalation creates a durable internal record and enqueues a staff notification email job. Local/demo mode uses the fake email provider; hosted demos may use Resend when configured.
 
-This demo does not include a live operator console or real-time human handoff queue.
+Human escalation is simulated in this demo. This demo does not include a live operator console or real-time human handoff queue.
 
 See [Human Escalation Foundation](human-escalation.md) and [Human Handoff Notification Job](human-handoff-notification-job.md).
 

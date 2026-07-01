@@ -45,7 +45,9 @@ The service requires at least one additional identifier:
 
 This reduces the risk of exposing patient data when two patients share similar names or dates of birth.
 
-API and Retell tool layers preserve this rule.
+API and Retell `lookup_patient` layers preserve this rule.
+
+Written chat and voice resolution use progressive simplified matching on name and date of birth first, with email or phone to disambiguate when needed. This is demo-scoped matching, not production-grade healthcare identity verification.
 
 ## Scheduling Availability Policy
 

@@ -149,7 +149,7 @@ For manual verification, use seeded demo patients (see [Demo seed data](#demo-se
 
 Written-chat rescheduling follows:
 
-1. **Identity verification** — name + DOB (with partial memory and slash-form DOB support such as `1992/09/03`).
+1. **Patient identity collection** — name + DOB (with partial memory and slash-form DOB support such as `1992/09/03`).
 2. **Appointment selection** — when multiple upcoming appointments exist, the user may select by ordinal (`the second one`), weekday/date, time, clinician, or specialty.
 3. **Progressive refinement** — ambiguous matches can be narrowed with follow-up turns before confirmation.
 4. **New slot selection** — availability for the new time; a hold may be placed on the target slot.
@@ -172,7 +172,7 @@ Offered-slot revision before a hold exists asks for scheduling clarification rat
 
 ## Patient identity behavior
 
-Written chat collects patient identity using **full name + date of birth** for lookup, cancel, and reschedule flows. Booking identity intake may also collect email and new-patient details.
+Written chat collects patient identity using **full name + date of birth** for lookup, cancel, and reschedule flows. Booking identity intake may also collect email and new-patient details. Email or phone may be used to disambiguate when the backend finds multiple or uncertain matches. This is simplified demo matching, not production-grade healthcare identity verification.
 
 | Behavior | Detail |
 | --- | --- |
@@ -262,7 +262,7 @@ Misaligned prompts are treated as reliability bugs. Backend validation remains a
 
 ## Demo seed data
 
-After `python -m scripts.seed_demo_data`, manual written-chat identity verification should use these seeded patients:
+After `python -m scripts.seed_demo_data`, manual written-chat patient lookup tests should use these seeded patients:
 
 | Name | Date of birth | Email |
 | --- | --- | --- |
@@ -297,7 +297,8 @@ The written-chat demo is intentionally scoped:
 | --- | --- |
 | **Conversational model** | Deterministic written-chat simulator with backend state guards — not a full production conversational AI |
 | **Voice / agent layer** | Retell and LLM adapters represent the real integration boundary; voice remains provider-orchestrated separately |
-| **Human escalation** | Creates an internal record and notification job path; does not connect to a live human agent in the demo |
+| **Human escalation** | Simulated in this demo — creates an internal record and notification job path; does not connect to a live human agent |
+| **Patient identity** | Simplified name + DOB matching with email or phone for disambiguation; not production-grade healthcare identity verification |
 | **Clinical use** | Not intended for clinical advice, diagnosis, emergency triage, or medical decision support |
 | **Patient profile updates** | Changing email, address, insurance, or medical record details is outside demo scope |
 | **Moderation and recovery** | Advanced unsafe-message moderation, abusive-message policy, and repeated-failure conversational recovery are outside demo scope |
