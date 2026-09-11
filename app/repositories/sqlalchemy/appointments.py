@@ -107,3 +107,14 @@ class SQLAlchemyAppointmentRescheduleAttemptRepository:
         self.session.add(attempt)
         self.session.flush()
         return attempt
+
+    def reclaim_attempt(
+        self,
+        attempt: AppointmentRescheduleAttempt,
+    ) -> AppointmentRescheduleAttempt:
+        attempt.status = AppointmentRescheduleAttemptStatus.PENDING
+        attempt.error_code = None
+        attempt.updated_at = datetime.now(UTC)
+        self.session.add(attempt)
+        self.session.flush()
+        return attempt

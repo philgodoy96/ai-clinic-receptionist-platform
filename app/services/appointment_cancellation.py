@@ -26,6 +26,17 @@ from app.repositories.scheduling import AvailabilitySlotRepository
 from app.services.audit_logs import AuditLogCreate, AuditLogService
 
 
+class AppointmentCancellationInProgressError(Exception):
+    """Raised when another worker already owns this cancellation execution identity."""
+
+    def __init__(
+        self,
+        message: str = "A cancellation for this tool call is already in progress.",
+    ) -> None:
+        self.message = message
+        super().__init__(message)
+
+
 class AppointmentCancellationService:
     def __init__(
         self,
@@ -52,7 +63,18 @@ class AppointmentCancellationService:
             request.idempotency_key,
         )
         if existing_attempt is not None:
-            return self._result_from_existing_attempt(existing_attempt, duplicate=True)
+            completed = self._completed_result_from_existing_attempt(
+                existing_attempt,
+                duplicate=True,
+            )
+            if completed is not None:
+                return completed
+            # Incomplete claim after a crash: finish the local mutation.
+            appointment = self.appointments.get_by_id(existing_attempt.appointment_id)
+            if appointment is None:
+                msg = "appointment was not found"
+                raise AppointmentNotFoundError(msg)
+            return self._mutate_cancelled(request, appointment, duplicate=False)
 
         appointment = self.appointments.get_by_id(request.appointment_id)
         if appointment is None:
@@ -71,6 +93,41 @@ class AppointmentCancellationService:
         if not is_appointment_cancelable(appointment.status):
             msg = "appointment cannot be cancelled"
             raise AppointmentNotCancelableError(msg)
+
+        claim = self._claim_execution(request, appointment.id)
+        if claim is None:
+            existing_after_race = self.cancellation_attempts.get_by_idempotency_key(
+                request.idempotency_key,
+            )
+            if existing_after_race is None:
+                raise AppointmentCancellationInProgressError()
+
+            completed = self._completed_result_from_existing_attempt(
+                existing_after_race,
+                duplicate=True,
+            )
+            if completed is not None:
+                return completed
+
+            raise AppointmentCancellationInProgressError()
+
+        return self._mutate_cancelled(request, appointment, duplicate=False)
+
+    def _mutate_cancelled(
+        self,
+        request: AppointmentCancellationRequest,
+        appointment: Appointment,
+        *,
+        duplicate: bool,
+    ) -> AppointmentCancellationResult:
+        if appointment.status == AppointmentStatus.CANCELLED:
+            return AppointmentCancellationResult(
+                appointment_id=appointment.id,
+                patient_id=appointment.patient_id,
+                duplicate=duplicate,
+                already_cancelled=True,
+                cancelled_at=appointment.cancelled_at,
+            )
 
         appointment.status = AppointmentStatus.CANCELLED
         appointment.cancelled_at = datetime.now(UTC)
@@ -92,36 +149,53 @@ class AppointmentCancellationService:
                 appointment_id=appointment.id,
                 event_metadata={
                     "idempotency_key": request.idempotency_key,
-                    "duplicate": False,
+                    "duplicate": duplicate,
                     "already_cancelled": False,
                 },
             ),
         )
 
-        self._record_attempt_best_effort(request, appointment.id)
-
         return AppointmentCancellationResult(
             appointment_id=appointment.id,
             patient_id=appointment.patient_id,
             cancelled_at=appointment.cancelled_at,
+            duplicate=duplicate,
         )
 
-    def _result_from_existing_attempt(
+    def _claim_execution(
+        self,
+        request: AppointmentCancellationRequest,
+        appointment_id: UUID,
+    ) -> AppointmentCancellationAttempt | None:
+        try:
+            return self.cancellation_attempts.add(
+                AppointmentCancellationAttempt(
+                    idempotency_key=request.idempotency_key,
+                    appointment_id=appointment_id,
+                ),
+            )
+        except IntegrityError:
+            return None
+
+    def _completed_result_from_existing_attempt(
         self,
         attempt: AppointmentCancellationAttempt,
         *,
         duplicate: bool,
-    ) -> AppointmentCancellationResult:
+    ) -> AppointmentCancellationResult | None:
         appointment = self.appointments.get_by_id(attempt.appointment_id)
         if appointment is None:
             msg = "appointment was not found"
             raise AppointmentNotFoundError(msg)
 
+        if appointment.status != AppointmentStatus.CANCELLED:
+            return None
+
         return AppointmentCancellationResult(
             appointment_id=appointment.id,
             patient_id=appointment.patient_id,
             duplicate=duplicate,
-            already_cancelled=appointment.status == AppointmentStatus.CANCELLED,
+            already_cancelled=True,
             cancelled_at=appointment.cancelled_at,
         )
 

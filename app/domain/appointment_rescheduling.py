@@ -29,6 +29,7 @@ class AppointmentReschedulingFailureCode(StrEnum):
     SLOT_NOT_FOUND = "slot_not_found"
     SLOT_UNAVAILABLE = "slot_unavailable"
     SLOT_ALREADY_BOOKED = "slot_already_booked"
+    RESCHEDULE_IN_PROGRESS = "reschedule_in_progress"
 
 
 class AppointmentReschedulingError(Exception):
@@ -145,6 +146,19 @@ class AppointmentReschedulingSlotAlreadyBookedError(AppointmentReschedulingError
         super().__init__(
             message,
             failure_code=AppointmentReschedulingFailureCode.SLOT_ALREADY_BOOKED,
+        )
+
+
+class AppointmentReschedulingInProgressError(AppointmentReschedulingError):
+    """Raised when another worker already owns this reschedule execution identity."""
+
+    def __init__(
+        self,
+        message: str = "A reschedule for this tool call is already in progress.",
+    ) -> None:
+        super().__init__(
+            message,
+            failure_code=AppointmentReschedulingFailureCode.RESCHEDULE_IN_PROGRESS,
         )
 
 

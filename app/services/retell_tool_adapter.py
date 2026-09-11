@@ -107,6 +107,13 @@ from app.domain.voice_rescheduling import (
     resolve_reschedule_target_reference,
     should_skip_reschedule_slot_precheck_for_appointment,
 )
+from app.domain.voice_tool_execution import (
+    TOOL_EXECUTION_AMBIGUOUS_RECOVERY_ERROR_CODE,
+    TOOL_EXECUTION_IN_PROGRESS_ERROR_CODE,
+    ToolExecutionClaimResult,
+    ToolExecutionStaleReclaimPolicy,
+    VoiceToolExecutionStatus,
+)
 from app.models.conversations import Conversation
 from app.models.scheduling import Appointment, AvailabilitySlot, Doctor, Patient, Specialty
 from app.models.voice_calls import VoiceCall
@@ -126,6 +133,7 @@ from app.schemas.retell_tools import (
     RetellToolResponse,
 )
 from app.schemas.scheduling import AppointmentResponse
+from app.services.appointment_cancellation import AppointmentCancellationInProgressError
 from app.services.appointment_holds import (
     AppointmentHoldOwnershipError,
     AppointmentHoldStoreUnavailableError,
@@ -142,7 +150,10 @@ from app.services.patient_identity_resolution import (
 )
 from app.services.receptionist_response_planning import build_suggested_retell_response_text
 from app.services.retell_call_lifecycle import DEFAULT_RETELL_PROVIDER
-from app.services.retell_tool_registry import is_side_effecting_retell_tool
+from app.services.retell_tool_registry import (
+    is_side_effecting_retell_tool,
+    stale_reclaim_policy_for_retell_tool,
+)
 from app.services.scheduling import (
     AvailabilityCheckResult,
     AvailabilitySlotNotFoundError,
@@ -242,6 +253,38 @@ class VoiceCallRepositoryForRetellToolCalling(Protocol):
         *,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def claim_tool_call_execution(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        stale_reclaim_policy: ToolExecutionStaleReclaimPolicy = (
+            ToolExecutionStaleReclaimPolicy.REQUIRE_MANUAL_RECOVERY
+        ),
+    ) -> ToolExecutionClaimResult:
+        raise NotImplementedError
+
+    def complete_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+    ) -> bool:
+        raise NotImplementedError
+
+    def fail_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        error_code: str | None = None,
+    ) -> bool:
         raise NotImplementedError
 
     def record_tool_call_outcome(
@@ -449,9 +492,24 @@ class RetellToolCallingAdapter:
         if duplicate_response is not None:
             return duplicate_response
 
+        claim_owned = False
+        if (
+            parsed.tool_call_id is not None
+            and is_side_effecting_retell_tool(parsed.tool_name)
+        ):
+            claim = self._claim_side_effect_execution(parsed)
+            if not claim.owned:
+                return self._response_for_unowned_claim(parsed, claim)
+            claim_owned = True
+
         try:
             response = self._dispatch(parsed)
         except Exception:
+            if claim_owned:
+                self._fail_side_effect_execution(
+                    parsed,
+                    error_code=_RETELL_TOOL_EXECUTION_FAILED_CODE,
+                )
             logger.exception(
                 "Unexpected Retell tool execution failure for tool %s",
                 parsed.tool_name.value,
@@ -462,12 +520,14 @@ class RetellToolCallingAdapter:
                 error_code=_RETELL_TOOL_EXECUTION_FAILED_CODE,
             )
 
-        if (
-            response.status == "succeeded"
-            and parsed.tool_call_id is not None
-            and is_side_effecting_retell_tool(parsed.tool_name)
-        ):
-            self._record_side_effect_outcome(parsed, response)
+        if claim_owned:
+            if response.status == "succeeded":
+                self._complete_side_effect_execution(parsed, response)
+            else:
+                self._fail_side_effect_execution(
+                    parsed,
+                    error_code=response.error_code,
+                )
 
         return response
 
@@ -1027,6 +1087,12 @@ class RetellToolCallingAdapter:
                 tool_name=parsed.tool_name.value,
                 tool_call_id=parsed.tool_call_id,
                 error_code="appointment_not_cancelable",
+            )
+        except AppointmentCancellationInProgressError:
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=TOOL_EXECUTION_IN_PROGRESS_ERROR_CODE,
             )
 
         self._update_voice_context_after_cancellation(
@@ -1975,15 +2041,26 @@ class RetellToolCallingAdapter:
         response = deserialize_tool_call_outcome(stored_outcome)
         response.duplicate = True
 
+        logger.info(
+            "retell_tool_duplicate_reused_outcome",
+            extra={
+                "event": "retell_tool_duplicate_reused_outcome",
+                "provider_call_id": parsed.provider_call_id,
+                "tool_call_id": parsed.tool_call_id,
+                "tool_name": parsed.tool_name.value,
+                "idempotency_key": idempotency_key,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
+        )
+
         return response
 
-    def _record_side_effect_outcome(
+    def _claim_side_effect_execution(
         self,
         parsed: ParsedRetellToolCall,
-        response: RetellToolCallResponse,
-    ) -> None:
-        if parsed.tool_call_id is None:
-            return
+    ) -> ToolExecutionClaimResult:
+        assert parsed.tool_call_id is not None
 
         voice_call = self.voice_calls.get_by_provider_call_id(
             provider=self.provider,
@@ -2004,16 +2081,156 @@ class RetellToolCallingAdapter:
             tool_call_id=parsed.tool_call_id,
         )
 
-        self.voice_calls.record_tool_call_outcome(
+        claim = self.voice_calls.claim_tool_call_execution(
             voice_call_id=voice_call.id,
             provider=self.provider,
             provider_call_id=parsed.provider_call_id,
             event_type=build_retell_tool_call_event_type(parsed.tool_name),
             tool_call_id=parsed.tool_call_id,
             idempotency_key=idempotency_key,
-            outcome=serialize_tool_call_outcome(response),
             occurred_at=occurred_at,
+            stale_reclaim_policy=stale_reclaim_policy_for_retell_tool(parsed.tool_name),
         )
+        self._commit_tool_execution_state()
+
+        if claim.owned:
+            logger.info(
+                "retell_tool_execution_claimed",
+                extra={
+                    "event": "retell_tool_execution_claimed",
+                    "provider_call_id": parsed.provider_call_id,
+                    "tool_call_id": parsed.tool_call_id,
+                    "tool_name": parsed.tool_name.value,
+                    "idempotency_key": idempotency_key,
+                    "request_id": get_request_id(),
+                    "correlation_id": get_correlation_id(),
+                },
+            )
+        elif claim.recovery_required:
+            logger.warning(
+                "retell_tool_execution_ambiguous_recovery",
+                extra={
+                    "event": "retell_tool_execution_ambiguous_recovery",
+                    "provider_call_id": parsed.provider_call_id,
+                    "tool_call_id": parsed.tool_call_id,
+                    "tool_name": parsed.tool_name.value,
+                    "idempotency_key": idempotency_key,
+                    "request_id": get_request_id(),
+                    "correlation_id": get_correlation_id(),
+                },
+            )
+
+        return claim
+
+    def _response_for_unowned_claim(
+        self,
+        parsed: ParsedRetellToolCall,
+        claim: ToolExecutionClaimResult,
+    ) -> RetellToolCallResponse:
+        if (
+            claim.status is VoiceToolExecutionStatus.SUCCEEDED
+            and claim.outcome is not None
+        ):
+            response = deserialize_tool_call_outcome(claim.outcome)
+            response.duplicate = True
+            logger.info(
+                "retell_tool_duplicate_reused_outcome",
+                extra={
+                    "event": "retell_tool_duplicate_reused_outcome",
+                    "provider_call_id": parsed.provider_call_id,
+                    "tool_call_id": parsed.tool_call_id,
+                    "tool_name": parsed.tool_name.value,
+                    "request_id": get_request_id(),
+                    "correlation_id": get_correlation_id(),
+                },
+            )
+            return response
+
+        if claim.recovery_required:
+            logger.info(
+                "retell_tool_ambiguous_recovery_required",
+                extra={
+                    "event": "retell_tool_ambiguous_recovery_required",
+                    "provider_call_id": parsed.provider_call_id,
+                    "tool_call_id": parsed.tool_call_id,
+                    "tool_name": parsed.tool_name.value,
+                    "request_id": get_request_id(),
+                    "correlation_id": get_correlation_id(),
+                },
+            )
+            return build_failed_tool_call_response(
+                tool_name=parsed.tool_name.value,
+                tool_call_id=parsed.tool_call_id,
+                error_code=TOOL_EXECUTION_AMBIGUOUS_RECOVERY_ERROR_CODE,
+            )
+
+        logger.info(
+            "retell_tool_duplicate_in_progress",
+            extra={
+                "event": "retell_tool_duplicate_in_progress",
+                "provider_call_id": parsed.provider_call_id,
+                "tool_call_id": parsed.tool_call_id,
+                "tool_name": parsed.tool_name.value,
+                "request_id": get_request_id(),
+                "correlation_id": get_correlation_id(),
+            },
+        )
+        return build_failed_tool_call_response(
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+            error_code=TOOL_EXECUTION_IN_PROGRESS_ERROR_CODE,
+        )
+
+    def _complete_side_effect_execution(
+        self,
+        parsed: ParsedRetellToolCall,
+        response: RetellToolCallResponse,
+    ) -> None:
+        if parsed.tool_call_id is None:
+            return
+
+        idempotency_key = build_retell_tool_call_idempotency_key(
+            provider=self.provider,
+            provider_call_id=parsed.provider_call_id,
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+        )
+        self.voice_calls.complete_tool_call_execution(
+            idempotency_key=idempotency_key,
+            outcome=serialize_tool_call_outcome(response),
+        )
+        self._commit_tool_execution_state()
+
+    def _fail_side_effect_execution(
+        self,
+        parsed: ParsedRetellToolCall,
+        *,
+        error_code: str | None,
+    ) -> None:
+        if parsed.tool_call_id is None:
+            return
+
+        idempotency_key = build_retell_tool_call_idempotency_key(
+            provider=self.provider,
+            provider_call_id=parsed.provider_call_id,
+            tool_name=parsed.tool_name.value,
+            tool_call_id=parsed.tool_call_id,
+        )
+        self.voice_calls.fail_tool_call_execution(
+            idempotency_key=idempotency_key,
+            error_code=error_code,
+        )
+        self._commit_tool_execution_state()
+
+    def _commit_tool_execution_state(self) -> None:
+        if self.db is None:
+            return
+
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     def _resolve_hold_owner_id(
         self,
