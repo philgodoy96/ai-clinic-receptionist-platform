@@ -47,6 +47,22 @@ Verified lifecycle events flow into [Retell call lifecycle ingestion](retell-cal
 
 Verified tool callbacks flow into the [Retell tool-calling adapter](retell-tool-calling-adapter.md) after signature verification succeeds.
 
+## Trust Boundary Layers
+
+These concerns are intentionally separate:
+
+| Layer | Mechanism | Purpose |
+|---|---|---|
+| Authenticity | Retell HMAC/signature verification | Reject forged callbacks |
+| Freshness | Signature/timestamp tolerance (when configured) | Bound replay age of authentic messages |
+| Idempotency | Durable tool-execution identity + atomic claim | Control duplicate/replay *effects* under at-least-once delivery |
+| Domain authorization | Confirmation + business policy checks | Decide whether the action is allowed |
+
+Signature verification proves who sent the callback. It does not by itself prevent duplicate
+authenticated deliveries from mutating state twice. Durable application idempotency (see
+[Durable Idempotency at External Voice Tool Boundaries](durable-idempotency-voice-tool-boundaries.md))
+addresses that effect-control problem after authenticity succeeds.
+
 ## Local Development
 
 Retell is disabled by default.

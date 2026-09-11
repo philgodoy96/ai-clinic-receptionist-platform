@@ -62,9 +62,12 @@ It cannot bypass:
 
 ## Idempotency
 
-Provider retries use `provider_call_id` and `tool_call_id` when available.
-
-Duplicate callbacks must not create duplicate appointments or duplicate confirmation email jobs.
+Provider delivery is at-least-once. Booking uses a durable `VoiceBookingAttempt` claim
+(`pending` ownership before `book_appointment`) plus adapter-level tool-execution claims.
+Duplicate callbacks must not create duplicate appointments or duplicate confirmation email
+jobs. Concurrent in-progress duplicates receive `booking_in_progress` / 
+`tool_execution_in_progress` rather than a second booking mutation. See
+[Durable Idempotency at External Voice Tool Boundaries](durable-idempotency-voice-tool-boundaries.md).
 
 ## Patient Identity
 

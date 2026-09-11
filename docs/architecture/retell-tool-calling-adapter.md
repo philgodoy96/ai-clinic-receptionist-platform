@@ -94,11 +94,37 @@ Operational setup (agent, webhooks, web calls, smoke tests) is documented in [Re
 
 ## Idempotency
 
-Side-effecting tool calls use `provider_call_id` and `tool_call_id` when available.
+Side-effecting tool calls use a durable execution identity:
 
-Duplicate provider retries should not duplicate holds, releases, appointments, cancellations, reschedules, or confirmation email jobs.
+`provider:provider_call_id:tool:tool_name:tool_call_id`
 
-When `tool_call_id` is present, hold, release, booking, cancellation, and reschedule outcomes are recorded on the related `VoiceCall` event metadata (and `VoiceBookingAttempt` for booking, `AppointmentCancellationAttempt` for cancellation, `AppointmentRescheduleAttempt` for rescheduling) so repeated requests return the prior provider-safe result instead of performing the side effect again.
+Provider delivery is **at-least-once**. The application does **not** claim globally exactly-once
+messaging.
+
+Before executing a protected domain side effect, the adapter atomically claims ownership on the
+related `VoiceCall` event row (unique `idempotency_key`) with status `in_progress`. Only the
+claim owner runs the mutation. Successful completions store a reusable provider-safe outcome on
+the same row (`succeeded`). Concurrent duplicates do not independently execute the protected
+mutation: they either reuse a stored succeeded outcome or receive a deterministic retryable
+`tool_execution_in_progress` response.
+
+Stale `in_progress` claims (lease default 120s) are **not** blindly reclaimed for every tool.
+Reclaim-and-retry is allowed only when the tool is classified as safely retryable; otherwise the
+adapter returns `tool_execution_ambiguous_recovery` and preserves claim correlation metadata.
+See
+[Durable Idempotency at External Voice Tool Boundaries](durable-idempotency-voice-tool-boundaries.md).
+
+Booking additionally uses `VoiceBookingAttempt` as the domain pre-side-effect ownership record
+(`pending` / `succeeded` / `failed`). Cancellation and reschedule attempt rows follow the same
+ownership principle.
+
+When `tool_call_id` is present, hold, release, booking, cancellation, reschedule, and patient
+identity tool outcomes are recorded so repeated requests return the prior provider-safe result
+instead of performing the side effect again.
+
+Duplicate provider retries should not duplicate holds, releases, appointments, cancellations,
+reschedules, or confirmation email jobs. Crash-after-side-effect-before-outcome remains an
+ambiguous dual-write for Redis holds and identity resolution (not exactly-once).
 
 ## Relationship to Chat
 
