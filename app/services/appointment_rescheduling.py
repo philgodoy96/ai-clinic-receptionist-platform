@@ -8,6 +8,7 @@ from app.domain.appointment_rescheduling import (
     APPOINTMENT_RESCHEDULING_SOURCE,
     AppointmentReschedulingError,
     AppointmentReschedulingHoldExpiredError,
+    AppointmentReschedulingInProgressError,
     AppointmentReschedulingNotFoundError,
     AppointmentReschedulingNotReschedulableError,
     AppointmentReschedulingRequest,
@@ -103,6 +104,9 @@ class AppointmentReschedulingService:
             self._record_duplicate_audit(request, result=result)
             return result
 
+        if self._is_in_progress_attempt(existing_attempt):
+            raise AppointmentReschedulingInProgressError()
+
         original = self.appointments.get_by_id(request.appointment_id)
         if original is None:
             self._record_rejected_audit(
@@ -137,14 +141,28 @@ class AppointmentReschedulingService:
 
         attempt: AppointmentRescheduleAttempt
         if existing_attempt is not None:
-            attempt = existing_attempt
+            # FAILED / REJECTED retries reclaim ownership explicitly.
+            if existing_attempt.status in {
+                AppointmentRescheduleAttemptStatus.FAILED,
+                AppointmentRescheduleAttemptStatus.REJECTED,
+            }:
+                attempt = self.reschedule_attempts.reclaim_attempt(existing_attempt)
+            else:
+                attempt = existing_attempt
         else:
             create_result = self.reschedule_attempts.create_attempt(
                 idempotency_key=request.idempotency_key,
                 appointment_id=original.id,
             )
             attempt = create_result.attempt
-            if create_result.created:
+            if not create_result.created:
+                if self._is_successful_attempt(attempt):
+                    result = self._result_from_existing_attempt(attempt, duplicate=True)
+                    self._record_duplicate_audit(request, result=result)
+                    return result
+                if self._is_in_progress_attempt(attempt):
+                    raise AppointmentReschedulingInProgressError()
+            else:
                 self._record_requested_audit(request, original=original)
 
         try:
@@ -164,6 +182,18 @@ class AppointmentReschedulingService:
                 original=original,
             )
             raise
+
+    def _is_in_progress_attempt(
+        self,
+        attempt: AppointmentRescheduleAttempt | None,
+    ) -> bool:
+        if attempt is None:
+            return False
+
+        return (
+            attempt.status == AppointmentRescheduleAttemptStatus.PENDING
+            and attempt.new_appointment_id is None
+        )
 
     def _execute_reschedule(
         self,

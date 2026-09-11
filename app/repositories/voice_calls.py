@@ -4,6 +4,10 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from app.domain.voice_calls.enums import VoiceCallStatus
+from app.domain.voice_tool_execution import (
+    ToolExecutionClaimResult,
+    ToolExecutionStaleReclaimPolicy,
+)
 from app.models.voice_calls import VoiceCall, VoiceCallEvent
 from app.services.voice_call_pagination import VoiceCallCursor, VoiceCallEventCursor
 
@@ -51,6 +55,38 @@ class VoiceCallRepository(Protocol):
         *,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def claim_tool_call_execution(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        stale_reclaim_policy: ToolExecutionStaleReclaimPolicy = (
+            ToolExecutionStaleReclaimPolicy.REQUIRE_MANUAL_RECOVERY
+        ),
+    ) -> ToolExecutionClaimResult:
+        raise NotImplementedError
+
+    def complete_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+    ) -> bool:
+        raise NotImplementedError
+
+    def fail_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        error_code: str | None = None,
+    ) -> bool:
         raise NotImplementedError
 
     def record_tool_call_outcome(

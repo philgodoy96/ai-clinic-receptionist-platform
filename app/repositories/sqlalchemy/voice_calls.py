@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -8,6 +8,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.voice_calls.enums import VoiceCallStatus
+from app.domain.voice_tool_execution import (
+    ToolExecutionClaimResult,
+    ToolExecutionStaleReclaimPolicy,
+    VoiceToolExecutionStatus,
+    build_failed_execution_metadata,
+    build_in_progress_execution_metadata,
+    build_succeeded_execution_metadata,
+    is_stale_in_progress_claim,
+    mark_ambiguous_dual_write_recovery,
+    read_tool_execution_claimed_at,
+    read_tool_execution_outcome,
+    read_tool_execution_status,
+)
 from app.models.voice_calls import VoiceCall, VoiceCallEvent
 from app.services.voice_call_pagination import VoiceCallCursor, VoiceCallEventCursor
 
@@ -102,17 +115,108 @@ class SQLAlchemyVoiceCallRepository:
         if event is None:
             return None
 
-        metadata = event.event_metadata
-
-        if not isinstance(metadata, dict):
+        status = read_tool_execution_status(event.event_metadata)
+        if status is VoiceToolExecutionStatus.IN_PROGRESS:
+            return None
+        if status is VoiceToolExecutionStatus.FAILED:
             return None
 
-        outcome = metadata.get("tool_call_outcome")
+        return read_tool_execution_outcome(event.event_metadata)
 
-        if not isinstance(outcome, dict):
-            return None
+    def claim_tool_call_execution(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        stale_reclaim_policy: ToolExecutionStaleReclaimPolicy = (
+            ToolExecutionStaleReclaimPolicy.REQUIRE_MANUAL_RECOVERY
+        ),
+    ) -> ToolExecutionClaimResult:
+        existing = self._lock_event_by_idempotency_key(idempotency_key=idempotency_key)
+        if existing is not None:
+            return self._resolve_existing_claim(
+                existing,
+                stale_reclaim_policy=stale_reclaim_policy,
+            )
 
-        return outcome
+        claimed_at = datetime.now(UTC)
+        voice_call_event = VoiceCallEvent(
+            voice_call_id=voice_call_id,
+            provider=provider,
+            provider_call_id=provider_call_id,
+            provider_event_id=tool_call_id,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            event_metadata=build_in_progress_execution_metadata(claimed_at=claimed_at),
+            idempotency_key=idempotency_key,
+        )
+
+        try:
+            self.create_voice_call_event(voice_call_event)
+        except IntegrityError:
+            self.session.rollback()
+            raced = self._lock_event_by_idempotency_key(idempotency_key=idempotency_key)
+            if raced is None:
+                raced = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+            if raced is None:
+                raise
+            return self._resolve_existing_claim(
+                raced,
+                stale_reclaim_policy=stale_reclaim_policy,
+            )
+
+        return ToolExecutionClaimResult(
+            owned=True,
+            status=VoiceToolExecutionStatus.IN_PROGRESS,
+            outcome=None,
+        )
+
+    def complete_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+    ) -> bool:
+        event = self._lock_event_by_idempotency_key(idempotency_key=idempotency_key)
+        if event is None:
+            return False
+
+        claimed_at = read_tool_execution_claimed_at(event.event_metadata)
+        event.event_metadata = build_succeeded_execution_metadata(
+            outcome,
+            claimed_at=claimed_at,
+        )
+        self.session.add(event)
+        self.session.flush()
+        return True
+
+    def fail_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        error_code: str | None = None,
+    ) -> bool:
+        event = self._lock_event_by_idempotency_key(idempotency_key=idempotency_key)
+        if event is None:
+            return False
+
+        status = read_tool_execution_status(event.event_metadata)
+        if status is VoiceToolExecutionStatus.SUCCEEDED:
+            return False
+
+        claimed_at = read_tool_execution_claimed_at(event.event_metadata)
+        event.event_metadata = build_failed_execution_metadata(
+            error_code=error_code,
+            claimed_at=claimed_at,
+        )
+        self.session.add(event)
+        self.session.flush()
+        return True
 
     def record_tool_call_outcome(
         self,
@@ -129,7 +233,15 @@ class SQLAlchemyVoiceCallRepository:
         existing = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
 
         if existing is not None:
-            return False
+            status = read_tool_execution_status(existing.event_metadata)
+            if status is VoiceToolExecutionStatus.SUCCEEDED and read_tool_execution_outcome(
+                existing.event_metadata,
+            ):
+                return False
+            return self.complete_tool_call_execution(
+                idempotency_key=idempotency_key,
+                outcome=outcome,
+            )
 
         voice_call_event = VoiceCallEvent(
             voice_call_id=voice_call_id,
@@ -138,7 +250,7 @@ class SQLAlchemyVoiceCallRepository:
             provider_event_id=tool_call_id,
             event_type=event_type,
             occurred_at=occurred_at,
-            event_metadata={"tool_call_outcome": outcome},
+            event_metadata=build_succeeded_execution_metadata(outcome),
             idempotency_key=idempotency_key,
         )
 
@@ -148,6 +260,107 @@ class SQLAlchemyVoiceCallRepository:
             self.session.rollback()
             return False
 
+        return True
+
+    def _lock_event_by_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> VoiceCallEvent | None:
+        statement = (
+            select(VoiceCallEvent)
+            .where(VoiceCallEvent.idempotency_key == idempotency_key)
+            .limit(1)
+            .with_for_update()
+        )
+        return self.session.scalars(statement).first()
+
+    def _resolve_existing_claim(
+        self,
+        event: VoiceCallEvent,
+        *,
+        stale_reclaim_policy: ToolExecutionStaleReclaimPolicy,
+    ) -> ToolExecutionClaimResult:
+        status = read_tool_execution_status(event.event_metadata)
+        outcome = read_tool_execution_outcome(event.event_metadata)
+
+        if status is VoiceToolExecutionStatus.SUCCEEDED or (
+            status is None and outcome is not None
+        ):
+            return ToolExecutionClaimResult(
+                owned=False,
+                status=VoiceToolExecutionStatus.SUCCEEDED,
+                outcome=outcome,
+            )
+
+        # Explicit FAILED is a deliberate retry signal from a completed failure path.
+        if status is VoiceToolExecutionStatus.FAILED:
+            reclaimed = self._reclaim_execution(event)
+            if reclaimed:
+                return ToolExecutionClaimResult(
+                    owned=True,
+                    status=VoiceToolExecutionStatus.IN_PROGRESS,
+                    outcome=None,
+                )
+
+        if is_stale_in_progress_claim(event.event_metadata):
+            if stale_reclaim_policy is ToolExecutionStaleReclaimPolicy.ALLOW_SAFE_RETRY:
+                reclaimed = self._reclaim_execution(event)
+                if reclaimed:
+                    return ToolExecutionClaimResult(
+                        owned=True,
+                        status=VoiceToolExecutionStatus.IN_PROGRESS,
+                        outcome=None,
+                    )
+            else:
+                event.event_metadata = mark_ambiguous_dual_write_recovery(event.event_metadata)
+                self.session.add(event)
+                self.session.flush()
+                return ToolExecutionClaimResult(
+                    owned=False,
+                    status=VoiceToolExecutionStatus.IN_PROGRESS,
+                    outcome=None,
+                    recovery_required=True,
+                )
+
+        # Legacy rows without an execution status and without an outcome.
+        if status is None:
+            if stale_reclaim_policy is ToolExecutionStaleReclaimPolicy.ALLOW_SAFE_RETRY:
+                reclaimed = self._reclaim_execution(event)
+                if reclaimed:
+                    return ToolExecutionClaimResult(
+                        owned=True,
+                        status=VoiceToolExecutionStatus.IN_PROGRESS,
+                        outcome=None,
+                    )
+            return ToolExecutionClaimResult(
+                owned=False,
+                status=VoiceToolExecutionStatus.IN_PROGRESS,
+                outcome=None,
+                recovery_required=True,
+            )
+
+        return ToolExecutionClaimResult(
+            owned=False,
+            status=status or VoiceToolExecutionStatus.IN_PROGRESS,
+            outcome=outcome,
+        )
+
+    def _reclaim_execution(self, event: VoiceCallEvent) -> bool:
+        status = read_tool_execution_status(event.event_metadata)
+        if status is VoiceToolExecutionStatus.SUCCEEDED or (
+            status is None and read_tool_execution_outcome(event.event_metadata) is not None
+        ):
+            return False
+
+        if status is VoiceToolExecutionStatus.IN_PROGRESS and not is_stale_in_progress_claim(
+            event.event_metadata,
+        ):
+            return False
+
+        event.event_metadata = build_in_progress_execution_metadata()
+        self.session.add(event)
+        self.session.flush()
         return True
 
     def list_voice_calls(

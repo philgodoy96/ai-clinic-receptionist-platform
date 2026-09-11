@@ -148,7 +148,10 @@ class VoiceBookingConfirmationService:
         existing_attempt = self.voice_booking_attempts.get_by_idempotency_key(
             request.idempotency_key,
         )
-        if existing_attempt is not None and existing_attempt.appointment_id is not None:
+        if existing_attempt is not None and (
+            existing_attempt.appointment_id is not None
+            or existing_attempt.status == VoiceBookingAttemptStatus.SUCCEEDED
+        ):
             return self._result_from_existing_attempt(
                 existing_attempt,
                 duplicate=True,
@@ -169,11 +172,20 @@ class VoiceBookingConfirmationService:
         patient = self._resolve_patient(request, voice_context)
         self._check_demo_quotas(request.client_ip)
 
-        attempt = existing_attempt or self._create_pending_attempt(
+        attempt = self._claim_execution_ownership(
             request=request,
             targets=targets,
             patient_id=patient.id,
+            existing_attempt=existing_attempt,
         )
+        if (
+            attempt.appointment_id is not None
+            or attempt.status == VoiceBookingAttemptStatus.SUCCEEDED
+        ):
+            return self._result_from_existing_attempt(
+                attempt,
+                duplicate=True,
+            )
 
         try:
             booking_result = self.booking_service.book_appointment(
@@ -518,6 +530,61 @@ class VoiceBookingConfirmationService:
                 raise VoiceBookingQuotaExceededError(exc.limit_name) from exc
             raise
 
+    def _claim_execution_ownership(
+        self,
+        *,
+        request: VoiceBookingConfirmationRequest,
+        targets: _ResolvedVoiceBookingTargets,
+        patient_id: UUID,
+        existing_attempt: VoiceBookingAttempt | None,
+    ) -> VoiceBookingAttempt:
+        if existing_attempt is not None:
+            return self._claim_from_existing_attempt(existing_attempt)
+
+        return self._create_pending_attempt(
+            request=request,
+            targets=targets,
+            patient_id=patient_id,
+        )
+
+    def _claim_from_existing_attempt(
+        self,
+        attempt: VoiceBookingAttempt,
+    ) -> VoiceBookingAttempt:
+        if (
+            attempt.appointment_id is not None
+            or attempt.status == VoiceBookingAttemptStatus.SUCCEEDED
+        ):
+            return attempt
+
+        if attempt.status == VoiceBookingAttemptStatus.PENDING:
+            logger.info(
+                "voice_booking_duplicate_in_progress",
+                extra={
+                    "event": "voice_booking_duplicate_in_progress",
+                    "idempotency_key": attempt.idempotency_key,
+                    "provider_call_id": attempt.provider_call_id,
+                    "tool_call_id": attempt.tool_call_id,
+                },
+            )
+            raise VoiceBookingTemporaryFailureError(
+                error_code="booking_in_progress",
+                message="A booking for this tool call is already in progress.",
+            )
+
+        if attempt.status == VoiceBookingAttemptStatus.FAILED:
+            attempt.status = VoiceBookingAttemptStatus.PENDING
+            attempt.error_code = None
+            attempt.updated_at = datetime.now(UTC)
+            self.voice_booking_attempts.update(attempt)
+            self.db.commit()
+            return attempt
+
+        raise VoiceBookingTemporaryFailureError(
+            error_code="booking_in_progress",
+            message="A booking for this tool call is already in progress.",
+        )
+
     def _create_pending_attempt(
         self,
         *,
@@ -543,7 +610,9 @@ class VoiceBookingConfirmationService:
         )
 
         try:
-            return self.voice_booking_attempts.add(attempt)
+            created = self.voice_booking_attempts.add(attempt)
+            self.db.commit()
+            return created
         except IntegrityError:
             self.db.rollback()
             existing = self.voice_booking_attempts.get_by_idempotency_key(
@@ -551,9 +620,29 @@ class VoiceBookingConfirmationService:
             )
             if existing is None:
                 raise
-            if existing.appointment_id is not None:
+
+            if (
+                existing.appointment_id is not None
+                or existing.status == VoiceBookingAttemptStatus.SUCCEEDED
+            ):
                 return existing
-            return existing
+
+            if existing.status == VoiceBookingAttemptStatus.FAILED:
+                return self._claim_from_existing_attempt(existing)
+
+            logger.info(
+                "voice_booking_duplicate_in_progress",
+                extra={
+                    "event": "voice_booking_duplicate_in_progress",
+                    "idempotency_key": request.idempotency_key,
+                    "provider_call_id": request.provider_call_id,
+                    "tool_call_id": request.tool_call_id,
+                },
+            )
+            raise VoiceBookingTemporaryFailureError(
+                error_code="booking_in_progress",
+                message="A booking for this tool call is already in progress.",
+            ) from None
 
     def _result_from_existing_attempt(
         self,

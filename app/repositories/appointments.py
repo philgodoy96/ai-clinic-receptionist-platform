@@ -68,3 +68,9 @@ class AppointmentRescheduleAttemptRepository(Protocol):
         status: AppointmentRescheduleAttemptStatus = (AppointmentRescheduleAttemptStatus.REJECTED),
     ) -> AppointmentRescheduleAttempt:
         raise NotImplementedError
+
+    def reclaim_attempt(
+        self,
+        attempt: AppointmentRescheduleAttempt,
+    ) -> AppointmentRescheduleAttempt:
+        raise NotImplementedError
