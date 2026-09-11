@@ -130,6 +130,14 @@ class FakeAppointmentRescheduleAttemptRepository:
         attempt.error_code = error_code
         return attempt
 
+    def reclaim_attempt(
+        self,
+        attempt: AppointmentRescheduleAttempt,
+    ) -> AppointmentRescheduleAttempt:
+        attempt.status = AppointmentRescheduleAttemptStatus.PENDING
+        attempt.error_code = None
+        return attempt
+
 
 def _build_request(
     context: ReschedulingContext,
