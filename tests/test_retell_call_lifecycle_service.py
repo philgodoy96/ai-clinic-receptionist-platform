@@ -470,12 +470,118 @@ class FakeVoiceCallRepository:
         if event is None:
             return None
 
-        outcome = event.event_metadata.get("tool_call_outcome")
+        from app.domain.voice_tool_execution import (
+            VoiceToolExecutionStatus,
+            read_tool_execution_outcome,
+            read_tool_execution_status,
+        )
 
-        if not isinstance(outcome, dict):
+        status = read_tool_execution_status(event.event_metadata)
+        if status is VoiceToolExecutionStatus.IN_PROGRESS:
+            return None
+        if status is VoiceToolExecutionStatus.FAILED:
             return None
 
-        return outcome
+        return read_tool_execution_outcome(event.event_metadata)
+
+    def claim_tool_call_execution(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        stale_reclaim_policy: Any = None,
+    ) -> Any:
+        from app.domain.voice_tool_execution import (
+            ToolExecutionClaimResult,
+            VoiceToolExecutionStatus,
+            build_in_progress_execution_metadata,
+            read_tool_execution_outcome,
+            read_tool_execution_status,
+        )
+
+        _ = stale_reclaim_policy
+
+        existing = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+        if existing is not None:
+            status = read_tool_execution_status(existing.event_metadata)
+            outcome = read_tool_execution_outcome(existing.event_metadata)
+            if status is VoiceToolExecutionStatus.SUCCEEDED or (
+                status is None and outcome is not None
+            ):
+                return ToolExecutionClaimResult(
+                    owned=False,
+                    status=VoiceToolExecutionStatus.SUCCEEDED,
+                    outcome=outcome,
+                )
+            if status is VoiceToolExecutionStatus.FAILED:
+                existing.event_metadata = build_in_progress_execution_metadata()
+                return ToolExecutionClaimResult(
+                    owned=True,
+                    status=VoiceToolExecutionStatus.IN_PROGRESS,
+                    outcome=None,
+                )
+            return ToolExecutionClaimResult(
+                owned=False,
+                status=VoiceToolExecutionStatus.IN_PROGRESS,
+                outcome=None,
+            )
+
+        self.create_voice_call_event(
+            VoiceCallEvent(
+                voice_call_id=voice_call_id,
+                provider=provider,
+                provider_call_id=provider_call_id,
+                provider_event_id=tool_call_id,
+                event_type=event_type,
+                occurred_at=occurred_at,
+                event_metadata=build_in_progress_execution_metadata(),
+                idempotency_key=idempotency_key,
+            ),
+        )
+        return ToolExecutionClaimResult(
+            owned=True,
+            status=VoiceToolExecutionStatus.IN_PROGRESS,
+            outcome=None,
+        )
+
+    def complete_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+    ) -> bool:
+        from app.domain.voice_tool_execution import build_succeeded_execution_metadata
+
+        event = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+        if event is None:
+            return False
+        event.event_metadata = build_succeeded_execution_metadata(outcome)
+        return True
+
+    def fail_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        error_code: str | None = None,
+    ) -> bool:
+        from app.domain.voice_tool_execution import (
+            VoiceToolExecutionStatus,
+            build_failed_execution_metadata,
+            read_tool_execution_status,
+        )
+
+        event = self.get_event_by_idempotency_key(idempotency_key=idempotency_key)
+        if event is None:
+            return False
+        if read_tool_execution_status(event.event_metadata) is VoiceToolExecutionStatus.SUCCEEDED:
+            return False
+        event.event_metadata = build_failed_execution_metadata(error_code=error_code)
+        return True
 
     def record_tool_call_outcome(
         self,
@@ -489,8 +595,13 @@ class FakeVoiceCallRepository:
         outcome: dict[str, Any],
         occurred_at: datetime,
     ) -> bool:
+        from app.domain.voice_tool_execution import build_succeeded_execution_metadata
+
         if self.get_event_by_idempotency_key(idempotency_key=idempotency_key) is not None:
-            return False
+            return self.complete_tool_call_execution(
+                idempotency_key=idempotency_key,
+                outcome=outcome,
+            )
 
         self.create_voice_call_event(
             VoiceCallEvent(
@@ -500,7 +611,7 @@ class FakeVoiceCallRepository:
                 provider_event_id=tool_call_id,
                 event_type=event_type,
                 occurred_at=occurred_at,
-                event_metadata={"tool_call_outcome": outcome},
+                event_metadata=build_succeeded_execution_metadata(outcome),
                 idempotency_key=idempotency_key,
             ),
         )

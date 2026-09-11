@@ -704,6 +704,8 @@ class TrackingVoiceCallRepository:
     def __init__(self) -> None:
         self.voice_calls: dict[str, VoiceCall] = {}
         self.outcomes: dict[str, dict[str, Any]] = {}
+        self.execution_status: dict[str, str] = {}
+        self.claim_owners: set[str] = set()
 
     def get_by_provider_call_id(
         self,
@@ -743,7 +745,91 @@ class TrackingVoiceCallRepository:
         *,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
-        return self.outcomes.get(idempotency_key)
+        status = self.execution_status.get(idempotency_key)
+        if status == "succeeded":
+            return self.outcomes.get(idempotency_key)
+        if status is None and idempotency_key in self.outcomes:
+            return self.outcomes[idempotency_key]
+        return None
+
+    def claim_tool_call_execution(
+        self,
+        *,
+        voice_call_id: UUID,
+        provider: str,
+        provider_call_id: str,
+        event_type: str,
+        tool_call_id: str,
+        idempotency_key: str,
+        occurred_at: datetime,
+        stale_reclaim_policy: Any = None,
+    ) -> Any:
+        from app.domain.voice_tool_execution import (
+            ToolExecutionClaimResult,
+            VoiceToolExecutionStatus,
+        )
+
+        _ = (
+            voice_call_id,
+            provider,
+            provider_call_id,
+            event_type,
+            tool_call_id,
+            occurred_at,
+            stale_reclaim_policy,
+        )
+
+        status = self.execution_status.get(idempotency_key)
+        if status == "succeeded":
+            return ToolExecutionClaimResult(
+                owned=False,
+                status=VoiceToolExecutionStatus.SUCCEEDED,
+                outcome=self.outcomes.get(idempotency_key),
+            )
+        if status == "in_progress":
+            return ToolExecutionClaimResult(
+                owned=False,
+                status=VoiceToolExecutionStatus.IN_PROGRESS,
+                outcome=None,
+            )
+        if status == "failed":
+            self.execution_status[idempotency_key] = "in_progress"
+            self.claim_owners.add(idempotency_key)
+            return ToolExecutionClaimResult(
+                owned=True,
+                status=VoiceToolExecutionStatus.IN_PROGRESS,
+                outcome=None,
+            )
+
+        self.execution_status[idempotency_key] = "in_progress"
+        self.claim_owners.add(idempotency_key)
+        return ToolExecutionClaimResult(
+            owned=True,
+            status=VoiceToolExecutionStatus.IN_PROGRESS,
+            outcome=None,
+        )
+
+    def complete_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        outcome: dict[str, Any],
+    ) -> bool:
+        self.outcomes[idempotency_key] = outcome
+        self.execution_status[idempotency_key] = "succeeded"
+        return True
+
+    def fail_tool_call_execution(
+        self,
+        *,
+        idempotency_key: str,
+        error_code: str | None = None,
+    ) -> bool:
+        _ = error_code
+        if self.execution_status.get(idempotency_key) == "succeeded":
+            return False
+        self.execution_status[idempotency_key] = "failed"
+        return True
 
     def record_tool_call_outcome(
         self,
@@ -766,10 +852,14 @@ class TrackingVoiceCallRepository:
             occurred_at,
         )
 
-        if idempotency_key in self.outcomes:
+        if (
+            idempotency_key in self.outcomes
+            and self.execution_status.get(idempotency_key) == "succeeded"
+        ):
             return False
 
         self.outcomes[idempotency_key] = outcome
+        self.execution_status[idempotency_key] = "succeeded"
 
         return True
 
